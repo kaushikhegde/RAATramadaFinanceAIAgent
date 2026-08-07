@@ -1,0 +1,4 @@
+From Company,From Company Number,To Company ,To Company Number,Transaction Reference,Amount,Currency,Status,Created Time,Authorised Time,Updated Time,Due Time,Recipient Reference,Sender Reference,Settlement Amt,Statement Date
+Royal Automobile Association (RAA) of S.A. Incorporated,M363355,READY ROOMS,,P.0000004123,400.00,AUD,Pending at Bank,2026-08-06 00:00:00,2026-08-06 00:00:00,2026-08-06 00:00:00,2026-08-06 00:00:00,MNT987,MNT987,,2026-08-07 00:00:00
+Royal Automobile Association (RAA) of S.A. Incorporated,M363355,READY ROOMS,,P.0000004124,600.00,AUD,Pending at Bank,2026-08-06 00:00:00,2026-08-06 00:00:00,2026-08-06 00:00:00,2026-08-06 00:00:00,FGHTGH,FGHTGH,,2026-08-07 00:00:00
+Royal Automobile Association (RAA) of S.A. Incorporated,M363355,TEMPO HOLIDAYS,,P.0000004125,150.00,AUD,Pending at Bank,2026-08-06 00:00:00,2026-08-06 00:00:00,2026-08-06 00:00:00,2026-08-06 00:00:00,RTGHYUJ,RTGHYUJ,,2026-08-07 00:00:00

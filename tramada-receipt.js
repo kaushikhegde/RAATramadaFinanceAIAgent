@@ -1,0 +1,998 @@
+/**
+ * tramada-receipt.js — Playwright + CDP receipt automation for the chat flow.
+ *
+ * Companion to tramada-booking.js. Where that module ADDS a booking, this one
+ * records a RECEIPT against an existing booking:
+ *
+ *   resolve booking (by number, or search + pick from a list)
+ *     -> confirm booking details
+ *       -> guard: an itinerary segment must exist & be costed
+ *         -> Booking Transactions > Receipts > Add/Issue Receipt
+ *           -> fill (Cash / EFT / Credit Card), allocate to segment(s)
+ *             -> preview -> issue -> read back the new Receipt No.
+ *
+ * All selectors were mapped live against the raatravelsandbox TTMS (v7.10.3);
+ * see docs/tramada-receipt-workflow.md for the field map.
+ *
+ * Reuses the shared CDP Chrome (start-chrome.sh, port 9222) so it runs in the
+ * SAME already-logged-in browser as the rest of the flow. Because it attaches
+ * to a live session and skips login when one exists, a warm Tramada session
+ * means no repeated OTP challenge.
+ */
+
+const { chromium } = require("playwright");
+
+const TRAMADA_BASE_URL =
+  process.env.TRAMADA_URL || "https://asp.tramada.com.au/ttms/raatravelsandbox";
+const CDP_PORT = parseInt(process.env.CDP_PORT || "9222", 10);
+const CDP_HOST = process.env.CDP_HOST || "127.0.0.1";
+const CDP_MODE = process.env.CDP_MODE || "external";
+const BROWSER_CHANNEL = process.env.BROWSER_CHANNEL || "chrome";
+const HEADLESS = process.env.HEADLESS === "true";
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Tramada Transaction Type dropdown values (receipt.transactionTypeCode).
+const TXN_TYPE = {
+  CASH: "CA",
+  CHEQUE: "CQ",
+  CREDIT_CARD: "CC", // "Credit Card CCCF"
+  CREDIT_CARD_SWIPE: "CS",
+  EFT: "ET",
+};
+
+// yyyy-mm-dd -> dd-mm-yyyy (Tramada date input format). Passes through
+// values already in dd-mm-yyyy, and defaults blank to today.
+function toTramadaDate(input) {
+  if (!input) {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    return `${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()}`;
+  }
+  const iso = String(input).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return `${iso[3]}-${iso[2]}-${iso[1]}`;
+  return input; // assume already dd-mm-yyyy
+}
+
+// Normalise a caller-supplied transaction type to a Tramada code.
+function resolveTxnType(t) {
+  if (!t) return TXN_TYPE.CASH;
+  const key = String(t).toUpperCase().replace(/[\s-]+/g, "_");
+  if (TXN_TYPE[key]) return TXN_TYPE[key];
+  // Accept raw codes too (CA/CQ/CC/CS/ET)
+  const raw = String(t).toUpperCase();
+  if (Object.values(TXN_TYPE).includes(raw)) return raw;
+  // Common aliases
+  if (/CARD/.test(raw)) return TXN_TYPE.CREDIT_CARD;
+  if (/CASH/.test(raw)) return TXN_TYPE.CASH;
+  if (/EFT|TRANSFER|BANK/.test(raw)) return TXN_TYPE.EFT;
+  return TXN_TYPE.CASH;
+}
+
+function isCreditCard(code) {
+  return code === TXN_TYPE.CREDIT_CARD || code === TXN_TYPE.CREDIT_CARD_SWIPE;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Browser / login (mirrors tramada-booking.js)
+ * ──────────────────────────────────────────────────────────────────────── */
+
+async function openBrowser(onProgress) {
+  const launchChrome = async () => {
+    const browser = await chromium.launch({
+      channel: BROWSER_CHANNEL,
+      headless: HEADLESS,
+      args: ["--no-first-run", "--no-default-browser-check"],
+    });
+    return { browser, launched: true };
+  };
+
+  if (CDP_MODE === "internal") {
+    onProgress(5, `Launching Chrome (${BROWSER_CHANNEL})...`);
+    return await launchChrome();
+  }
+
+  onProgress(5, `Connecting to CDP Chrome at ${CDP_HOST}:${CDP_PORT}...`);
+  try {
+    const browser = await chromium.connectOverCDP(`http://${CDP_HOST}:${CDP_PORT}`);
+    return { browser, launched: false };
+  } catch (cdpErr) {
+    // Fail honestly rather than launching an unauthenticated throwaway Chrome.
+    // Shown in the reconciliation inbox's Why column now, not only in a
+    // terminal — so it reads as a sentence rather than as shouting.
+    throw new Error(
+      `Could not connect to Chrome on ${CDP_HOST}:${CDP_PORT}. ` +
+        `Run "npm run start:chrome" and sign into Tramada in that window first. [${cdpErr.message}]`
+    );
+  }
+}
+
+/**
+ * Ensure we have an authenticated Tramada session on `page`.
+ * If credentials are supplied and we land on login.htm, it logs in.
+ * If the session is already warm (attached CDP Chrome), it just returns —
+ * so a browser a human already signed into (past OTP) is reused as-is.
+ */
+// Reliable auth check via a PROTECTED page (login.htm serves the form even when
+// authenticated, which false-alarms as "not logged in").
+async function tramadaIsAuthed(page) {
+  await page
+    .goto(`${TRAMADA_BASE_URL}/home/home.htm`, { waitUntil: "domcontentloaded" })
+    .catch(() => {});
+  return !page.url().includes("login.htm");
+}
+
+async function ensureLoggedIn(page, { username, password, onNeedLogin } = {}) {
+  if (await tramadaIsAuthed(page)) return; // warm session — nothing to do
+
+  if (username && password) {
+    await page.goto(`${TRAMADA_BASE_URL}/login.htm`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#username", { state: "visible", timeout: 15000 });
+    await page.fill("#username", username);
+    await page.fill("#loginForm_password", password);
+    await page.click("#loginForm_login");
+    await page.waitForURL((u) => !u.toString().includes("login.htm"), { timeout: 30000 }).catch(() => {});
+    if (page.url().includes("login.htm")) throw new Error("Tramada login failed (check credentials / OTP).");
+    await sleep(500);
+    return;
+  }
+
+  // No credentials — ask the user to sign in and WAIT (don't quit the run).
+  if (typeof onNeedLogin === "function") onNeedLogin();
+  const deadline = Date.now() + 5 * 60 * 1000;
+  while (Date.now() < deadline) {
+    await sleep(3000);
+    if (await tramadaIsAuthed(page)) { await sleep(500); return; }
+  }
+  throw new Error("Timed out waiting for Tramada login. Sign in to the shared Chrome and try again.");
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Step 1 — resolve the booking (req 5)
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Search bookings and return a list to show in chat when the user has no
+ * booking number. Returns [{bookingNo, clientName, debtorName, itinerary,
+ * depDate, retDate, finalTkt}].
+ *
+ * @param {object} opts { status?: NEW|QUOTE|BOOKED|FINALISED|CANCELLED, clientName?, bookingNo? }
+ */
+// Fill a sidebar search field located by its LABEL text (the input ids vary
+// per tenant; the labels don't). Sets value with proper events.
+async function fillSearchFieldByLabel(page, labelText, value) {
+  if (!value) return false;
+  return await page.evaluate((arg) => {
+    const leaves = Array.from(document.querySelectorAll("body *")).filter(
+      (n) => n.children.length === 0 && (n.textContent || "").trim().toLowerCase() === arg.label.toLowerCase()
+    );
+    for (const lb of leaves) {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+      walker.currentNode = lb;
+      let n;
+      while ((n = walker.nextNode())) {
+        if (n.tagName === "INPUT" && (!n.type || n.type === "text")) {
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+          setter.call(n, arg.value);
+          n.dispatchEvent(new Event("input", { bubbles: true }));
+          n.dispatchEvent(new Event("change", { bubbles: true }));
+          return true;
+        }
+      }
+    }
+    return false;
+  }, { label: labelText, value: String(value) });
+}
+
+async function searchBookings(page, opts = {}) {
+  await page.goto(`${TRAMADA_BASE_URL}/booking/booking-search.htm`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.waitForSelector("#searchButton", { timeout: 15000 });
+
+  const hasFilters = !!(opts.status || opts.bookingNo || (opts.clientName || "").trim());
+
+  // NO filters → the landing page ALREADY shows "Recently Accessed Bookings".
+  // Clicking Search with empty criteria returns an empty set on this tenant
+  // (which read as "No bookings found") — so just scrape the recent list.
+  if (!hasFilters) {
+    await sleep(600);
+    return await scrapeBookingList(page);
+  }
+
+  if (opts.status) {
+    await page.selectOption("#searchForm_bookingStatus", opts.status).catch(() => {});
+  }
+  if (opts.bookingNo) {
+    await fillSearchFieldByLabel(page, "Booking No", opts.bookingNo);
+  }
+  if (opts.clientName) {
+    await fillSearchFieldByLabel(page, "Client Name", opts.clientName);
+  }
+
+  await page.click("#searchButton");
+  await page.waitForLoadState("domcontentloaded");
+  await sleep(1200);
+
+  return await scrapeBookingList(page);
+}
+
+// Scrape whichever table carries the "Bkg No" header (search results or the
+// default "Recently Accessed Bookings" list).
+async function scrapeBookingList(page) {
+  return await page.evaluate(() => {
+    const clean = (el) => (el && el.textContent ? el.textContent.trim() : "");
+    const tables = document.querySelectorAll("table");
+    for (const table of tables) {
+      const header = table.querySelector("tr");
+      if (header && /Bkg\s*No/i.test(header.textContent)) {
+        const rows = table.querySelectorAll("tr");
+        const out = [];
+        for (let i = 1; i < rows.length; i++) {
+          const c = rows[i].querySelectorAll("td");
+          if (c.length >= 6) {
+            out.push({
+              bookingNo: clean(c[1]),
+              clientName: clean(c[2]),
+              debtorName: clean(c[3]),
+              itinerary: clean(c[4]),
+              depDate: clean(c[5]),
+              retDate: clean(c[6]),
+              finalTkt: clean(c[7]),
+            });
+          }
+        }
+        return out;
+      }
+    }
+    return [];
+  });
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Step 2 — booking details (req 1)
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Open a booking by its number and scrape the header details for confirmation.
+ * The booking id in Tramada URLs IS the booking number, so we navigate directly.
+ */
+async function getBookingDetails(page, bookingNo) {
+  await page.goto(
+    `${TRAMADA_BASE_URL}/booking/booking-summary.htm?mode=edit&id=${encodeURIComponent(bookingNo)}`,
+    { waitUntil: "domcontentloaded" }
+  );
+  await sleep(600);
+
+  const details = await page.evaluate(() => {
+    // The left header block uses <b>Label:</b> value pairs; read the sidebar text.
+    const bodyText = document.body.innerText;
+    const grab = (label) => {
+      const re = new RegExp(label + "\\s*:?\\s*([^\\n]+)", "i");
+      const m = bodyText.match(re);
+      return m ? m[1].trim() : "";
+    };
+    const clientName = grab("Client Name");
+    return {
+      bookingNo: grab("Booking No\\.?"),
+      client: grab("Client"),
+      clientName,
+      // Payer Name always = booking client name (business rule)
+      payerName: clientName,
+      debtor: grab("Debtor"),
+      itinerary: grab("Itinerary"),
+      bookDate: grab("Book\\.? Date"),
+      depDate: grab("Dep\\.? Date"),
+    };
+  });
+
+  const loaded = !page.url().includes("booking-search") && !!details.bookingNo;
+  if (!loaded) {
+    throw new Error(`Booking ${bookingNo} could not be opened.`);
+  }
+  return details;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Guard — an itinerary segment must exist before a receipt can be raised
+ * ──────────────────────────────────────────────────────────────────────── */
+
+async function getItinerarySegments(page, bookingNo) {
+  await page.goto(
+    `${TRAMADA_BASE_URL}/booking/booking-itineraries.htm?mode=edit&id=${encodeURIComponent(bookingNo)}`,
+    { waitUntil: "domcontentloaded" }
+  );
+  await sleep(500);
+  return await page.evaluate(() => {
+    const clean = (el) => (el && el.textContent ? el.textContent.trim() : "");
+    const tables = document.querySelectorAll("table");
+    for (const table of tables) {
+      const header = table.querySelector("tr");
+      if (header && /Seg\.?\s*Type/i.test(header.textContent)) {
+        const rows = table.querySelectorAll("tr");
+        const segs = [];
+        for (let i = 1; i < rows.length; i++) {
+          const c = rows[i].querySelectorAll("td");
+          if (c.length >= 3) {
+            segs.push({ segType: clean(c[1]), reference: clean(c[2]) });
+          }
+        }
+        return segs;
+      }
+    }
+    return [];
+  });
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Step 3 — the receipt form
+ * ──────────────────────────────────────────────────────────────────────── */
+
+// Read the "Segments To Allocate" table on the open receipt form:
+// [{ segId, segType, reference, debtorDue }]
+async function readAllocatableSegments(page) {
+  return await page.evaluate(() => {
+    const out = [];
+    document.querySelectorAll('input[id^="allocationAmount_"]').forEach((inp) => {
+      const segId = inp.id.replace("allocationAmount_", "");
+      const row = inp.closest("tr");
+      const cells = row ? Array.from(row.querySelectorAll("td")).map((td) => td.textContent.trim()) : [];
+      // Column layout, read off the live form 06-Aug-2026:
+      //   0 D | 1 Seg. Type | 2 Invoice No. | 3 Reference | 4 Creditor ID
+      //   5 Debtor Invoiced | 6 Debtor Receipted | 7 Debtor Due | 8 Allocate | 9 A
+      //
+      // debtorDue was cells[6] — "Debtor RECEIPTED", which is 0.00 on a booking
+      // nothing has been receipted against yet. Every allocate-or-not decision
+      // therefore compared against $0.00 and refused to allocate anything. It
+      // went unnoticed because the existing flows pass allocation:"ALL", which
+      // clicks Select All and lets Tramada fill the amounts — they never read
+      // this figure. The reconciliation run is the first caller that does.
+      out.push({
+        segId,
+        segType: cells[1] || "",
+        reference: cells[3] || "",
+        debtorInvoiced: cells[5] || "",
+        debtorReceipted: cells[6] || "",
+        debtorDue: cells[7] || inp.value || "",
+      });
+    });
+    return out;
+  });
+}
+
+/**
+ * Open a fresh Debtor Payment Receipt form for a booking and fill the header
+ * fields. Returns the list of allocatable segments so the caller can allocate.
+ */
+// Set a field with native setter + input/change/blur events — the method the
+// two successful hand-driven receipts used (matches the browser extension's
+// form_input). Plain Playwright fill() skips the change handlers Tramada uses.
+async function setFieldWithEvents(page, selector, value) {
+  if (value == null || value === "") return;
+  const el = page.locator(selector);
+  if (!(await el.count())) return;
+  await el.first().evaluate((n, v) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(n, v);
+    n.dispatchEvent(new Event("input", { bubbles: true }));
+    n.dispatchEvent(new Event("change", { bubbles: true }));
+    n.dispatchEvent(new Event("blur", { bubbles: true }));
+  }, String(value));
+}
+
+async function openReceiptForm(page, bookingNo, receipt) {
+  // PROVEN PATH: open the Receipts list and click "Add / Issue Receipt".
+  // (Navigating straight to the form URL once ended in a Tramada server error
+  // on Issue — the button flow is what both successful receipts used.)
+  await page.goto(
+    `${TRAMADA_BASE_URL}/booking/booking-receipts.htm?mode=edit&id=${encodeURIComponent(bookingNo)}`,
+    { waitUntil: "domcontentloaded" }
+  );
+  await page.waitForSelector('input[value="Add / Issue Receipt"]', { timeout: 15000 });
+  await page.click('input[value="Add / Issue Receipt"]');
+  await page.waitForSelector("#receipttransactionTypeCode", { timeout: 20000 });
+
+  const txn = resolveTxnType(receipt.transactionType);
+
+  // Transaction Type (req 2) — set first so credit-card sections render.
+  await page.selectOption("#receipttransactionTypeCode", txn);
+  await sleep(800);
+
+  // Payer Name = booking client name (business rule, req: always client name).
+  if (receipt.payerName) {
+    await setFieldWithEvents(page, "#receiptpayerName", receipt.payerName);
+  }
+  // Date Received (defaults to today if omitted).
+  await setFieldWithEvents(page, "#receiptdateReceived", toTramadaDate(receipt.dateReceived));
+  // Amount Received.
+  await setFieldWithEvents(page, "#receiptreceiptAmount", String(receipt.amount));
+  // Reference — REQUIRED (req 6).
+  if (!receipt.reference) {
+    throw new Error("Receipt reference is required.");
+  }
+  await setFieldWithEvents(page, "#receiptreferenceNumber", String(receipt.reference));
+
+  return { txn, segments: await readAllocatableSegments(page) };
+}
+
+/**
+ * Credit-card path (req 4): enter a NEW booking credit card each time — a card
+ * tied to this receipt, NOT saved to the client profile. Reached only via the
+ * receipt form's "Add" button, which opens client-edit-credit-card.htm in
+ * booking-card mode.
+ *
+ * NOTE: card data is sensitive. `card` should be supplied over a secure channel;
+ * this module only types what it is given and never logs it.
+ *
+ * @param {object} card { number, type, holder, expiry } and optional { creditor, authNumber }
+ */
+// What the card form's fields are called is a guess until a real page proves
+// it, so every lookup below is a list of candidates tried in order and the
+// failure path DUMPS what the page actually had. The first live credit-card
+// receipt died on `waitForSelector("#cardNumberDisplay") timed out` with no
+// clue whether the Add button had even fired — 15 wasted seconds that said
+// nothing. Never let a selector fail silently on this form again.
+const CARD_ADD_BUTTONS = [
+  "#addCreditCardButton",
+  "#addCreditCard",
+  "#receiptaddCreditCardButton",
+  'input[value="Add"][onclick*="redit"]',
+  'input[onclick*="credit-card"]',
+  'a[href*="credit-card"]',
+];
+const CARD_FIELD = {
+  number: ["#cardNumberDisplay", "#cardNumber", "#creditCardNumber", 'input[name*="ardNumber"]'],
+  type: ["#cardType", "#creditCardType", 'select[name*="ardType"]'],
+  holder: ["#cardHolder", "#cardHolderName", 'input[name*="ardHolder"]'],
+  expiry: ["#expiryDate", "#cardExpiry", 'input[name*="xpiry"]'],
+  save: ["#save", 'input[value="Save"]', 'button[type="submit"]'],
+};
+
+/** First selector in `list` that exists in `ctx`, or null. */
+async function firstPresent(ctx, list) {
+  for (const sel of list) {
+    if (await ctx.locator(sel).count().catch(() => 0)) return sel;
+  }
+  return null;
+}
+
+/**
+ * Every control on the page, so a failure report names what was really there
+ * instead of only what was missing. IDs and names only — never values, because
+ * this runs on a page that may already hold a PAN.
+ */
+async function describeControls(ctx) {
+  return await ctx
+    .evaluate(() => {
+      const out = [];
+      document.querySelectorAll("input, select, button, a[href]").forEach((n) => {
+        const id = n.id || "";
+        const nm = n.getAttribute("name") || "";
+        if (!id && !nm) return;
+        const kind = n.tagName.toLowerCase() + (n.type ? `[${n.type}]` : "");
+        // A button's value IS its label ("Add", "Save") and is safe to show;
+        // a text input's value could be the card number, so it never is.
+        const label =
+          n.tagName === "INPUT" && /button|submit/i.test(n.type || "") ? ` "${n.value}"` : "";
+        out.push(`${kind} #${id}${nm ? ` name=${nm}` : ""}${label}`);
+      });
+      return [...new Set(out)].slice(0, 60);
+    })
+    .catch(() => []);
+}
+
+/**
+ * Creditor Details (the merchant facility the card is processed through).
+ * Tramada renders this select only once Credit Card is the transaction type,
+ * and rejects the receipt on Issue with "Creditor must be selected" if it is
+ * left blank — AFTER the card has already been created. So it is resolved
+ * here, before any card exists, and the list is read off the page rather than
+ * guessed: which facilities a tenant has is a tenant's business, not ours.
+ */
+async function chooseReceiptCreditor(page, wanted) {
+  const sel = await firstPresent(page, ["#creditor", "#receiptcreditor", 'select[name*="reditor"]']);
+  if (!sel) return; // this tenant doesn't ask for one
+
+  const options = await page.locator(`${sel} option`).evaluateAll((ns) =>
+    ns.map((n) => ({ value: n.value, label: (n.textContent || "").trim() })).filter((o) => o.value)
+  );
+
+  if (wanted) {
+    const w = String(wanted).trim().toLowerCase();
+    const hit =
+      options.find((o) => o.label.toLowerCase() === w) ||
+      options.find((o) => o.label.toLowerCase().includes(w)) ||
+      options.find((o) => o.value.toLowerCase() === w);
+    if (!hit) {
+      const e = new Error(`"${wanted}" isn't one of this booking's creditors.`);
+      e.needsCreditor = { options: options.map((o) => o.label) };
+      throw e;
+    }
+    await page.selectOption(sel, hit.value);
+    await sleep(400);
+    return;
+  }
+
+  // Already set (Tramada sometimes defaults it) — leave it alone.
+  const current = await page.locator(sel).inputValue().catch(() => "");
+  if (current) return;
+
+  if (options.length === 1) {
+    await page.selectOption(sel, options[0].value);
+    await sleep(400);
+    return;
+  }
+
+  const e = new Error("This credit-card receipt needs a creditor.");
+  e.needsCreditor = { options: options.map((o) => o.label) };
+  throw e;
+}
+
+async function enterNewBookingCard(page, card) {
+  await chooseReceiptCreditor(page, card.creditor);
+
+  // Click "Add" — Tramada opens the card form in a popup window.
+  const addSel = await firstPresent(page, CARD_ADD_BUTTONS);
+  if (!addSel) {
+    throw new Error(
+      "Couldn't find the receipt form's 'Add credit card' button. The form offered: " +
+        (await describeControls(page)).join(" | ")
+    );
+  }
+
+  let popup = null;
+  try {
+    [popup] = await Promise.all([
+      page.waitForEvent("popup", { timeout: 8000 }),
+      page.click(addSel),
+    ]);
+  } catch {
+    popup = null; // fall through to in-page / iframe fallback
+  }
+
+  // Where did the card form land? Popup, same page, or an iframe — check all
+  // three rather than assuming, then say which one worked.
+  let cardCtx = null;
+  let numberSel = null;
+  for (let i = 0; i < 20 && !numberSel; i++) {
+    const candidates = [popup, page, ...page.frames().filter((f) => f !== page.mainFrame())].filter(Boolean);
+    for (const ctx of candidates) {
+      const sel = await firstPresent(ctx, CARD_FIELD.number);
+      if (sel) { cardCtx = ctx; numberSel = sel; break; }
+    }
+    if (!numberSel) await sleep(750);
+  }
+
+  if (!numberSel) {
+    const where = popup ? "popup" : "same page";
+    throw new Error(
+      `Clicked ${addSel} but no card-number field appeared (${where}). ` +
+        `Page now: ${page.url()}. Controls present: ` +
+        (await describeControls(popup || page)).join(" | ")
+    );
+  }
+
+  await cardCtx.fill(numberSel, String(card.number));
+  const typeSel = await firstPresent(cardCtx, CARD_FIELD.type);
+  if (card.type && typeSel) {
+    await cardCtx.selectOption(typeSel, { label: card.type }).catch(async () => {
+      await cardCtx.selectOption(typeSel, card.type).catch(() => {});
+    });
+  }
+  const holderSel = await firstPresent(cardCtx, CARD_FIELD.holder);
+  if (card.holder && holderSel) await cardCtx.fill(holderSel, String(card.holder));
+  const expirySel = await firstPresent(cardCtx, CARD_FIELD.expiry);
+  if (card.expiry && expirySel) await cardCtx.fill(expirySel, String(card.expiry));
+
+  // Save the booking card. If it was a popup it closes; the parent refreshes
+  // its #receiptcreditCard dropdown with (and auto-selects) the new card.
+  const saveSel = await firstPresent(cardCtx, CARD_FIELD.save);
+  if (!saveSel) {
+    throw new Error(
+      "Filled the card but found no Save button. Card form offered: " +
+        (await describeControls(cardCtx)).join(" | ")
+    );
+  }
+  if (popup && cardCtx === popup) {
+    await Promise.all([
+      popup.waitForEvent("close").catch(() => {}),
+      popup.click(saveSel),
+    ]);
+  } else {
+    await cardCtx.click(saveSel);
+  }
+  await sleep(1500);
+
+  // Ensure a card is selected on the parent form; if not, pick the newest option.
+  await page.evaluate(() => {
+    const sel = document.getElementById("receiptcreditCard");
+    if (sel && !sel.value && sel.options.length) {
+      sel.selectedIndex = sel.options.length - 1;
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  });
+
+  // Authorisation Number (optional).
+  if (card.authNumber) {
+    await page.fill("#receiptcreditCardAuthNumber", String(card.authNumber));
+  }
+}
+
+/**
+ * Allocate the receipt across segments (req 3).
+ *
+ * @param {"ALL"|Array} allocation
+ *   "ALL"                    -> tick every segment, use each segment's due
+ *   [{ segId, amount }]      -> allocate specific amounts to specific segments
+ *   [{ index, amount }]      -> same, by row index (0-based)
+ */
+async function allocateSegments(page, allocation, segments) {
+  // An EXPLICITLY empty allocation means "raise this receipt and allocate it to
+  // nothing" — a real, wanted outcome rather than a mistake. The reconciliation
+  // run passes it whenever the statement amount doesn't equal what is
+  // outstanding: the receipt still has to exist, unallocated, because
+  // "allocated" versus "not allocated" is exactly how those two cases are told
+  // apart afterwards.
+  //
+  // Without this, the throw below fired on any booking with nothing left
+  // outstanding and NO receipt was raised at all — the row failed outright
+  // instead of coming back as the unallocated receipt it was meant to be.
+  if (Array.isArray(allocation) && allocation.length === 0) return;
+
+  if (!segments || segments.length === 0) {
+    throw new Error(
+      "No costed segments to allocate against — create & cost an itinerary segment first."
+    );
+  }
+
+  if (allocation === "ALL" || allocation == null) {
+    // PROVEN PATH: real-click the "Segments To Allocate" section's Select All
+    // button — its onclick both ticks every row AND auto-fills each allocation
+    // amount with the segment's due. (Hand-ticking checkboxes left the amounts
+    // empty, which is what sank the first manual attempt.) There are two
+    // #selectAll buttons on the page; the segments one is the second.
+    const selectAlls = page.locator("#selectAll");
+    const n = await selectAlls.count();
+    if (n > 0) {
+      await selectAlls.nth(n - 1).click();
+      await sleep(800);
+    }
+    // Verify: every checkbox ticked and amounts populated; fix up any gaps the
+    // button missed using the segment's own due value.
+    await page.evaluate(() => {
+      document.querySelectorAll('input[id^="allocationAmount_"]').forEach((inp) => {
+        const row = inp.closest("tr");
+        const cb = row && row.querySelector('input[name="segmentsToAllocate"]');
+        if (cb && !cb.checked) {
+          cb.checked = true;
+          cb.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+        if (!parseFloat(inp.value || "0")) {
+          const cells = row ? Array.from(row.querySelectorAll("td")).map((td) => td.textContent.trim()) : [];
+          const due = cells.filter((c) => /^\d+(\.\d\d)?$/.test(c)).pop();
+          if (due) {
+            const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+            setter.call(inp, due);
+            inp.dispatchEvent(new Event("input", { bubbles: true }));
+            inp.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+        }
+      });
+    });
+    return;
+  }
+
+  // Specific allocations.
+  for (const a of allocation) {
+    const seg =
+      a.segId != null
+        ? segments.find((s) => s.segId === String(a.segId))
+        : segments[a.index];
+    if (!seg) continue;
+    /**
+     * ORDER MATTERS: tick the row FIRST, then type the amount.
+     *
+     * The allocation box ships as `disabled readonly` with class
+     * "disabled text-readonly". It is the row checkbox's own click handler that
+     * enables it — the same handler Select All fires for every row at once.
+     * Typing first meant clicking a permanently disabled input, which is
+     * exactly how the first live partial allocation died:
+     *
+     *   locator.click: Timeout 30000ms exceeded ... element is not enabled
+     *
+     * The checkbox is clicked for real rather than having `.checked` set,
+     * because setting the property does not run the handler that enables the
+     * box or recomputes the footer tally.
+     */
+    const row = page.locator(`tr:has(#allocationAmount_${seg.segId})`).first();
+    const cb = row.locator('input[name="segmentsToAllocate"]').first();
+    if (await cb.count()) await cb.check();
+
+    const box = page.locator(`#allocationAmount_${seg.segId}`);
+    if (await box.count()) {
+      // Ticking usually auto-fills the segment's full due. Wait for the box to
+      // actually come alive before touching it, rather than racing the handler.
+      await box.waitFor({ state: "visible", timeout: 10000 }).catch(() => {});
+      const live = await box.isEditable().catch(() => false);
+      if (!live) {
+        throw new Error(
+          `Allocation box for segment ${seg.segId} never became editable — ` +
+          `ticking its row did not enable it.`
+        );
+      }
+
+      // REAL KEYSTROKES, then read back. setFieldWithEvents (native setter +
+      // events) is what the rest of this file uses, and it is what the
+      // bank-statement form silently discarded on submit. On an allocation
+      // amount a dropped value means money against the wrong segment, or none.
+      //
+      // Triple-click to select what ticking auto-filled, NOT Control+A — that
+      // is Cmd+A on a Mac, so the selection would not happen and the typed
+      // amount would land next to the full due already sitting there. Verified
+      // live on booking 13127: tick → box holds 200.00 → triple-click, type
+      // 150.00, Tab → box holds 150.00 and the footer tally follows it.
+      await box.click({ clickCount: 3 });
+      await box.pressSequentially(String(a.amount), { delay: 30 });
+      await box.press("Tab").catch(() => {});
+      await sleep(300);
+      const got = await box.inputValue().catch(() => "");
+      if (parseFloat(got || "0").toFixed(2) !== parseFloat(String(a.amount)).toFixed(2)) {
+        throw new Error(
+          `Tramada didn't keep the allocation ${a.amount} on segment ${seg.segId} (it reads "${got}").`
+        );
+      }
+    }
+  }
+}
+
+// Read back the top REAL receipt row after issuing — skips "No records found"
+// and TOTALS rows; only a row whose Receipt No. looks like "R.000..." counts.
+async function readLatestReceipt(page) {
+  return await page.evaluate(() => {
+    const clean = (el) => (el && el.textContent ? el.textContent.trim() : "");
+    const tables = document.querySelectorAll("table");
+    for (const table of tables) {
+      const header = table.querySelector("tr");
+      if (header && /Receipt\s*No/i.test(header.textContent)) {
+        const rows = table.querySelectorAll("tr");
+        let row = null;
+        for (let i = 1; i < rows.length; i++) {
+          const cells = rows[i].querySelectorAll("td");
+          if (cells.length >= 9 && /^R\./i.test((cells[1].textContent || "").trim())) {
+            row = rows[i];
+            break;
+          }
+        }
+        if (!row) return null;
+        const c = row.querySelectorAll("td");
+        return {
+          receiptNo: clean(c[1]),
+          receiptCategory: clean(c[2]),
+          receiptType: clean(c[3]),
+          transType: clean(c[4]),
+          receivedFrom: clean(c[5]),
+          reference: clean(c[6]),
+          dateReceived: clean(c[7]),
+          amount: clean(c[8]),
+          allocated: clean(c[9]),
+        };
+      }
+    }
+    return null;
+  });
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Orchestrator
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Create (and optionally issue) a receipt against an existing booking.
+ *
+ * @param {object} args
+ * @param {string} [args.username] / [args.password]  Only used if the shared
+ *        Chrome session is NOT already logged in (avoids re-triggering OTP).
+ * @param {string|number} args.bookingNo   Booking to receipt against (req 5:
+ *        if you don't have one, call searchBookingsForReceipt first and let the
+ *        user pick).
+ * @param {object} args.receipt
+ *        {
+ *          transactionType: "Cash"|"EFT"|"Cheque"|"Credit Card"|"Credit Card Swipe",
+ *          amount: number|string,
+ *          reference: string,             // REQUIRED (req 6)
+ *          dateReceived?: "YYYY-MM-DD",   // defaults today
+ *          payerName?: string,            // defaults to booking client name (req: always client name)
+ *          allocation?: "ALL" | [{segId|index, amount}],   // req 3
+ *          card?: { number, type, holder, expiry, creditor?, authNumber? } // req 4, credit card only
+ *        }
+ * @param {boolean} [args.dryRun=false]  When true: fill the form and capture a
+ *        preview screenshot but DO NOT click Issue (nothing is committed, and
+ *        for credit cards the card popup is skipped so no card is created).
+ *        Use this to show the user a confirmation before committing.
+ * @param {object} [args.callbacks] { onProgress(pct,msg), onError(msg) }
+ * @returns {Promise<{details, segments, staged, receipt?, previewImage?}>}
+ */
+async function runTramadaReceipt({
+  username,
+  password,
+  bookingNo,
+  receipt = {},
+  dryRun = false,
+  skipIfNoAllocatable = false, // return {skipped:true} instead of throwing when
+                               // the receipt form has nothing to allocate
+  callbacks = {},
+} = {}) {
+  const onProgress = callbacks.onProgress || (() => {});
+  const onError = callbacks.onError || (() => {});
+
+  if (!bookingNo) throw new Error("bookingNo is required (resolve or ask the user first).");
+  if (!receipt.reference) throw new Error("receipt.reference is required.");
+  if (receipt.amount == null || receipt.amount === "") {
+    throw new Error("receipt.amount is required.");
+  }
+
+  const txnCode = resolveTxnType(receipt.transactionType);
+  if (isCreditCard(txnCode) && !dryRun && !receipt.card) {
+    throw new Error("Credit card receipt requires receipt.card { number, type, holder, expiry }.");
+  }
+
+  let browser, context, page, launched = false;
+  let _ok = false;
+  try {
+    ({ browser, launched } = await openBrowser(onProgress));
+    context = browser.contexts()[0] || (await browser.newContext());
+    page = await context.newPage();
+
+    onProgress(12, "Checking Tramada session...");
+    await ensureLoggedIn(page, { username, password, onNeedLogin: callbacks.onNeedLogin });
+
+    onProgress(25, `Opening booking ${bookingNo}...`);
+    const details = await getBookingDetails(page, bookingNo);
+
+    onProgress(35, "Checking itinerary segments...");
+    const itin = await getItinerarySegments(page, bookingNo);
+    if (!itin || itin.length === 0) {
+      throw new Error(
+        `Booking ${bookingNo} has no itinerary segment. Create (and cost) an ` +
+          `itinerary segment before raising a receipt.`
+      );
+    }
+
+    // Payer Name always = booking client name unless explicitly overridden.
+    const payerName = receipt.payerName || details.payerName || details.clientName || "";
+
+    onProgress(50, `Preparing ${dryRun ? "receipt preview" : "receipt"}...`);
+    const { segments } = await openReceiptForm(page, bookingNo, {
+      ...receipt,
+      payerName,
+    });
+
+    // Credit card entry only on real commit (a card is a real side effect;
+    // dryRun skips it so a preview never creates a card).
+    if (isCreditCard(txnCode) && !dryRun) {
+      onProgress(60, "Entering new booking credit card...");
+      await enterNewBookingCard(page, receipt.card);
+    }
+
+    // Nothing to allocate (booking already fully paid / no outstanding balance).
+    // With skipIfNoAllocatable, return a clean skip instead of throwing.
+    if ((!segments || segments.length === 0) && skipIfNoAllocatable) {
+      onProgress(100, `Nothing outstanding to allocate on booking ${bookingNo} — no receipt raised.`);
+      _ok = true;
+      return { details, itinerary: itin, segments: [], skipped: true, reason: "nothing to allocate", committed: false };
+    }
+
+    onProgress(70, "Allocating to segment(s)...");
+    await allocateSegments(page, receipt.allocation || "ALL", segments);
+    await sleep(400);
+
+    const staged = {
+      bookingNo: String(bookingNo),
+      transactionType: txnCode,
+      payerName,
+      amount: String(receipt.amount),
+      reference: String(receipt.reference),
+      dateReceived: toTramadaDate(receipt.dateReceived),
+      allocation: receipt.allocation || "ALL",
+      segments,
+    };
+
+    if (dryRun) {
+      onProgress(90, "Preview ready — awaiting confirmation (not committed).");
+      let previewImage = null;
+      try {
+        previewImage = await page.screenshot({ encoding: "base64", fullPage: true });
+      } catch { /* screenshot optional */ }
+      onProgress(100, "Preview ready.");
+      _ok = true;
+      return { details, itinerary: itin, segments, staged, previewImage, committed: false };
+    }
+
+    onProgress(85, "Issuing receipt...");
+    // Real click on Issue, then WAIT for a definitive outcome: back on the
+    // receipts list (success), a Tramada error page, or on-form validation
+    // errors. A fixed sleep raced the server and produced false successes.
+    await page.click("#issue");
+    for (let i = 0; i < 25; i++) {
+      await sleep(600);
+      const url = page.url();
+      if (/booking-receipts\.htm/i.test(url)) break; // back on the list → issued
+      const title = (await page.title().catch(() => "")) || "";
+      if (/error page/i.test(title)) {
+        throw new Error("Tramada returned a server error page after Issue.");
+      }
+      const errs = await page.evaluate(() => {
+        const out = [];
+        document.querySelectorAll("a, span, li, font, div").forEach((n) => {
+          if (n.children.length) return;
+          const t = (n.textContent || "").trim();
+          if (t && t.length < 200 && /must be|is required|is invalid|cannot be/i.test(t)) out.push(t);
+        });
+        return [...new Set(out)].slice(0, 8);
+      }).catch(() => []);
+      if (errs.length) throw new Error(`Receipt rejected: ${errs.join("; ")}`);
+      if (i === 8) { try { await page.click("#issue", { timeout: 3000 }); } catch { /* busy */ } }
+    }
+
+    // Land on the Booking Receipts list and read back the new receipt.
+    if (!page.url().includes("booking-receipts")) {
+      await page.goto(
+        `${TRAMADA_BASE_URL}/booking/booking-receipts.htm?mode=edit&id=${encodeURIComponent(bookingNo)}`,
+        { waitUntil: "domcontentloaded" }
+      );
+      await sleep(800);
+    }
+    const issued = await readLatestReceipt(page);
+
+    // STRICT: success means a real receipt number (R.000...) in the list —
+    // anything else is a failure, never a silent "Receipt issued."
+    if (!issued || !/^R\./i.test(issued.receiptNo || "")) {
+      try { await page.screenshot({ path: "last-error.png", fullPage: true }); } catch { /* best-effort */ }
+      throw new Error(
+        "Receipt was NOT created — the receipts list shows no new receipt. [screenshot: last-error.png]"
+      );
+    }
+
+    onProgress(100, `Receipt ${issued.receiptNo} issued.`);
+    _ok = true;
+    return { details, itinerary: itin, segments, staged, receipt: issued, committed: true };
+  } catch (err) {
+    onError(err.message);
+    throw err;
+  } finally {
+    try {
+      // On failure leave the tab open (failed form stays inspectable).
+      if (page && _ok) await page.close();
+    } catch { /* tab may be closed */ }
+    try {
+      if (browser) await browser.close(); // CDP: only drops the connection
+    } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Convenience wrapper for the "no booking number" branch (req 5):
+ * open a search, return the list for the chat to display.
+ */
+async function searchBookingsForReceipt({ username, password, status, clientName, bookingNo } = {}) {
+  let browser, page;
+  try {
+    ({ browser } = await openBrowser(() => {}));
+    const context = browser.contexts()[0] || (await browser.newContext());
+    page = await context.newPage();
+    await ensureLoggedIn(page, { username, password });
+    return await searchBookings(page, { status, clientName, bookingNo });
+  } finally {
+    try { if (page) await page.close(); } catch {}
+    try { if (browser) await browser.close(); } catch {}
+  }
+}
+
+module.exports = {
+  runTramadaReceipt,
+  searchBookingsForReceipt,
+  // exported for reuse/testing
+  toTramadaDate,
+  resolveTxnType,
+  TXN_TYPE,
+};

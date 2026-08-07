@@ -1,0 +1,26 @@
+{
+  "name": "bank-reconciliation-automation",
+  "version": "1.0.0",
+  "private": true,
+  "description": "RAA Travel bank reconciliation — BPay receipts and Mint daily settlements, filed and checked against a Tramada statement page",
+  "main": "server.js",
+  "scripts": {
+    "start": "CDP_MODE=external node server.js",
+    "dev": "CDP_MODE=external DEBUG=true node --watch server.js",
+    "start:chrome": "./start-chrome.sh",
+    "build": "node build-recon.js",
+    "test": "node test-xlsx-lite.js && node test-statement-csv.js && node test-recon-core.js",
+    "test:core": "node test-recon-core.js",
+    "test:xlsx": "node test-xlsx-lite.js",
+    "shots": "node shot-recon.js && node shot-recon-run.js && node shot-mint-run.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.0",
+    "express": "^4.21.0",
+    "playwright": "^1.58.2",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

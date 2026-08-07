@@ -1,0 +1,937 @@
+<!--@CSS-->
+/* ── The top bar is hidden ──
+   The mockup's header carried the app switcher (Chat / Bank statements), the
+   screen title and a statement chip. This project is one page, so the switcher
+   has nothing to switch to and the title only repeats the heading below it.
+
+   Hidden rather than deleted: it is the client's markup, and a future mockup
+   will still ship it. The one thing on it worth keeping — which statement page
+   a finished run created — moves into the inbox's own lede. */
+header.top { display: none !important }
+
+<!--@SCRIPT-->
+<!-- ══════════════════════════════════════════════════════════════════════
+     LIVE WIRING
+
+     Everything above this point is recon-ui-mockup.html exactly as designed,
+     demo data and all. This block does not restyle any of it — it takes the
+     Sources screen's controls and the Reconciliation inbox's table and points
+     them at the real run, leaving the look untouched.
+
+     Screens this does NOT wire — Run overview, Auto-coding, Exceptions, Agent
+     performance, Rules & aliases — keep the mockup's sample figures, and each
+     gets a small "sample data" marker so nobody reads 489 lines or 87% as
+     something this system measured.
+
+     The rules all live server-side in recon-core.js. This file shows things.
+     ══════════════════════════════════════════════════════════════════════ -->
+<script>
+(function () {
+  const $ = (s, r) => (r || document).querySelector(s);
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  /* ── two reports, one run ──
+     BPay receipts and the Mint daily settlement are different files with
+     different columns that do different things: BPay files receipts and then
+     reconciles them, Mint files nothing and only looks its references up.
+
+     A run creates its own statement page, so only ONE report can run at a time
+     — loading both would mean two pages for one day, or a silent choice about
+     which of them the page belongs to. Both cards can hold a file; Start run
+     refuses while both are loaded and says why. */
+  const SOURCES = {
+    bpay: {
+      title: 'BPay receipts CSV',
+      blurb: 'The day\'s statement lines. Each row becomes a receipt against its booking, '
+           + 'then gets looked for on the new reconciliation page.',
+      accept: '.csv,text/csv',
+      columns: 'Date, Reference, Rec/Pay Type, Amount, Booking No',
+    },
+    mint: {
+      title: 'Mint daily settlement',
+      blurb: 'Settlements Tramada already holds. Nothing is filed — the run creates the '
+           + 'statement page and checks each transaction reference reached it.',
+      // Either container. The server reads a zip as a workbook and anything
+      // else as text; the card never decides from the file's name.
+      accept: '.xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      columns: 'Transaction Reference, Amount, To Company — .xlsx or .csv',
+    },
+  };
+
+  const source = { bpay: null, mint: null };   // each: { file, rows, previewOpen, note }
+  let active = null;                            // 'bpay' | 'mint' — which one a run would use
+  let rows = [];        // the active source's rows
+  let results = [];     // what the run made of them
+  let running = false;
+  let ws = null;
+
+  const loaded = () => Object.keys(source).filter((k) => source[k]);
+  const kindOf = () => active || loaded()[0] || null;
+
+  /* A run is minutes long — the receipt form alone is several page loads per
+     row — and until this was here the screen showed "running" badges and then
+     nothing at all until it finished. That is indistinguishable from broken,
+     and it hid the one message that needs acting on: the sign-in prompt.
+
+     `stopped` is held rather than written straight into the lede because
+     render() rewrites the lede, so a message set outside it lived until the
+     next repaint and then vanished. */
+  let activity = [];    // newest first, what the server said it was doing
+  let stopped = null;   // the error that ended the run, if one did
+  let needLogin = null; // set while a run is waiting for a human to sign in
+  let statementPage = null; // the page a finished run created — the header that
+                            // used to show it is hidden in this project
+
+  /* ── the CSV ──
+     Parsed here only to SHOW what will be filed. The server re-parses it with
+     recon-core.js, which node tests, so there is one authority on what a row
+     means and it is not this file. */
+  function splitLine(line) {
+    const out = []; let cur = '', q = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (q) { if (ch === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+      else if (ch === '"') q = true;
+      else if (ch === ',') { out.push(cur); cur = ''; }
+      else cur += ch;
+    }
+    out.push(cur);
+    return out.map((x) => x.trim());
+  }
+
+  // By header NAME, never position — the file is hand-editable and an inserted
+  // column would otherwise shift every amount while each row still looked fine.
+  const COLS = {
+    date: ['date'], reference: ['reference', 'reference number', 'ref'],
+    recPayType: ['rec/pay type', 'recpaytype', 'payment type', 'type'],
+    amount: ['amount'],
+    bookingNo: ['booking no', 'booking number', 'bookingno', 'booking reference', 'booking'],
+  };
+
+  function parseCsv(text) {
+    const lines = String(text || '').split(/\r?\n/).filter((l) => l.trim() !== '');
+    if (!lines.length) return { rows: [], error: 'that file is empty' };
+    const head = splitLine(lines[0]).map((h) => h.toLowerCase());
+    const col = {};
+    for (const [k, names] of Object.entries(COLS)) col[k] = head.findIndex((h) => names.includes(h));
+    const missing = Object.entries(col).filter(([, i]) => i < 0).map(([k]) => k);
+    if (missing.length) return { rows: [], error: 'the header is missing: ' + missing.join(', ') };
+    const out = [], bad = [];
+    for (let i = 1; i < lines.length; i++) {
+      const f = splitLine(lines[i]);
+      const r = {
+        date: f[col.date] || '', reference: f[col.reference] || '',
+        recPayType: f[col.recPayType] || '', amount: f[col.amount] || '',
+        bookingNo: f[col.bookingNo] || '',
+      };
+      if (!r.reference || !r.bookingNo || !/^\$?-?[\d,]+(\.\d+)?$/.test(r.amount)) bad.push(i + 1);
+      else out.push(r);
+    }
+    return { rows: out, bad };
+  }
+
+  /* ── the Sources screen ── */
+  function mountSources() {
+    const host = $('#s-sources .page-h');
+    if (!host) return;
+
+    // The mockup's statement-date <select> holds three invented dates. Replace
+    // it with a real field, plus the two balances Tramada makes optional on the
+    // new-statement form — which is exactly why they have to be asked for.
+    const old = $('#stmtDate');
+    if (old) {
+      const d = new Date(Date.now() + 864e5);
+      const dmy = `${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}`;
+      const box = document.createElement('div');
+      box.style.cssText = 'display:flex;gap:10px;align-items:flex-end';
+      box.innerHTML =
+        '<div><label class="field-lbl" style="margin:0 0 3px;display:block">Statement date</label>' +
+        '<input class="btn" id="rcDate" style="width:130px" value="' + dmy + '"></div>' +
+        '<div><label class="field-lbl" style="margin:0 0 3px;display:block">Opening balance</label>' +
+        '<input class="btn" id="rcOpening" style="width:130px" placeholder="0.00"></div>' +
+        '<div><label class="field-lbl" style="margin:0 0 3px;display:block">Closing balance</label>' +
+        '<input class="btn" id="rcClosing" style="width:130px" placeholder="0.00"></div>';
+      old.replaceWith(box);
+      // The card quotes the balances back, so it has to hear about them being
+      // typed. Redrawing the card cannot steal focus from these — they live
+      // in the page header, outside #tileGrid.
+      ['#rcDate', '#rcOpening', '#rcClosing'].forEach((sel) => {
+        const el = $(sel);
+        if (el) el.oninput = () => { if (loaded().length) renderSource(); };
+      });
+    }
+
+    const note = $('#readyNote');
+    if (note) {
+      note.querySelector('div').innerHTML =
+        '<b>Drop the statement CSV in.</b> Start run files the receipts in Tramada immediately — ' +
+        'the preview below is the only check before it does.';
+    }
+
+    renderSource();
+
+    // Plain handlers. These used to be attached to CLONES of the button and the
+    // file input, to strip the mockup's own listeners off them — which never
+    // worked, because the mockup listens on `document`, not on the node. The
+    // mockup's script is disabled at build time now, so there is nothing left
+    // to fight and nothing to clone.
+    const run = $('#startRun');
+    if (run) { run.onclick = start; run.disabled = true; }
+    // Which card asked is remembered by openPicker — the file's own name and
+    // contents never decide which parser it goes to.
+    const picker = $('#filePicker');
+    if (picker) picker.onchange = (e) => load(e.target.files[0], pickerFor);
+    // The "Filing as a new source type…" wizard belongs to the demo's detector.
+    const detect = $('#detectPanel');
+    if (detect) detect.style.display = 'none';
+
+    // The mockup labels its statement-date <select> separately; the replacement
+    // brings its own labels, so the original would sit there twice.
+    const ph = $('#s-sources .page-h');
+    for (const l of [...ph.children]) {
+      // Direct children only — the replacement's own labels are nested inside
+      // its box, so this drops the mockup's stray one without touching them.
+      if (l.tagName === 'LABEL' && /statement date/i.test(l.textContent)) l.remove();
+    }
+  }
+
+  /* ── the source card ──
+     The design shows the uploaded report as a `.dz` tile — name, badge, the
+     file's own facts, a green result line and its actions. The demo built one
+     of these per invented stream; this builds the one that is real, in the same
+     markup, from the file actually dropped in. Losing it when the demo script
+     was switched off left the screen with nothing to show for an upload but a
+     line of text.
+
+     Everything on it is measured: row count, size on disk, the balances typed
+     above, the money the run is about to receipt.
+
+     The titles are fixed LABELS — the client's names for these two files, not
+     detections. A card never works out what was dropped on it; that was the
+     demo's detector, and it is the thing that turned one CSV into five. Each
+     card takes its own file and reads it with its own parser, and a file whose
+     columns are wrong is refused by name rather than reinterpreted. */
+  const kb = (bytes) => (bytes < 1024 ? bytes + ' B' : Math.round(bytes / 1024) + ' KB');
+
+  // The design writes money as $1,300,000.00. Typed input arrives as "12500.00"
+  // and reads as a different order of magnitude without the separators.
+  function dollars(v) {
+    const n = parseFloat(String(v == null ? '' : v).replace(/[$,\s]/g, ''));
+    if (!isFinite(n)) return String(v || '');
+    return '$' + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+
+  function sourceStats(kind) {
+    const s = source[kind];
+    const rs = (s && s.rows) || [];
+    const total = rs.reduce((sum, r) => {
+      const n = parseFloat(String(r.amount).replace(/[$,\s]/g, ''));
+      return sum + (isFinite(n) ? n : 0);
+    }, 0);
+    if (kind === 'mint') {
+      const companies = new Set(rs.map((r) => r.toCompany).filter(Boolean));
+      return rs.length + ' reference' + (rs.length === 1 ? '' : 's') +
+        ' · ' + companies.size + ' compan' + (companies.size === 1 ? 'y' : 'ies') +
+        ' · ' + dollars(total.toFixed(2)) + ' settled';
+    }
+    const bookings = new Set(rs.map((r) => r.bookingNo).filter(Boolean));
+    return rs.length + ' reference' + (rs.length === 1 ? '' : 's') +
+      ' · ' + bookings.size + ' booking' + (bookings.size === 1 ? '' : 's') +
+      ' · ' + dollars(total.toFixed(2)) + ' to receipt';
+  }
+
+  function renderSource() {
+    const grid = $('#tileGrid');
+    if (!grid) return;
+    const op = ($('#rcOpening') || {}).value, cl = ($('#rcClosing') || {}).value;
+    const balances = op && cl ? ' · opening ' + dollars(op) + ' → closing ' + dollars(cl) : '';
+
+    grid.innerHTML = Object.keys(SOURCES).map((kind) => {
+      const def = SOURCES[kind];
+      const s = source[kind];
+      const head = '<h4>' + def.title + ' ';
+
+      if (!s) {
+        return '<div class="dz" data-kind="' + kind + '"><div class="di">⇪</div><div style="flex:1">' +
+          head + '<span class="badge b-mute">not uploaded</span></h4>' +
+          '<p>' + def.blurb + '</p>' +
+          '<span class="file">' + def.columns + '</span>' +
+          '<div class="muted rc-hint" data-hint="' + kind + '" style="margin-top:8px"></div>' +
+          '<div class="actions"><button class="btn sm indigo" data-choose="' + kind + '">Choose file</button></div>' +
+          '</div></div>';
+      }
+
+      const isActive = kindOf() === kind;
+      const state = !isActive ? '<span class="badge b-mute">loaded</span>'
+        : running ? '<span class="badge b-ai">running…</span>'
+        : results.some((r) => (r.reconciliation && r.reconciliation !== 'Pending') || (r.allocation && r.allocation !== 'Pending'))
+          ? '<span class="badge b-ok">processed</span>'
+          : '<span class="badge b-warn">not run yet</span>';
+
+      // An open preview takes the full width. In a shared column the company
+      // names wrap to five lines each and the table is unreadable — which
+      // defeats the point of a preview being the check before a run.
+      return '<div class="dz done" data-kind="' + kind + '"' +
+        (s.previewOpen ? ' style="grid-column:1/-1"' : '') + '>' +
+        '<div class="di">' + (isActive && running ? '◐' : '✓') + '</div><div style="flex:1">' +
+        head + state + '</h4>' +
+        '<p>' + def.blurb + '</p>' +
+        '<span class="file">' + esc(s.file.name) + ' · ' + s.rows.length + ' row' +
+        (s.rows.length === 1 ? '' : 's') + ' · ' + kb(s.file.size) + esc(balances) + '</span>' +
+        '<span class="result">✓ ' + sourceStats(kind) + '</span>' +
+        '<div class="muted rc-hint" data-hint="' + kind + '" style="margin-top:8px"></div>' +
+        '<div class="actions">' +
+        '<button class="btn sm" data-go="inbox">View rows</button>' +
+        '<button class="btn sm ghost" data-preview="' + kind + '">' +
+        (s.previewOpen ? 'Hide preview' : 'Preview') + '</button>' +
+        '<button class="btn sm ghost" data-choose="' + kind + '">Replace file</button>' +
+        '<button class="btn sm ghost" data-clear="' + kind + '">Remove</button>' +
+        '</div>' +
+        (s.previewOpen ? previewTable(kind) : '') +
+        '</div></div>';
+    }).join('');
+
+    // A run makes its own statement page, so it can only ever be one report.
+    if (loaded().length > 1) {
+      grid.insertAdjacentHTML('beforeend',
+        '<div class="note" style="grid-column:1/-1;padding:10px 14px;border-radius:10px;' +
+        'background:#FFF6D6;border:1px solid #E8D48A;color:#6B5300;font-size:13px">' +
+        '<b>Two reports are loaded.</b> A run creates its own statement page, so it can only ' +
+        'run one of them — remove the one you are not running.</div>');
+    }
+
+    grid.querySelectorAll('[data-choose]').forEach((b) => {
+      b.onclick = () => openPicker(b.dataset.choose);
+    });
+    grid.querySelectorAll('[data-preview]').forEach((b) => {
+      b.onclick = () => {
+        const s = source[b.dataset.preview];
+        if (s) { s.previewOpen = !s.previewOpen; renderSource(); }
+      };
+    });
+    grid.querySelectorAll('[data-clear]').forEach((b) => {
+      b.onclick = () => {
+        source[b.dataset.clear] = null;
+        if (active === b.dataset.clear) active = null;
+        syncActive();
+        render();
+      };
+    });
+
+    // Drop on a tile loads THAT tile's report — the card decides the parser,
+    // never the file's contents.
+    grid.querySelectorAll('.dz[data-kind]').forEach((dz) => {
+      ['dragenter', 'dragover'].forEach((e) => dz.addEventListener(e, (ev) => {
+        ev.preventDefault(); dz.style.outline = '2px dashed var(--indigo)';
+      }));
+      ['dragleave', 'drop'].forEach((e) => dz.addEventListener(e, (ev) => {
+        ev.preventDefault(); dz.style.outline = '';
+      }));
+      dz.addEventListener('drop', (ev) => load(ev.dataTransfer.files[0], dz.dataset.kind));
+    });
+  }
+
+  function hint(kind, html) {
+    const h = document.querySelector('.rc-hint[data-hint="' + kind + '"]');
+    if (h) h.innerHTML = html;
+  }
+
+  /* One <input type=file>, retargeted per card. Two inputs would mean two
+     places for the mockup's markup to change under us. */
+  let pickerFor = null;
+  function openPicker(kind) {
+    const picker = $('#filePicker');
+    if (!picker) return;
+    pickerFor = kind;
+    picker.value = '';
+    picker.setAttribute('accept', SOURCES[kind].accept);
+    picker.click();
+  }
+
+  /* The readyNote promises "the preview below is the only check before it
+     does" — before this there was no preview to be the check. */
+  function previewTable(kind) {
+    const rs = (source[kind] && source[kind].rows) || [];
+    const head = kind === 'mint'
+      ? '<th>Transaction reference</th><th>To company</th><th class="num">Amount</th>'
+      : '<th>Date</th><th>Reference</th><th>Rec/Pay type</th><th class="num">Amount</th><th>Booking</th>';
+    const body = rs.map((r) => kind === 'mint'
+      ? '<tr><td class="mono">' + esc(r.transNo) + '</td><td>' + esc(r.toCompany) + '</td>' +
+        '<td class="num">' + esc(r.amount) + '</td></tr>'
+      : '<tr><td>' + esc(r.date) + '</td><td class="mono">' + esc(r.reference) + '</td>' +
+        '<td>' + esc(r.recPayType) + '</td><td class="num">' + esc(r.amount) + '</td>' +
+        '<td class="mono">' + esc(r.bookingNo) + '</td></tr>').join('');
+    return '<div class="tbl-wrap" style="margin-top:12px"><table><thead><tr>' + head +
+      '</tr></thead><tbody>' + body + '</tbody></table></div>';
+  }
+
+  /* `active` is whichever single report is loaded. With none or with two there
+     is nothing to run, and results belong to no one. */
+  function syncActive() {
+    const on = loaded();
+    active = on.length === 1 ? on[0] : null;
+    const s = active ? source[active] : null;
+    rows = s ? s.rows : [];
+    if (!s) results = [];
+    const run = $('#startRun');
+    if (run) run.disabled = !s || running;
+  }
+
+  function accept(kind, file, parsed, skipped) {
+    source[kind] = { file: { name: file.name, size: file.size }, rows: parsed, previewOpen: false };
+    active = kind;
+    syncActive();
+    results = parsed.map((x, i) => (kind === 'mint'
+      ? { ...x, n: i + 1, reconciliation: 'Pending' }
+      : { ...x, n: i + 1, allocation: 'Pending', reconciliation: 'Pending' }));
+    // render() rebuilds the cards, so the hint has to be written after it — the
+    // element it goes in does not exist until then.
+    render();
+    // Skipped rows are said out loud. A quietly shortened file reads as "that
+    // was all there was".
+    if (skipped && skipped.length) {
+      hint(kind, '<span style="color:var(--warn,#8a6d00)">Skipped ' +
+        (skipped.length === 1 ? 'line ' : 'lines ') + skipped.join(', ') + ' — ' +
+        (kind === 'mint' ? 'missing a transaction reference or amount.'
+                         : 'missing a reference, booking number or amount.') + '</span>');
+    }
+  }
+
+  function reject(kind, name, why) {
+    // A file that cannot be read leaves no card behind claiming otherwise.
+    source[kind] = null;
+    if (active === kind) active = null;
+    syncActive();
+    render();
+    hint(kind, '<span style="color:var(--err)">' + esc(name) + ' — ' + esc(why) + '</span>');
+  }
+
+  function load(file, kind) {
+    if (!file || !kind) return;
+    const fr = new FileReader();
+
+    if (kind === 'mint') {
+      // The workbook goes to the server whole. `xlsx-lite` is node, and a
+      // second parser in the browser is a second thing to keep in agreement
+      // with the one the run actually uses.
+      fr.onload = () => {
+        const bytes = new Uint8Array(fr.result);
+        let bin = '';
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        if (!ws || ws.readyState !== 1) {
+          reject('mint', file.name, 'not connected to the server — is it still running?');
+          return;
+        }
+        hint('mint', 'Reading ' + esc(file.name) + '…');
+        pending.mint = { name: file.name, size: file.size };
+        ws.send(JSON.stringify({ type: 'recon_parse', source: 'mint', name: file.name, base64: btoa(bin) }));
+      };
+      fr.readAsArrayBuffer(file);
+      return;
+    }
+
+    fr.onload = () => {
+      const { rows: r, error, bad } = parseCsv(fr.result);
+      if (error) { reject(kind, file.name, error); return; }
+      accept(kind, file, r, bad);
+    };
+    fr.readAsText(file);
+  }
+
+  const pending = {};   // files sent to the server and not yet answered for
+
+  /* ── results, in the mockup's own table ── */
+  const badge = (v) => {
+    if (v === 'Allocated' || v === 'Reconciled') return '<span class="badge b-ok">' + v + '</span>';
+    if (v === 'Part allocated') return '<span class="badge b-warn">Part allocated</span>';
+    if (v === 'Not allocated' || v === 'Not reconciled') return '<span class="badge b-err">' + v + '</span>';
+    if (v === 'Running') return '<span class="badge b-ai">running</span>';
+    return '<span class="badge b-mute">' + esc(v || 'pending') + '</span>';
+  };
+  const dot = (r) =>
+    r.allocation === 'Allocated' && r.reconciliation === 'Reconciled' ? 'done'
+      : r.allocation === 'Not allocated' || r.reconciliation === 'Not reconciled' ? 'need' : 'rev';
+
+  let filter = 'all';
+  let search = '';
+
+  /* Each report gets its own chips. A Mint run allocates nothing, so offering
+     "Not allocated 0" beside its rows would be describing a step that never
+     happens. */
+  const FILTER_SETS = {
+    bpay: [
+      ['all', 'All rows', () => true],
+      ['need', 'Not allocated', (r) => r.allocation === 'Not allocated'],
+      ['part', 'Part allocated', (r) => r.allocation === 'Part allocated'],
+      ['notrec', 'Not reconciled', (r) => r.reconciliation === 'Not reconciled'],
+      ['done', 'Allocated & reconciled', (r) => r.allocation === 'Allocated' && r.reconciliation === 'Reconciled'],
+    ],
+    mint: [
+      ['all', 'All rows', () => true],
+      ['notrec', 'Not on the page', (r) => r.reconciliation === 'Not reconciled'],
+      ['diff', 'Check the difference', (r) => !!r.mismatch],
+      ['done', 'Reconciled', (r) => r.reconciliation === 'Reconciled'],
+    ],
+  };
+  const filters = () => FILTER_SETS[kindOf() === 'mint' ? 'mint' : 'bpay'];
+
+  // The search box searches what a person has in front of them: the reference
+  // they were given, the booking they are chasing, the receipt number they are
+  // checking against Tramada, the company a settlement went to.
+  const matchesSearch = (r) => !search ||
+    [r.reference, r.transNo, r.toCompany, r.bookingNo, r.receiptNo, r.amount, r.date]
+      .join(' ').toLowerCase().includes(search);
+
+  function render() {
+    const pane = $('#triagePane');
+    if (!pane) return;
+    const mint = kindOf() === 'mint';
+    const SET = filters();
+    if (!SET.some(([k]) => k === filter)) filter = 'all';    // chips differ per report
+
+    const tri = $('#inboxGrid .triage');
+    if (tri) {
+      tri.innerHTML = SET.map(([k, label, fn]) =>
+        '<button class="tri' + (filter === k ? ' on' : '') + '" data-f="' + k + '">' + label +
+        ' <span class="n">' + results.filter(fn).length + '</span></button>').join('') +
+        '<div class="spacer"></div><span class="badge ' + (running ? 'b-ai' : 'b-mute') +
+        '" style="margin-bottom:8px">' + (running ? '✦ live run' : results.length ? 'run finished' : 'no run yet') + '</span>';
+      tri.querySelectorAll('.tri').forEach((b) => { b.onclick = () => { filter = b.dataset.f; render(); }; });
+    }
+    const state = $('#ibState');
+    if (state) {
+      state.innerHTML = SET.map(([k, label]) =>
+        '<option value="' + k + '">' + (k === 'all' ? 'Any status' : label) + '</option>').join('');
+      state.value = filter;
+    }
+
+    const fn = (SET.find((f) => f[0] === filter) || SET[0])[2];
+    const shown = results.filter((r) => fn(r) && matchesSearch(r));
+    const head = mint
+      ? '<th style="width:16px"></th><th>Transaction</th><th class="num">Amount</th>' +
+        '<th>To company</th><th>Reconciled</th><th>Why</th>'
+      : '<th style="width:16px"></th><th>Statement line</th><th class="num">Amount</th>' +
+        '<th>Booking</th><th>Receipt</th><th>Allocation</th><th>Reconciled</th><th>Why</th>';
+    const cols = mint ? 6 : 8;
+    const body = shown.map((r) => mint
+      ? '<tr><td><span class="tdot ' + dot(r) + '"></span></td>' +
+        '<td><b class="ref">' + esc(r.transNo) + '</b></td>' +
+        '<td class="num">' + esc(r.amount) + '</td>' +
+        '<td>' + esc(r.toCompany || '') + '</td>' +
+        '<td>' + badge(r.reconciliation) + '</td>' +
+        '<td class="muted">' + esc(r.why || '') + '</td></tr>'
+      : '<tr><td><span class="tdot ' + dot(r) + '"></span></td>' +
+        '<td><b class="ref">' + esc(r.reference) + '</b><div class="muted">' + esc(r.date) + ' · ' + esc(r.recPayType) + '</div></td>' +
+        '<td class="num">' + esc(r.amount) + '</td>' +
+        '<td class="mono">' + esc(r.bookingNo) + '</td>' +
+        '<td class="mono">' + esc(r.receiptNo || '') + '</td>' +
+        '<td>' + badge(r.allocation) + '</td>' +
+        '<td>' + badge(r.reconciliation) + '</td>' +
+        '<td class="muted">' + esc(r.why || '') + '</td></tr>').join('');
+
+    pane.innerHTML = '<table><thead><tr>' + head + '</tr></thead><tbody>' +
+      (shown.length ? body
+        : '<tr><td colspan="' + cols + '" style="padding:26px;text-align:center" class="muted">' +
+          (results.length ? 'Nothing matches that filter.'
+            : loaded().length > 1 ? 'Two reports are loaded — remove one on Sources &amp; upload.'
+            : 'Load a report on Sources &amp; upload.') + '</td></tr>') +
+      '</tbody></table>';
+
+    const t = $('#ibTitle'), l = $('#ibLede'), a = $('#ibActions');
+    if (t) t.textContent = 'Reconciliation inbox';
+    if (l) {
+      const al = results.filter((r) => r.allocation === 'Allocated').length;
+      const rc = results.filter((r) => r.reconciliation === 'Reconciled').length;
+      const diff = results.filter((r) => r.mismatch).length;
+      const n = results.length;
+      const counts = n + ' row' + (n === 1 ? '' : 's') + ' · ' +
+        (mint ? rc + ' reconciled' + (diff ? ' · ' + diff + ' to check' : '')
+              : al + ' allocated · ' + rc + ' reconciled');
+      // The stop reason outranks the counts. It used to be written into this
+      // element directly and then wiped by the next render, so a failed run
+      // reported "0 allocated, 0 reconciled" and never said why.
+      //
+      // First sentence only. A Playwright message runs to a couple of hundred
+      // characters and set three lines of red across the top of the screen,
+      // repeating what the row's Why column and the activity rail already said.
+      // The mockup showed this in the top bar; that bar is hidden here, so the
+      // one fact on it worth keeping lands where the rows are.
+      const page = statementPage ? 'Statement page ' + statementPage + ' · ' : '';
+      l.textContent = stopped ? 'Stopped — ' + firstSentence(stopped) + ' · ' + page + counts
+        : n ? page + counts
+        : 'Upload a report on Sources & upload, then start the run.';
+      l.style.color = stopped ? 'var(--err)' : '';
+    }
+    const ran = results.some((r) => (r.allocation && r.allocation !== 'Pending') ||
+      (r.reconciliation && r.reconciliation !== 'Pending'));
+    if (a) a.innerHTML = '<button class="btn" id="rcExport"' + (ran ? '' : ' disabled') + '>Export working file</button>';
+    const ex = $('#rcExport'); if (ex) ex.onclick = exportCsv;
+
+    renderActivity();
+    renderSource();
+
+    /* The sidebar's inbox badge. It ships reading 27 — an invented number that
+       sat next to an empty table, and then next to a table with three rows in
+       it. It counts what actually needs a person: anything not both allocated
+       and reconciled. Nothing to chase, no badge. */
+    const pill = document.querySelector('.nav-item[data-go="inbox"] .pill-n');
+    if (pill) {
+      const need = results.filter((r) => mint
+        ? r.reconciliation !== 'Reconciled' || r.mismatch
+        : !(r.allocation === 'Allocated' && r.reconciliation === 'Reconciled')).length;
+      pill.textContent = String(need);
+      pill.style.display = need ? '' : 'none';
+    }
+  }
+
+  /* The run's own activity rail, in the mockup's 316px column and its own
+     card/timeline classes — the Run overview screen has one of these full of
+     invented lines, so this is the same object with real content in it. */
+  function renderActivity() {
+    const card = $('#rcActivity'), grid = $('#inboxGrid');
+    if (!card) return;
+    const show = running || activity.length > 0;
+    card.style.display = show ? '' : 'none';
+    // hideUnwired() collapsed the grid to one column because the mockup's
+    // right-hand panel was demo commentary. Give the column back now there is
+    // something real to put in it.
+    if (grid) grid.style.gridTemplateColumns = show ? '' : '1fr';
+    if (!show) return;
+
+    const banner = $('#rcLogin');
+    if (banner) {
+      banner.style.display = needLogin ? '' : 'none';
+      if (needLogin) banner.textContent = needLogin;
+    }
+    const live = $('#rcLive');
+    if (live) {
+      live.textContent = running ? 'live' : 'finished';
+      live.className = running ? 'badge b-ai' : 'badge b-mute';
+    }
+    const tl = $('#rcTl');
+    if (tl) {
+      tl.innerHTML = activity.map((e) =>
+        '<li><time>' + esc(e.at) + '</time><p' +
+        (e.ok === false ? ' style="color:var(--err)"' : '') + '>' + esc(e.message) + '</p></li>').join('');
+    }
+  }
+
+  function firstSentence(s) {
+    const t = String(s || '').trim();
+    const stop = t.search(/\.\s/);
+    const head = stop > 0 ? t.slice(0, stop + 1) : t;
+    return head.length > 120 ? head.slice(0, 117).trimEnd() + '…' : head;
+  }
+
+  function note(message, ok) {
+    const d = new Date();
+    activity.unshift({
+      at: String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'),
+      message, ok,
+    });
+    // A long run would otherwise grow this without limit; the tail is history,
+    // and the export carries the outcome that matters.
+    if (activity.length > 80) activity.length = 80;
+  }
+
+  /* ── navigation ──
+     The mockup's own script is switched off by build-recon.js (see the note
+     there), so the one piece of it the page genuinely needs is reimplemented
+     here: show one screen, light the matching sidebar item and rail button,
+     retitle the top bar. Same class names, same behaviour, no demo state. */
+  const TITLES = { overview: 'Run overview', sources: 'Sources & upload', inbox: 'Reconciliation inbox' };
+
+  function go(screen) {
+    document.querySelectorAll('.screen').forEach((s) => s.classList.toggle('on', s.id === 's-' + screen));
+    document.querySelectorAll('.nav-item').forEach((n) => n.classList.toggle('on', n.dataset.go === screen));
+    document.querySelectorAll('.rbtn').forEach((n) => n.classList.toggle('on', n.dataset.go === screen));
+    const t = document.getElementById('topTitle');
+    if (t && TITLES[screen]) t.textContent = TITLES[screen];
+    window.scrollTo({ top: 0 });
+  }
+
+  function mountNav() {
+    document.addEventListener('click', (e) => {
+      const t = e.target.closest('[data-go]');
+      if (!t) return;
+      e.preventDefault();
+      go(t.dataset.go);
+    });
+  }
+
+  /* ── the run ── */
+  function start() {
+    const kind = active;
+    const stop = (why) => { hint(kind || 'bpay', '<span style="color:var(--err)">' + why + '</span>'); go('sources'); };
+    if (running) return;
+    if (loaded().length > 1) {
+      go('sources');
+      return;                                   // the banner on the cards says why
+    }
+    if (!kind || !results.length) return;
+
+    const date = ($('#rcDate') || {}).value, op = ($('#rcOpening') || {}).value, cl = ($('#rcClosing') || {}).value;
+    if (!date || !op || !cl) {
+      stop('Statement date, opening balance and closing balance are all needed before a run.');
+      return;
+    }
+    if (!ws || ws.readyState !== 1) {
+      stop('Not connected to the server — is it still running?');
+      return;
+    }
+    running = true;
+    stopped = null;
+    needLogin = null;
+    statementPage = null;
+    activity = [];
+    $('#startRun').disabled = true;
+    // A Mint run allocates nothing, so its rows never carry an allocation. An
+    // empty Allocation column is honest; "Pending" forever is not.
+    results = results.map((r) => (kind === 'mint'
+      ? { ...r, reconciliation: 'Pending', mismatch: undefined, why: '' }
+      : { ...r, allocation: 'Running', reconciliation: 'Pending', receiptNo: '', why: '' }));
+    note('Run started — ' + SOURCES[kind].title + ', ' + results.length +
+      ' row' + (results.length === 1 ? '' : 's') + ', statement date ' + date + '.');
+    render();
+    go('inbox');
+    ws.send(JSON.stringify({
+      type: 'recon_run', source: kind, rows,
+      statementDate: date, openingBalance: op, closingBalance: cl,
+    }));
+  }
+
+  function message(m) {
+    if (m.type === 'recon_parsed') {
+      // The workbook came back from the server, read by the same parser the run
+      // will use. `pending` holds the file's own facts, which the server never
+      // saw and does not need to.
+      const kind = m.source || 'mint';
+      const f = pending[kind];
+      delete pending[kind];
+      if (m.error || !f) { reject(kind, m.name || 'that file', m.error || 'the answer arrived for a file I was not waiting on'); return; }
+      if (!m.rows || !m.rows.length) {
+        reject(kind, m.name, (m.problems && m.problems[0] && m.problems[0].why) || 'nothing in it could be checked');
+        return;
+      }
+      accept(kind, f, m.rows, (m.problems || []).map((p) => p.line));
+      return;
+    }
+    if (m.type === 'recon_row') {
+      const i = results.findIndex((r) => r.n === m.n);
+      if (i >= 0) results[i] = { ...results[i], ...m.row };
+      render();
+    } else if (m.type === 'recon_progress') {
+      // Was dropped on the floor. Every "opening the receipt form", "page 10
+      // created", "3 transactions showing after the filter" arrives here.
+      needLogin = null;
+      note(m.message, m.ok);
+      render();
+    } else if (m.type === 'recon_login') {
+      needLogin = m.message;
+      note(m.message, false);
+      render();
+    } else if (m.type === 'recon_done') {
+      running = false;
+      needLogin = null;
+      $('#startRun').disabled = false;
+      stopped = m.error || null;
+      if (m.error) {
+        // Rows the run never reached must not keep saying "Pending" as though
+        // a check were still coming, and must not be called "Not reconciled"
+        // either — nothing looked at them.
+        results = results.map((r) => ({
+          ...r,
+          allocation: r.allocation === 'Running' ? 'Not allocated' : r.allocation,
+          reconciliation: r.reconciliation === 'Pending' || r.reconciliation === 'Running'
+            ? 'Not checked' : r.reconciliation,
+          why: r.why || 'the run stopped before this row was reached',
+        }));
+        // The last progress line is usually this same message arriving from the
+        // row that failed. Saying it twice, in red, reads like two failures.
+        const last = (activity[0] || {}).message || '';
+        if (last.indexOf(firstSentence(m.error).replace(/…$/, '')) < 0) {
+          note('Run stopped: ' + m.error, false);
+        }
+      } else {
+        note('Run finished' + (m.pageNumber ? ' — reconciliation page ' + m.pageNumber + ' created.' : '.'), true);
+      }
+      if (m.pageNumber) statementPage = m.pageNumber;
+      render();
+    }
+  }
+
+  function exportCsv() {
+    const q = (v) => {
+      const s = v == null ? '' : String(v);
+      return /[",\n]/.test(s) || /^[\s+=@-]/.test(s) || /^0\d/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    // The working file carries the report's OWN columns. A Mint export with an
+    // empty Booking No and Allocation column reads as data that went missing.
+    const mint = kindOf() === 'mint';
+    const head = mint
+      ? ['Transaction Reference', 'Amount', 'To Company', 'Reconciled', 'Difference', 'Why']
+      : ['Date', 'Reference', 'Rec/Pay Type', 'Amount', 'Booking No', 'Receipt No', 'Allocation', 'Reconciled', 'Why'];
+    const line = (r) => (mint
+      ? [r.transNo, r.amount, r.toCompany, r.reconciliation, r.mismatch || '', r.why || '']
+      : [r.date, r.reference, r.recPayType, r.amount, r.bookingNo, r.receiptNo || '',
+         r.allocation, r.reconciliation, r.why || '']).map(q).join(',');
+    const csv = [head.join(',')].concat(results.map(line)).join('\n') + '\n';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = (mint ? 'mint' : 'bpay') + '-reconciliation-result.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  function connect() {
+    ws = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws');
+    ws.onmessage = (e) => { try { const d = JSON.parse(e.data); if (d.type && d.type.indexOf('recon_') === 0) message(d); } catch (_) {} };
+    // A dropped socket mid-run does not stop the run — it is server-side — so
+    // reconnect quietly rather than announcing a failure that hasn't happened.
+    ws.onclose = () => setTimeout(connect, 2000);
+  }
+
+  /* Sample-data markers. The unwired screens keep the mockup's invented
+     figures, and an invented figure sitting next to a real receipt is how a
+     demo becomes a misunderstanding. */
+  function markSamples() {
+    // Every screen except the two that are wired. Discovered, not listed —
+    // the mockup gains and loses screens, and a hard-coded list quietly
+    // stops tagging the ones that were added after it was written.
+    const WIRED = ['s-sources', 's-inbox'];
+    for (const sec of document.querySelectorAll('section.screen')) {
+      if (WIRED.includes(sec.id)) continue;
+      if (sec.querySelector('.sample-tag')) continue;
+      const h = sec.querySelector('.page-h');
+      if (h) {
+        const tag = document.createElement('span');
+        tag.className = 'badge b-mute sample-tag';
+        tag.style.cssText = 'margin-left:10px;align-self:center';
+        tag.textContent = 'sample data';
+        (h.querySelector('h2') || h).insertAdjacentElement('afterend', tag);
+        continue;
+      }
+      // No page header to hang a chip off — the run-overview screen opens
+      // straight onto its hero band. Tagging only screens that happen to have
+      // a .page-h is how the overview came to show $7.2m of invented balances
+      // with nothing saying so. A screen with no header gets a banner instead,
+      // so "unwired" always shows, whatever the mockup's internal shape.
+      const bar = document.createElement('div');
+      bar.className = 'sample-tag';
+      bar.dataset.rc = 'screen';
+      bar.style.cssText = 'margin:0 0 14px;padding:9px 14px;border-radius:10px;'
+        + 'background:#FFF6D6;border:1px solid #E8D48A;color:#6B5300;'
+        + 'font-size:13px;font-weight:600';
+      bar.textContent = 'Sample data — this screen is from the design mockup. '
+        + 'Nothing here comes from a run.';
+      sec.insertBefore(bar, sec.firstChild);
+    }
+
+    /* The sidebar's "Agent brain" card is on EVERY screen, including the two
+       real ones — "87% of lines coded without a human this week" and a
+       similarity search over 24 months, neither of which exists. Left plain it
+       is an invented statistic sitting beside real receipts, which is the whole
+       thing markSamples is for. The card stays, because it is the client's
+       design; it just stops presenting itself as measured. */
+    const brain = document.querySelector('.side .brain');
+    if (brain && !brain.querySelector('.sample-tag')) {
+      const tag = document.createElement('span');
+      tag.className = 'badge b-mute sample-tag';
+      tag.style.cssText = 'margin-top:8px;align-self:flex-start';
+      tag.textContent = 'sample';
+      brain.appendChild(tag);
+    }
+  }
+
+
+  /* The inbox screen's demo furniture.
+     Its right-hand explainer, the bulk-selection bar and the chase strip all
+     describe invented lines — PRIN-DXVVVW, $9,028.72, "Marina D was asked
+     about booking 118299". Beside six real receipts they do not read as a
+     mockup, they read as this run's findings. The look is untouched; these
+     specific panels are simply not shown until they have something real
+     behind them. */
+  function hideUnwired() {
+    const grid = document.getElementById('inboxGrid');
+    if (grid) {
+      // Everything after the results card is demo commentary.
+      [...grid.children].slice(1).forEach((n) => { n.style.display = 'none'; });
+      const card = grid.children[0];
+      if (card) {
+        [...card.children].forEach((n) => {
+          const t = (n.textContent || '');
+          if (/lines selected|was asked about booking/.test(t)) n.style.display = 'none';
+        });
+      }
+      grid.style.gridTemplateColumns = '1fr';
+
+      // …and the real thing takes its place. Same card and timeline classes the
+      // mockup's "Agent activity" panel uses, so it is the design's own object
+      // rather than a second style of panel bolted on beside it.
+      const act = document.createElement('div');
+      act.className = 'card';
+      act.id = 'rcActivity';
+      act.style.display = 'none';
+      act.innerHTML =
+        '<div class="card-h"><h3>Run activity</h3><div class="spacer"></div>' +
+        '<span class="badge b-ai" id="rcLive">live</span></div>' +
+        '<div class="card-b" style="padding-top:4px">' +
+        '<div id="rcLogin" style="display:none;margin-bottom:10px;padding:9px 12px;border-radius:9px;' +
+        'background:#FFF6D6;border:1px solid #E8D48A;color:#6B5300;font-size:12.5px;font-weight:600"></div>' +
+        '<ul class="tl" id="rcTl"></ul></div>';
+      grid.appendChild(act);
+    }
+    /* The inbox's filter row. Three of these describe things this run has no
+       concept of — a report type, a report date, a shop — and with the demo
+       script off they were simply dead controls sitting above real data. The
+       two that do mean something here are wired to the same filter set as the
+       chips above them. */
+    ['#ibReport', '#ibDate', '#ibShop'].forEach((sel) => {
+      const el = document.querySelector(sel);
+      if (el) el.style.display = 'none';
+    });
+    // NOT `state` — hideUnwired already has a `const state` for the top bar's
+    // "Agent running · step 3 of 4" chip, and a second one in the same scope is
+    // a SyntaxError that kills the whole wiring script on load.
+    const stateSel = document.getElementById('ibState');
+    if (stateSel) {
+      // The options themselves are rebuilt by render() — each report has its
+      // own set — so only the handler is attached here.
+      stateSel.onchange = () => { filter = stateSel.value; render(); };
+    }
+    const box = document.getElementById('ibSearch');
+    if (box) {
+      box.placeholder = 'Search reference, booking or receipt…';
+      box.oninput = () => { search = box.value.trim().toLowerCase(); render(); };
+    }
+
+    // "Ask the agent" is the demo's own assistant panel, and its script is off.
+    const fab = document.getElementById('askFab');
+    if (fab) fab.style.display = 'none';
+    const ask = document.getElementById('askPanel');
+    if (ask) ask.style.display = 'none';
+
+    // The header's statement chip, its "Agent running · step 3 of 4" state and
+    // its Pause / Re-run buttons all live in .top, which this project hides
+    // outright — nothing to neutralise.
+    // "Agent running · step 3 of 4", Pause and Re-run matching are not wired.
+    const state = document.querySelector('.top .runstate');
+    if (state) state.style.display = 'none';
+    document.querySelectorAll('.top .btn').forEach((b) => {
+      if (/pause|re-run/i.test(b.textContent || '')) b.style.display = 'none';
+    });
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    mountNav(); mountSources(); markSamples(); hideUnwired(); render(); connect();
+    /* Open on Sources & upload, not on Run overview.
+       The mockup ships with the overview marked `on`, which made sense when it
+       was one screen of a wider app. Here there is one job — put a report in and
+       run it — and the overview is the screen carrying the mockup's invented
+       figures, so landing there means the first thing anyone sees is sample
+       data. It is still in the nav, still marked as sample. */
+    go('sources');
+  });
+})();
+</script>

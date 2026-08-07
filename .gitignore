@@ -1,0 +1,5 @@
+node_modules/
+.env
+.jetstar-profile-cdp/
+created-bookings.json
+*.png

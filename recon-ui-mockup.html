@@ -1,0 +1,2948 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAA Travel · Reconciliation Agent — UI Mockup</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════
+   RAA brand tokens — sampled from www.raa.com.au theme CSS.
+   Brand typeface is National 2 Web (licensed); fallback stack below.
+
+   Interaction patterns informed by booke.ai:
+     /xero                → triage inbox (Need reaction / Under review),
+                            inline suggestion on every row, sticky selection
+                            bar with one-click Ask, reasoning + influential
+                            history, task threads, performance reporting
+     /auto-categorization → similarity search over historical coding,
+                            all fields treated with equal priority,
+                            automatic tax/GST treatment,
+                            coding driven by the consultant's comment,
+                            recurring work handled in bulk
+   ═══════════════════════════════════════════════════════════════ */
+:root{
+  --indigo:#130064; --indigo-700:#1d0f7a; --indigo-050:#eeecf6; --indigo-100:#ddd8ef;
+  --yellow:#ffe600; --yellow-dk:#e6cf00;
+  --blue:#00349f; --blue-lt:#d5e7f2;
+  --teal:#15909c; --sky:#89c6cc;
+  --purple:#7266a2; --purple-dk:#533f8c;
+  --maroon:#9f2241; --sand:#e8e2d3; --cream:#f9f7f4;
+
+  --ink:#1a1a26; --ink-2:#4d4d5c; --ink-3:#7b7b8a;
+  --line:#e2e2e8; --line-2:#eeeef2; --bg:#f5f5f8; --white:#fff;
+
+  --ok:#0f7a52; --ok-bg:#e7f4ee;
+  --warn:#a05a00; --warn-bg:#fdf1dd;
+  --err:#9f2241; --err-bg:#fbe9ed;
+
+  --r:10px; --shadow:0 1px 2px rgba(19,0,100,.05),0 6px 20px rgba(19,0,100,.055);
+  --font:"National 2 Web","National 2",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{font-family:var(--font);background:var(--bg);color:var(--ink);font-size:14px;line-height:1.45;-webkit-font-smoothing:antialiased}
+button,input,select{font:inherit}
+button{cursor:pointer}
+a{color:var(--blue);text-decoration:none}
+
+/* ─────────── Shell ─────────── */
+.app{display:grid;grid-template-columns:52px 228px 1fr;min-height:100vh}
+.rail{background:var(--indigo-700);display:flex;flex-direction:column;align-items:center;gap:4px;padding:14px 0;position:sticky;top:0;height:100vh}
+.rail .rmark{width:30px;height:30px;border-radius:8px;background:var(--yellow);display:grid;place-items:center;font-size:10px;font-weight:800;color:var(--indigo);letter-spacing:-.03em;margin-bottom:10px}
+.rbtn{width:34px;height:34px;border-radius:8px;border:0;background:none;color:#a99fd6;font-size:15px;display:grid;place-items:center;position:relative}
+.rbtn:hover{background:rgba(255,255,255,.1);color:#fff}
+.rbtn.on{background:rgba(255,255,255,.16);color:var(--yellow)}
+.rbtn .rdot{position:absolute;top:5px;right:5px;width:6px;height:6px;border-radius:50%;background:#ff6b81}
+.rail .spacer{flex:1}
+
+.side{background:var(--indigo);color:#fff;display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+.brand{padding:16px 16px 12px}
+.brand b{display:block;font-size:14px;letter-spacing:-.01em}
+.brand small{display:block;font-size:11px;color:#a99fd6;margin-top:1px}
+.side nav{padding:6px 9px 0;flex:1;overflow:auto}
+.nav-lbl{font-size:10px;letter-spacing:.11em;text-transform:uppercase;color:#8d84bd;padding:13px 9px 5px;font-weight:600}
+.nav-item{display:flex;align-items:center;gap:9px;width:100%;background:none;border:0;color:#ddd9ee;text-align:left;padding:8px 9px;border-radius:7px;font-size:13px;margin-bottom:1px}
+.nav-item:hover{background:rgba(255,255,255,.08);color:#fff}
+.nav-item.on{background:rgba(255,255,255,.14);color:#fff;font-weight:600}
+.nav-item.on .ico{color:var(--yellow)}
+.ico{width:16px;flex:none;text-align:center;font-size:13px;opacity:.95}
+.pill-n{margin-left:auto;background:var(--yellow);color:var(--indigo);font-size:10px;font-weight:700;border-radius:20px;padding:1px 6px}
+.pill-n.red{background:#ff6b81;color:#fff}
+.side-foot{padding:11px;border-top:1px solid rgba(255,255,255,.14)}
+.who{display:flex;gap:9px;align-items:center}
+.av{width:30px;height:30px;border-radius:50%;background:var(--sky);color:var(--indigo);display:grid;place-items:center;font-weight:700;font-size:11px;flex:none}
+.who b{display:block;font-size:12.5px}
+.who small{display:block;font-size:10.5px;color:#a79fd0}
+.brain{margin:10px 9px 0;background:rgba(255,255,255,.09);border-radius:9px;padding:11px}
+.brain b{display:block;font-size:11.5px;color:#fff}
+.brain small{display:block;font-size:10.5px;color:#a99fd6;margin-top:2px;line-height:1.4}
+.brain .bbar{height:4px;border-radius:3px;background:rgba(255,255,255,.18);margin-top:8px;overflow:hidden}
+.brain .bbar i{display:block;height:100%;background:var(--yellow);width:87%}
+
+/* ─────────── Topbar ─────────── */
+.main{display:flex;flex-direction:column;min-width:0}
+.top{background:var(--white);border-bottom:1px solid var(--line);padding:0 20px;height:58px;display:flex;align-items:center;gap:13px;position:sticky;top:0;z-index:30}
+.top h1{font-size:15.5px;margin:0;font-weight:700;letter-spacing:-.01em}
+.stmt{display:flex;align-items:center;gap:7px;background:var(--indigo-050);border:1px solid var(--indigo-100);border-radius:20px;padding:5px 12px;font-size:12.5px;color:var(--indigo);font-weight:600}
+.stmt em{font-style:normal;color:var(--ink-3);font-weight:500}
+.spacer{flex:1}
+.runstate{display:flex;align-items:center;gap:7px;font-size:12.5px;background:var(--ok-bg);color:var(--ok);border-radius:20px;padding:5px 12px;font-weight:600}
+.dot{width:7px;height:7px;border-radius:50%;background:currentColor;animation:pulse 1.6s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.28}}
+
+.btn{border:1px solid var(--line);background:var(--white);color:var(--ink);border-radius:7px;padding:7px 13px;font-size:12.5px;font-weight:600;white-space:nowrap}
+.btn:hover{border-color:#c9c9d4;background:#fafafc}
+.btn.primary{background:var(--yellow);border-color:var(--yellow);color:var(--indigo)}
+.btn.primary:hover{background:var(--yellow-dk);border-color:var(--yellow-dk)}
+.btn.indigo{background:var(--indigo);border-color:var(--indigo);color:#fff}
+.btn.indigo:hover{background:var(--indigo-700)}
+.btn.sm{padding:4px 9px;font-size:11.5px;border-radius:6px}
+.btn.ghost{background:none;border-color:transparent;color:var(--blue)}
+.btn.ghost:hover{background:var(--indigo-050)}
+
+/* ─────────── Content ─────────── */
+.wrap{padding:20px 20px 96px;width:100%}   /* bottom clearance for the launcher bubble */
+.screen{display:none}
+.screen.on{display:block}
+.page-h{display:flex;align-items:flex-end;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+.page-h h2{margin:0;font-size:20px;letter-spacing:-.02em}
+.page-h p{margin:3px 0 0;color:var(--ink-2);font-size:12.5px;max-width:78ch}
+
+.card{background:var(--white);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
+.card-h{padding:13px 15px;border-bottom:1px solid var(--line-2);display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.card-h h3{margin:0;font-size:13.5px;font-weight:700}
+.card-h .sub{font-size:11.5px;color:var(--ink-3)}
+.card-b{padding:15px}
+
+.grid{display:grid;gap:14px}
+.g-2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.g-3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.g-4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.g-main{grid-template-columns:minmax(0,1fr) 340px}
+.g-inbox{grid-template-columns:minmax(0,1fr) 316px}
+@media(max-width:1280px){.g-4{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:1180px){.g-3,.g-main,.g-inbox{grid-template-columns:1fr}}
+@media(max-width:860px){.grid{grid-template-columns:1fr!important}.app{grid-template-columns:1fr}.side,.rail{display:none}}
+
+/* ─────────── Hero ─────────── */
+.hero{background:linear-gradient(105deg,var(--indigo) 0%,#2a1590 60%,#3d21ad 100%);color:#fff;border-radius:var(--r);padding:18px 20px;margin-bottom:14px;display:flex;gap:24px;align-items:center;flex-wrap:wrap}
+.hero .lead{flex:1;min-width:240px}
+.hero h2{margin:0 0 3px;font-size:17.5px;letter-spacing:-.01em}
+.hero p{margin:0;color:#c5bde8;font-size:12.5px}
+.ring{position:relative;width:88px;height:88px;flex:none}
+.ring svg{transform:rotate(-90deg)}
+.ring b{position:absolute;inset:0;display:grid;place-items:center;font-size:19px;letter-spacing:-.02em}
+.hero-stats{display:flex;gap:22px;flex-wrap:wrap}
+.hs b{display:block;font-size:18px;letter-spacing:-.02em}
+.hs small{color:#b9b1de;font-size:10.5px;text-transform:uppercase;letter-spacing:.07em}
+
+.bal{display:grid;grid-template-columns:repeat(5,1fr);overflow:hidden}
+.bal div{padding:13px 15px;border-right:1px solid var(--line-2)}
+.bal div:last-child{border-right:0}
+.bal small{display:block;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-bottom:3px}
+.bal b{font-size:15.5px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.bal .neg{color:var(--maroon)}
+.bal .bal-ok b{color:var(--ok)}
+@media(max-width:1180px){.bal{grid-template-columns:repeat(2,1fr)}}
+
+/* ─────────── Stream cards ─────────── */
+.stream{padding:15px;text-align:left;width:100%;border:1px solid var(--line);background:#fff;border-radius:var(--r);box-shadow:var(--shadow);transition:.12s}
+.stream:hover{border-color:var(--indigo);transform:translateY(-1px)}
+.stream .sh{display:flex;align-items:center;gap:9px;margin-bottom:11px}
+.sicon{width:29px;height:29px;border-radius:8px;display:grid;place-items:center;font-size:13px;flex:none}
+.sicon.a{background:var(--indigo-050);color:var(--indigo)}
+.sicon.b{background:#e5f3f4;color:var(--teal)}
+.sicon.c{background:#f0edf7;color:var(--purple-dk)}
+.sicon.d{background:var(--cream);color:#8a6d1f}
+.stream h4{margin:0;font-size:13px;font-weight:700}
+.stream .src{font-size:10.5px;color:var(--ink-3)}
+.stream .big{font-size:23px;font-weight:700;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+.stream .big em{font-style:normal;font-size:12.5px;color:var(--ink-3);font-weight:500}
+.bar{height:6px;border-radius:4px;background:var(--line);overflow:hidden;display:flex;margin:9px 0 8px}
+.bar i{display:block;height:100%}
+.bar .m{background:var(--ok)} .bar .r{background:var(--warn)} .bar .u{background:var(--err)}
+.legend{display:flex;gap:11px;font-size:11px;color:var(--ink-2);flex-wrap:wrap}
+.legend span{display:flex;align-items:center;gap:5px}
+.sw{width:8px;height:8px;border-radius:2px;flex:none}
+
+.tl{list-style:none;margin:0;padding:0}
+.tl li{display:flex;gap:10px;padding:8px 0;border-bottom:1px dashed var(--line-2)}
+.tl li:last-child{border:0}
+.tl time{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);flex:none;padding-top:1px}
+.tl p{margin:0;font-size:12px;color:var(--ink-2)}
+.tl b{color:var(--ink);font-weight:600}
+
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:600;border-radius:20px;padding:2px 8px;white-space:nowrap}
+.b-ok{background:var(--ok-bg);color:var(--ok)}
+.b-warn{background:var(--warn-bg);color:var(--warn)}
+.b-err{background:var(--err-bg);color:var(--err)}
+.b-info{background:var(--blue-lt);color:var(--blue)}
+.b-mute{background:#f0f0f3;color:var(--ink-2)}
+.b-ai{background:var(--indigo-050);color:var(--indigo)}
+
+/* ─────────── Tables ─────────── */
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);font-weight:700;padding:9px 11px;border-bottom:1px solid var(--line);background:#fbfbfd;white-space:nowrap}
+td{padding:9px 11px;border-bottom:1px solid var(--line-2);vertical-align:top}
+td.mid{vertical-align:middle}
+tbody tr:hover{background:#fafaff}
+tbody tr.sel{background:var(--indigo-050)}
+tbody tr.picked{background:#fffdf0;box-shadow:inset 3px 0 0 var(--yellow)}
+.num{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.ref{font-family:var(--mono);font-size:11px}
+.muted{color:var(--ink-3)}
+.rowact{display:flex;gap:5px;justify-content:flex-end;align-items:center}
+.tdot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.tdot.need{background:var(--err)} .tdot.rev{background:var(--warn)} .tdot.done{background:var(--ok)}
+
+/* ── multi-field coding block (booke: "treats all fields equally") ── */
+.coding{display:flex;flex-direction:column;gap:4px;min-width:230px}
+.fld{display:flex;align-items:center;gap:6px}
+.fld em{font-style:normal;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3);width:56px;flex:none;font-weight:700;padding-top:2px}
+.fld select{border:1px solid var(--indigo-100);background:var(--indigo-050);color:var(--indigo);border-radius:6px;padding:3px 6px;font-size:11px;font-weight:600;max-width:180px}
+.fld select:hover{border-color:var(--indigo)}
+.fld select.warnsel{border-color:#eccf9a;background:var(--warn-bg);color:var(--warn)}
+.fld select.errsel{border-color:#eabcc7;background:var(--err-bg);color:var(--err)}
+.fld .fixed{font-size:11px;color:var(--ink-2);font-weight:600}
+.spark-i{color:var(--indigo);font-size:11px;flex:none}
+.icobtn{border:1px solid transparent;background:none;color:var(--ink-3);border-radius:6px;padding:3px 5px;font-size:12px;position:relative}
+.icobtn:hover{background:#f0f0f5;color:var(--indigo)}
+.icobtn .n{position:absolute;top:-2px;right:-2px;background:var(--indigo);color:#fff;font-size:8.5px;border-radius:8px;padding:0 3px;font-weight:700}
+
+.conf{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.conf .track{width:40px;height:5px;border-radius:3px;background:var(--line);overflow:hidden}
+.conf .track i{display:block;height:100%;background:var(--ok)}
+.conf.mid .track i{background:var(--warn)}
+.conf.low .track i{background:var(--err)}
+.conf b{font-size:10.5px;font-variant-numeric:tabular-nums;color:var(--ink-2)}
+
+/* recurring-work group row */
+tr.grp{background:#f7f7fb}
+tr.grp:hover{background:#f2f2f8}
+tr.grp td{padding:8px 11px;font-size:12px;color:var(--ink-2);border-bottom:1px solid var(--line)}
+tr.grp b{color:var(--ink)}
+.caret{display:inline-block;transition:.15s;color:var(--ink-3);margin-right:5px}
+tr.grp.open .caret{transform:rotate(90deg)}
+
+/* ─────────── Triage / filters ─────────── */
+.triage{display:flex;gap:2px;padding:10px 14px 0;border-bottom:1px solid var(--line);overflow-x:auto;align-items:center}
+.tri{border:0;background:none;padding:9px 13px;font-size:12.5px;color:var(--ink-2);border-bottom:2px solid transparent;font-weight:600;white-space:nowrap;display:flex;align-items:center;gap:7px}
+.tri:hover{color:var(--indigo)}
+.tri.on{color:var(--indigo);border-bottom-color:var(--yellow)}
+.tri .n{background:#f0f0f3;border-radius:10px;padding:0 6px;font-size:10.5px}
+.tri.on .n{background:var(--indigo);color:#fff}
+.filters{display:flex;gap:7px;padding:11px 14px;flex-wrap:wrap;align-items:center;border-bottom:1px solid var(--line-2);background:#fcfcfe}
+.filters select,.filters input{border:1px solid var(--line);border-radius:7px;padding:6px 9px;font-size:12px;color:var(--ink-2);background:#fff}
+.filters input.search{flex:1;min-width:160px;max-width:260px}
+.chip{border:1px solid var(--line);background:#fff;border-radius:20px;padding:4px 10px;font-size:11.5px;color:var(--ink-2)}
+.chip.on{background:var(--indigo);border-color:var(--indigo);color:#fff;font-weight:600}
+
+.selbar-wrap{position:sticky;bottom:14px;z-index:20;padding:0 14px;margin-top:-46px;pointer-events:none}
+.selbar{background:#fff;border:1px solid var(--line);border-left:4px solid var(--yellow);border-radius:9px;box-shadow:0 8px 26px rgba(19,0,100,.16);padding:9px 13px;display:flex;align-items:center;gap:11px;flex-wrap:wrap;pointer-events:auto}
+.selbar b{font-size:12.5px}
+.toast{background:#22223c;color:#c9c9dd;border-radius:8px;padding:7px 12px;font-size:11.5px;display:flex;align-items:center;gap:9px;margin:8px 14px 0;pointer-events:auto}
+.toast a{color:var(--yellow);font-weight:600}
+
+/* ─────────── Task threads ─────────── */
+.tasks{display:flex;flex-direction:column;gap:9px;padding:13px 14px;max-height:calc(100vh - 210px);overflow:auto}
+.task{border:1px solid var(--line);border-radius:9px;padding:11px;background:#fff}
+.task.hi{border-color:var(--yellow);box-shadow:0 0 0 3px #fff8c9}
+.task-h{display:flex;align-items:center;gap:7px;margin-bottom:6px}
+.task-h .badge{font-size:9.5px}
+.task-h .who2{margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;color:var(--ink-2)}
+.av-sm{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:8.5px;font-weight:700;flex:none;background:var(--indigo-050);color:var(--indigo)}
+.task p{margin:0;font-size:12px;color:var(--ink-2);line-height:1.5}
+.task .meta{display:flex;align-items:center;gap:10px;margin-top:8px;font-size:10.5px;color:var(--ink-3)}
+.task .meta .r{margin-left:auto;display:flex;gap:8px;align-items:center}
+.bubble{background:var(--cream);border-radius:8px;padding:7px 9px;font-size:11.5px;color:var(--ink-2);margin-top:7px}
+.bubble b{color:var(--ink)}
+.bubble.parsed{background:var(--indigo-050);border-left:3px solid var(--indigo)}
+
+/* ─────────── Drawer ─────────── */
+.drawer .k{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin:14px 0 4px;font-weight:700}
+.drawer .v{font-size:12.5px}
+.reason{background:var(--indigo-050);border-left:3px solid var(--indigo);border-radius:0 8px 8px 0;padding:10px 12px;font-size:12px;color:var(--ink-2);line-height:1.55}
+.reason b{color:var(--indigo)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 12px;font-size:12px;margin:0}
+.kv dt{color:var(--ink-3)}
+.kv dd{margin:0;font-weight:600;text-align:right;font-variant-numeric:tabular-nums}
+.hist{list-style:none;margin:0;padding:0;font-size:11.5px}
+.hist li{display:flex;gap:8px;align-items:center;padding:7px 0;border-bottom:1px dashed var(--line-2)}
+.hist li:last-child{border:0}
+.hist .w{margin-left:auto;font-size:10px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+.hist .wbar{width:34px;height:4px;border-radius:3px;background:var(--line);overflow:hidden;flex:none}
+.hist .wbar i{display:block;height:100%;background:var(--indigo)}
+
+pre.code{background:#12122a;color:#d8d8ee;border-radius:8px;padding:11px 13px;margin:0;font-family:var(--mono);font-size:11px;line-height:1.6;overflow-x:auto}
+pre.code .k{color:#89c6cc} pre.code .s{color:#ffe600} pre.code .c{color:#7b7b9a}
+
+/* ─────────── Auto-coding screen ─────────── */
+.cap{padding:16px;border:1px solid var(--line);border-radius:var(--r);background:#fff;box-shadow:var(--shadow);height:100%}
+.cap .ci{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;font-size:14px;margin-bottom:10px}
+.cap h4{margin:0 0 5px;font-size:13.5px}
+.cap p{margin:0 0 11px;font-size:12px;color:var(--ink-2);line-height:1.5}
+.cap .demo{background:#fbfbfd;border:1px solid var(--line-2);border-radius:8px;padding:10px}
+.cap .demo .row{display:flex;align-items:center;gap:7px;font-size:11.5px;padding:3px 0}
+.cap .demo .row em{font-style:normal;color:var(--ink-3);width:64px;flex:none;font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:700}
+.cap .demo .row b{font-weight:600}
+
+.simrow{display:flex;align-items:center;gap:9px;padding:8px 0;border-bottom:1px dashed var(--line-2);font-size:12px}
+.simrow:last-child{border:0}
+.simbar{width:56px;height:5px;border-radius:3px;background:var(--line);overflow:hidden;flex:none}
+.simbar i{display:block;height:100%;background:var(--indigo)}
+.simpct{font-size:10.5px;color:var(--ink-3);font-variant-numeric:tabular-nums;width:34px;text-align:right;flex:none}
+
+.arrowbox{display:flex;align-items:center;gap:11px;flex-wrap:wrap}
+.arrowbox .ab{flex:1;min-width:190px;border:1px solid var(--line);border-radius:9px;padding:11px;background:#fff}
+.arrowbox .ab.out{border-color:var(--indigo-100);background:var(--indigo-050)}
+.arrowbox .arw{font-size:18px;color:var(--indigo);flex:none}
+
+/* ─────────── Exceptions / approvals ─────────── */
+.exc{display:flex;gap:13px;padding:14px 15px;border-bottom:1px solid var(--line-2)}
+.exc:last-child{border:0}
+.exc .ei{width:31px;height:31px;border-radius:8px;display:grid;place-items:center;flex:none;font-size:13px}
+.exc h4{margin:0 0 3px;font-size:13px;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.exc p{margin:0 0 8px;font-size:12px;color:var(--ink-2)}
+.exc .fix{background:var(--cream);border:1px solid var(--sand);border-radius:8px;padding:9px 11px;font-size:12px;color:var(--ink-2);margin-bottom:9px}
+.exc .fix b{color:var(--ink)}
+.appr{border:1px solid var(--line);border-radius:var(--r);margin-bottom:11px;overflow:hidden;background:#fff}
+.appr-h{display:flex;align-items:center;gap:9px;padding:11px 14px;background:#fbfbfd;border-bottom:1px solid var(--line-2);flex-wrap:wrap}
+.appr-h b{font-size:12.5px}
+.appr-b{padding:13px 14px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:15px}
+@media(max-width:960px){.appr-b{grid-template-columns:1fr}}
+
+/* ─────────── Performance ─────────── */
+.kpi{padding:15px}
+.kpi small{display:block;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-bottom:5px;font-weight:700}
+.kpi b{font-size:26px;letter-spacing:-.03em;font-variant-numeric:tabular-nums;display:block}
+.kpi .trend{font-size:11.5px;margin-top:3px;color:var(--ok);font-weight:600}
+.kpi .trend.dn{color:var(--err)}
+.splitbar{display:flex;height:26px;border-radius:7px;overflow:hidden;font-size:10.5px;font-weight:700;margin:10px 0 8px}
+.splitbar i{display:grid;place-items:center;font-style:normal}
+.spark{display:flex;align-items:flex-end;gap:3px;height:52px;margin-top:10px}
+.spark i{flex:1;background:var(--indigo-100);border-radius:2px 2px 0 0;display:block}
+.spark i.hi{background:var(--indigo)}
+
+/* ─────────── Phone ─────────── */
+.phone{width:280px;border:9px solid #1b1b30;border-radius:30px;background:#fff;overflow:hidden;box-shadow:0 12px 34px rgba(19,0,100,.2);flex:none;margin:0 auto}
+.ph-top{background:var(--indigo);color:#fff;padding:12px 13px}
+.ph-top b{font-size:13px;display:block}
+.ph-top small{font-size:10.5px;color:#b3aada}
+.ph-search{margin:10px 12px;border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:11.5px;color:var(--ink-3)}
+.ph-grp{background:#f4f4f8;padding:5px 13px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);font-weight:700}
+.ph-row{padding:10px 13px;border-bottom:1px solid var(--line-2);display:flex;gap:9px;align-items:flex-start}
+.ph-row .amt{font-weight:700;font-size:12.5px;font-variant-numeric:tabular-nums}
+.ph-row .amt.pos{color:var(--ok)}
+.ph-row small{display:block;font-size:10.5px;color:var(--ink-3);margin-top:1px}
+.ph-reply{margin-left:auto;border:1px solid var(--indigo);color:var(--indigo);background:#fff;border-radius:20px;padding:3px 11px;font-size:10.5px;font-weight:700;flex:none}
+.ph-note{margin:9px 12px;background:var(--cream);border-radius:8px;padding:8px 10px;font-size:10.5px;color:var(--ink-2)}
+
+/* ── per-report transaction view (inbox) ── */
+.rsum{display:flex;gap:0;flex-wrap:wrap;align-items:stretch;
+  border-bottom:1px solid var(--line);background:#fff}
+.rstat{padding:10px 16px;border-right:1px solid var(--line-2);min-width:104px}
+.rstat:last-of-type{border-right:0}
+.rstat small{display:block;font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--ink-3);font-weight:700;margin-bottom:2px}
+.rstat b{color:var(--ink);font-variant-numeric:tabular-nums;font-size:16px;
+  letter-spacing:-.025em;line-height:1.2;display:block}
+.rstat b .of{font-size:11px;color:var(--ink-3);font-weight:500;letter-spacing:0}
+.rstat.warn b{color:var(--warn)} .rstat.err b{color:var(--err)} .rstat.ok b{color:var(--ok)}
+.rflags{margin-left:auto;display:flex;gap:7px;align-items:center;padding:10px 16px;flex-wrap:wrap}
+
+.rwrap{max-height:calc(100vh - 330px);overflow:auto}
+.rwrap table{font-size:12.5px}
+.rwrap th{position:sticky;top:0;z-index:2}
+.rwrap td{padding:7px 11px;white-space:nowrap}
+.rwrap tbody tr{cursor:default}
+.rwrap tbody tr:hover{background:#fafaff}
+.rwrap tbody tr:hover .rowgo{opacity:1}
+.rwrap tbody tr.picked{background:#fffdf0;box-shadow:inset 3px 0 0 var(--yellow)}
+
+/* true / false, compact and legible */
+.bool{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;
+  border-radius:6px;padding:2px 8px;font-family:var(--mono);letter-spacing:-.01em}
+.bool.t{background:var(--ok-bg);color:var(--ok)}
+.bool.f{background:var(--err-bg);color:var(--err)}
+.bool .gl{font-family:var(--font);font-size:11px}
+.why{font-size:10.5px;color:var(--ink-3);margin-left:7px}
+.rowgo{opacity:0;transition:.12s}
+
+.rfoot{padding:9px 15px;border-top:1px solid var(--line-2);background:#fbfbfd;
+  font-size:11px;color:var(--ink-3);display:flex;gap:16px;flex-wrap:wrap;align-items:center}
+.rfoot b{color:var(--ink-2)}
+.rempty{padding:38px 15px;text-align:center;color:var(--ink-3);font-size:12.5px;white-space:normal}
+
+/* ── file preview popup ── */
+.modal-bg{position:fixed;inset:0;background:rgba(19,0,100,.45);z-index:100;
+  display:flex;align-items:center;justify-content:center;padding:22px}
+.modal{background:#fff;border-radius:12px;width:min(1120px,100%);max-height:88vh;
+  display:flex;flex-direction:column;box-shadow:0 24px 64px rgba(19,0,100,.32);overflow:hidden}
+.modal-h{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.modal-h h3{margin:0;font-size:15px;letter-spacing:-.01em}
+.modal-h .fn{font-family:var(--mono);font-size:11px;color:var(--ink-3);display:block;margin-top:1px}
+.xbtn{border:0;background:none;font-size:20px;color:var(--ink-3);line-height:1;padding:3px 9px;border-radius:7px}
+.xbtn:hover{background:#f0f0f5;color:var(--ink)}
+.modal-tools{padding:10px 18px;border-bottom:1px solid var(--line-2);background:#fcfcfe;
+  display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.modal-tools input{border:1px solid var(--line);border-radius:7px;padding:6px 10px;font-size:12px;
+  min-width:240px;background:#fff;color:var(--ink);font-family:inherit}
+.modal-tools input:focus{outline:none;border-color:var(--indigo);box-shadow:0 0 0 3px var(--indigo-050)}
+.modal-b{overflow:auto;flex:1;min-height:140px}
+.modal-b th{position:sticky;top:0;z-index:2}
+.modal-f{padding:11px 18px;border-top:1px solid var(--line);background:#fbfbfd;
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--ink-2)}
+.modal-f b{color:var(--ink);font-variant-numeric:tabular-nums}
+.rowno{color:var(--ink-3);font-family:var(--mono);font-size:10px;text-align:right;width:42px;background:#fcfcfe}
+tr.hidden{display:none}
+
+.note{display:flex;gap:9px;background:var(--blue-lt);border-radius:8px;padding:10px 12px;font-size:12px;color:#0b3f70;margin-bottom:13px;align-items:flex-start}
+.note b{color:#062c50}
+hr.sep{border:0;border-top:1px solid var(--line-2);margin:14px 0}
+.foot-note{margin-top:24px;font-size:11px;color:var(--ink-3);text-align:center}
+.mail{border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.mail-h{background:#fbfbfd;padding:10px 13px;border-bottom:1px solid var(--line-2);font-size:11.5px}
+.mail-h span{color:var(--ink-3)}
+.mail-b{padding:13px;font-size:12px;color:var(--ink-2);line-height:1.6}
+.conn{display:flex;align-items:center;gap:13px;padding:13px 15px;border-bottom:1px solid var(--line-2)}
+.conn:last-child{border:0}
+.conn .lg{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;font-weight:800;font-size:10.5px;flex:none;color:#fff}
+.conn b{display:block;font-size:12.5px}
+.conn small{color:var(--ink-3);font-size:11px}
+.dz{border:1.5px dashed #c8c8d6;border-radius:var(--r);padding:14px;background:#fff;display:flex;gap:12px;align-items:flex-start;transition:.12s}
+.dz:hover{border-color:var(--indigo);background:#fdfdff}
+.dz.done{border-style:solid;border-color:#bfe3d2;background:#f6fcf9}
+.dz.err{border-style:solid;border-color:#f0c3cd;background:#fdf6f8}
+.dz .di{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;flex:none;font-size:15px;background:var(--indigo-050);color:var(--indigo)}
+.dz.done .di{background:var(--ok-bg);color:var(--ok)}
+.dz.err .di{background:var(--err-bg);color:var(--err)}
+.dz h4{margin:0 0 2px;font-size:12.5px}
+.dz p{margin:0;font-size:11px;color:var(--ink-3)}
+.dz .file{font-family:var(--mono);font-size:10.5px;color:var(--ink-2);margin-top:6px;display:block}
+.dz .actions{margin-top:8px;display:flex;gap:5px;flex-wrap:wrap}
+.dz.drag{border-color:var(--indigo);background:#f6f4ff;border-style:solid}
+.dz.adhoc{border-color:var(--indigo-100)}
+.dz.proc{border-style:solid;border-color:var(--indigo-100);background:#fbfaff}
+.procbar{height:5px;border-radius:3px;background:var(--line);overflow:hidden;margin-top:9px}
+.procbar i{display:block;height:100%;background:var(--indigo);width:0;animation:fillbar 1.4s ease forwards}
+@keyframes fillbar{to{width:100%}}
+.dz .result{font-size:11.5px;color:var(--ok);font-weight:600;margin-top:6px;display:block}
+
+/* ── detect-and-confirm panel for ad-hoc uploads ── */
+.detect{border:1px solid var(--indigo-100);border-left:4px solid var(--indigo);border-radius:var(--r);background:#fcfcff;padding:15px;margin-bottom:14px;box-shadow:var(--shadow)}
+.detect h4{margin:0 0 3px;font-size:13.5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.detect .fname{font-family:var(--mono);font-size:11px;color:var(--ink-2);display:block;margin-bottom:11px}
+.detect-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+@media(max-width:700px){.detect-grid{grid-template-columns:1fr}}
+.field-lbl{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);font-weight:700;margin-bottom:4px;display:block}
+.detect select{width:100%;border:1px solid var(--indigo-100);background:#fff;border-radius:7px;padding:7px 9px;font-size:12.5px;font-weight:600;color:var(--indigo)}
+.cols{display:flex;gap:5px;flex-wrap:wrap;margin-top:5px}
+.col-chip{font-family:var(--mono);font-size:10px;background:#fff;border:1px solid var(--line);border-radius:5px;padding:2px 7px;color:var(--ink-2)}
+.col-chip.hit{border-color:var(--indigo-100);background:var(--indigo-050);color:var(--indigo);font-weight:700}
+.money{position:relative}
+.money span{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--ink-3);font-size:12.5px;font-weight:600;pointer-events:none}
+.money input{width:100%;border:1px solid var(--indigo-100);background:#fff;border-radius:7px;
+  padding:7px 10px 7px 22px;font-size:12.5px;font-weight:700;color:var(--ink);
+  font-variant-numeric:tabular-nums;text-align:right;font-family:var(--mono)}
+.money input:focus{outline:none;border-color:var(--indigo);box-shadow:0 0 0 3px var(--indigo-050)}
+.money input.bad{border-color:var(--err);background:var(--err-bg)}
+.hint{font-size:11px;color:var(--ink-3);margin-top:4px;display:block}
+.hint.err{color:var(--err);font-weight:600}
+.remember{display:flex;gap:9px;align-items:flex-start;background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:12px;font-size:12px;color:var(--ink-2)}
+.remember b{color:var(--ink)}
+.detect .foot{display:flex;gap:7px;margin-top:12px;flex-wrap:wrap;align-items:center}
+
+/* ═══════════ ASK THE AGENT — bubble + overlay window ═══════════
+   A launcher bubble sits on every screen; clicking it floats the chat over
+   the UI rather than reflowing it, so the thing you're asking about stays
+   exactly where it was. No modal scrim: answers deep-link into the screen
+   behind, and a scrim would block the result you were sent to look at. */
+.app{--askw:390px}
+
+.askfab{position:fixed;right:22px;bottom:22px;z-index:95;width:54px;height:54px;border-radius:50%;
+  border:0;background:var(--indigo);color:#fff;font-size:20px;display:grid;place-items:center;
+  box-shadow:0 4px 14px rgba(19,0,100,.28),0 1px 3px rgba(19,0,100,.2)}
+.askfab:hover{background:var(--indigo-700);transform:translateY(-1px)}
+.askfab .fdot{position:absolute;top:3px;right:3px;width:11px;height:11px;border-radius:50%;
+  background:var(--yellow);border:2px solid var(--indigo)}
+.askfab .lbl{position:absolute;right:64px;white-space:nowrap;background:var(--ink);color:#fff;
+  font-size:11.5px;font-weight:600;border-radius:6px;padding:5px 9px;opacity:0;pointer-events:none;
+  transition:opacity .12s}
+.askfab:hover .lbl{opacity:1}
+.app.ask-on .askfab{background:var(--ink);font-size:16px}
+.app.ask-on .askfab .fdot{display:none}
+
+.askp{display:none;background:var(--white);border:1px solid var(--line);border-radius:13px;
+  position:fixed;right:22px;bottom:88px;z-index:94;width:var(--askw);
+  height:min(760px,calc(100vh - 130px));flex-direction:column;min-width:0;overflow:hidden;
+  box-shadow:0 10px 40px rgba(19,0,100,.22),0 2px 8px rgba(19,0,100,.12)}
+.app.ask-on .askp{display:flex}
+.app.ask-wide .askp{width:min(880px,calc(100vw - 44px));height:calc(100vh - 130px)}
+@media (max-width:820px){ .askp{left:12px;right:12px;width:auto;bottom:84px} }
+.askp .grip{position:absolute;left:0;top:0;bottom:0;width:7px;cursor:col-resize;z-index:2}
+.askp .grip:hover{background:var(--indigo-100)}
+
+.ask-h{height:58px;flex:none;border-bottom:1px solid var(--line);display:flex;align-items:center;
+  gap:8px;padding:0 12px 0 15px}
+.ask-h b{font-size:13.5px;letter-spacing:-.01em;display:flex;align-items:center;gap:6px}
+.ask-h .sp{flex:1}
+.xbtn2{border:0;background:none;color:var(--ink-3);font-size:14px;width:26px;height:26px;
+  border-radius:6px;display:grid;place-items:center}
+.xbtn2:hover{background:var(--bg);color:var(--ink)}
+
+/* Scope chip — the control that stops the agent wandering. The user can
+   always see what an answer was computed over, so a wrong answer reads as
+   a wrong scope rather than a wrong agent. */
+.ask-scope{flex:none;padding:9px 15px;border-bottom:1px solid var(--line-2);background:#fcfcfe;
+  display:flex;align-items:center;gap:7px;flex-wrap:wrap;position:relative}
+.scopechip{display:inline-flex;align-items:center;gap:6px;background:var(--indigo-050);
+  border:1px solid var(--indigo-100);color:var(--indigo);border-radius:20px;padding:4px 10px;
+  font-size:11.5px;font-weight:700}
+.scopechip:hover{border-color:var(--indigo)}
+.scopepop{position:absolute;top:calc(100% - 2px);left:15px;right:15px;z-index:12;background:#fff;
+  border:1px solid var(--line);border-radius:9px;box-shadow:var(--shadow);padding:12px;display:none}
+.scopepop.on{display:block}
+.scopepop label.f{display:block;font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--ink-3);font-weight:700;margin:0 0 5px}
+.scopepop select{width:100%;border:1px solid var(--indigo-100);background:#fff;border-radius:7px;
+  padding:6px 9px;font-size:12.5px;font-weight:600;color:var(--indigo)}
+.scopepop .sl{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--ink-2);padding:4px 0}
+.scopepop .foot{display:flex;gap:7px;margin-top:11px;align-items:center}
+
+.ask-stale{flex:none;display:none;align-items:center;gap:8px;padding:7px 15px;font-size:11.5px;
+  background:var(--warn-bg);color:var(--warn);font-weight:600;border-bottom:1px solid var(--line-2)}
+.ask-stale.on{display:flex}
+
+.ask-b{flex:1;overflow:auto;padding:16px 15px 8px;display:flex;flex-direction:column;gap:14px}
+
+/* Empty state */
+.ask-empty{color:var(--ink-2);font-size:12.5px}
+.ask-empty .mk{font-size:22px;color:var(--indigo);line-height:1}
+.ask-empty h5{margin:8px 0 3px;font-size:13.5px;color:var(--ink)}
+.sugg{display:flex;flex-direction:column;gap:6px;margin-top:12px}
+.sugg button{text-align:left;border:1px solid var(--line);background:#fff;border-radius:8px;
+  padding:9px 11px;font-size:12px;color:var(--ink);line-height:1.35}
+.sugg button:hover{border-color:var(--indigo-100);background:var(--indigo-050);color:var(--indigo)}
+
+/* Turns. User gets a bubble; the agent flows on the panel ground like the
+   reasoning rail, so long answers with tables don't feel boxed in. */
+.turn{display:flex;flex-direction:column;gap:5px}
+.turn.u{align-items:flex-end}
+.turn.u .bub{background:rgba(19,0,100,.08);border-radius:10px;padding:8px 11px;font-size:12.5px;
+  max-width:85%;line-height:1.45}
+.turn .ctx{display:flex;gap:5px;flex-wrap:wrap}
+.turn.a{gap:8px}
+.a-head{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink-3)}
+.a-head .mk{color:var(--indigo);font-size:12px}
+.a-lead{font-size:13px;line-height:1.55;color:var(--ink)}
+.a-lead b{font-variant-numeric:tabular-nums}
+.a-body{font-size:12.5px;line-height:1.55;color:var(--ink-2)}
+.a-body p{margin:0 0 7px}
+
+/* Σ marks a computed value; hovering shows the arithmetic. Finance users
+   check totals against Excel, so the sum has to be inspectable. */
+.sig{font-family:var(--mono);font-size:9px;color:var(--indigo);background:var(--indigo-050);
+  border-radius:4px;padding:1px 3px;margin-left:3px;cursor:help;vertical-align:2px}
+/* Citation marker — no citation, no claim. */
+.cite{font-size:9px;font-weight:700;color:var(--blue);background:var(--blue-lt);border:0;
+  border-radius:4px;padding:1px 4px;margin-left:3px;vertical-align:2px;font-family:var(--mono)}
+.cite:hover{background:var(--blue);color:#fff}
+
+.a-tbl{border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.a-tbl table{font-size:11.5px}
+.a-tbl th{padding:6px 8px;font-size:9px}
+.a-tbl td{padding:6px 8px;vertical-align:middle}
+.a-tbl .more{padding:7px 9px;background:#fbfbfd;border-top:1px solid var(--line-2);font-size:11px}
+
+.disc{border:1px solid var(--line);border-radius:8px;background:#fcfcfe}
+.disc summary{list-style:none;cursor:pointer;padding:7px 10px;font-size:11.5px;font-weight:600;
+  color:var(--ink-2);display:flex;align-items:center;gap:6px}
+.disc summary::-webkit-details-marker{display:none}
+.disc summary:before{content:'▸';color:var(--ink-3);font-size:10px}
+.disc[open] summary:before{content:'▾'}
+.disc .dd{padding:0 10px 10px 24px;font-size:11.5px;color:var(--ink-2);line-height:1.5}
+.disc .dd li{margin-bottom:3px}
+
+.a-acts{display:flex;gap:6px;flex-wrap:wrap}
+.followups{display:flex;gap:6px;flex-wrap:wrap;padding-top:2px}
+.followups button{border:1px solid var(--line);background:#fff;border-radius:20px;padding:4px 11px;
+  font-size:11.5px;color:var(--ink-2)}
+.followups button:hover{border-color:var(--indigo-100);background:var(--indigo-050);color:var(--indigo)}
+
+/* Irreversible work never gets a one-click confirm inside chat. */
+.prevcard{border:1px solid var(--indigo-100);background:var(--indigo-050);border-radius:9px;padding:11px}
+.prevcard b{display:block;font-size:12.5px;color:var(--indigo)}
+.prevcard p{margin:3px 0 9px;font-size:11.5px;color:var(--ink-2);line-height:1.45}
+
+.thinking{font-size:11.5px;color:var(--ink-3);display:flex;flex-direction:column;gap:6px}
+.thinking .sk{height:9px;border-radius:5px;background:linear-gradient(90deg,#eee 25%,#f6f6f9 50%,#eee 75%);
+  background-size:400% 100%;animation:sh 1.3s infinite}
+.thinking .sk:nth-child(2){width:88%} .thinking .sk:nth-child(3){width:62%}
+@keyframes sh{0%{background-position:100% 0}100%{background-position:-100% 0}}
+.tick{font-family:var(--mono);font-size:10.5px;color:var(--indigo)}
+
+.ask-f{flex:none;border-top:1px solid var(--line);padding:10px 12px 11px;background:#fcfcfe}
+.composer{display:flex;gap:7px;align-items:flex-end;border:1px solid var(--line);background:#fff;
+  border-radius:9px;padding:7px 8px}
+.composer:focus-within{border-color:var(--indigo);box-shadow:0 0 0 3px var(--indigo-050)}
+.composer textarea{flex:1;border:0;outline:none;resize:none;font-size:12.5px;line-height:1.45;
+  max-height:110px;color:var(--ink);background:none;padding:2px 0}
+.composer .ic{border:0;background:none;color:var(--ink-3);font-size:14px;width:26px;height:26px;
+  border-radius:6px}
+.composer .ic:hover{background:var(--bg);color:var(--indigo)}
+.send{border:0;background:var(--indigo);color:#fff;border-radius:7px;width:28px;height:28px;font-size:13px}
+.send:hover{background:var(--indigo-700)}
+.send.stop{background:var(--err)}
+.ask-note{font-size:10.5px;color:var(--ink-3);margin-top:6px;line-height:1.4}
+.ask-hist{position:absolute;top:52px;right:12px;width:250px;background:#fff;border:1px solid var(--line);
+  border-radius:9px;box-shadow:var(--shadow);padding:7px;z-index:14;display:none}
+.ask-hist.on{display:block}
+.ask-hist button{display:block;width:100%;text-align:left;border:0;background:none;border-radius:6px;
+  padding:7px 8px;font-size:11.5px;color:var(--ink-2);line-height:1.35}
+.ask-hist button:hover{background:var(--indigo-050);color:var(--indigo)}
+.daydiv{text-align:center;font-size:10.5px;color:var(--ink-3);letter-spacing:.05em}
+
+/* A cited row pulses when you land on it from a citation. */
+@keyframes cpulse{0%,100%{background:transparent}30%{background:var(--yellow)}}
+tr.cited{animation:cpulse 1.5s ease-out 2}
+.askbtn{display:inline-flex;align-items:center;gap:5px}
+</style>
+</head>
+<body>
+<div class="app">
+
+<!-- ══════════ ICON RAIL ══════════ -->
+<div class="rail">
+  <div class="rmark">RAA</div>
+  <button class="rbtn on" data-go="overview" title="Run overview">◧</button>
+  <button class="rbtn" data-go="inbox" title="Reconciliation inbox">⇄<span class="rdot"></span></button>
+  <button class="rbtn" data-go="sources" title="Sources &amp; upload">⇪</button>
+  <div class="spacer"></div>
+</div>
+
+<!-- ══════════ SIDEBAR ══════════ -->
+<aside class="side">
+  <div class="brand">
+    <b>Reconciliation Agent</b>
+    <small>RAA Travel · Accounts</small>
+  </div>
+
+  <div class="brain">
+    <b>Agent brain · RAA Travel</b>
+    <small>Similarity search over 24 months of reconciliations. Isolated — nothing shared across entities.</small>
+    <div class="bbar"><i></i></div>
+    <small style="margin-top:6px">87% of lines coded without a human this week</small>
+  </div>
+
+  <nav>
+    <div class="nav-lbl">Daily run</div>
+    <button class="nav-item on" data-go="overview"><span class="ico">◧</span> Run overview</button>
+    <button class="nav-item" data-go="sources"><span class="ico">⇪</span> Sources &amp; upload</button>
+    <button class="nav-item" data-go="inbox"><span class="ico">⇄</span> Reconciliation inbox <span class="pill-n red">27</span></button>
+  </nav>
+
+  <div class="side-foot">
+    <div class="who">
+      <div class="av">JS</div>
+      <div><b>Jill S.</b><small>Accounts · RAA Travel</small></div>
+    </div>
+  </div>
+</aside>
+
+<!-- ══════════ MAIN ══════════ -->
+<div class="main">
+  <header class="top">
+    <h1 id="topTitle">Run overview</h1>
+    <div class="stmt">Statement page 1552 <em>·</em> 29-07-2026 <span style="opacity:.5">▾</span></div>
+    <div class="spacer"></div>
+    <div class="runstate"><span class="dot"></span> Agent running · step 3 of 4</div>
+    <button class="btn sm">Pause</button>
+    <button class="btn primary">Re-run matching</button>
+  </header>
+
+  <div class="wrap">
+
+  <!-- ═══════════ RUN OVERVIEW ═══════════ -->
+  <section class="screen on" id="s-overview">
+    <div class="hero">
+      <div class="ring">
+        <svg width="88" height="88" viewBox="0 0 88 88">
+          <circle cx="44" cy="44" r="36" fill="none" stroke="rgba(255,255,255,.18)" stroke-width="9"/>
+          <circle cx="44" cy="44" r="36" fill="none" stroke="#ffe600" stroke-width="9" stroke-linecap="round" stroke-dasharray="226" stroke-dashoffset="36"/>
+        </svg>
+        <b>84%</b>
+      </div>
+      <div class="lead">
+        <h2>Reconciling Wednesday 29 July 2026</h2>
+        <p>412 of 489 statement lines matched and coded by the agent · started 08:41 · elapsed 6m 12s · saved ≈ 3h 40m so far</p>
+      </div>
+      <div class="hero-stats">
+        <div class="hs"><b>412</b><small>Auto-completed</small></div>
+        <div class="hs"><b>27</b><small>Need reaction</small></div>
+        <div class="hs"><b>9</b><small>With consultants</small></div>
+        <div class="hs"><b>18</b><small>Awaiting approval</small></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:14px">
+      <div class="bal">
+        <div><small>Opening balance</small><b class="neg">−7,252,720.99</b></div>
+        <div><small>Closing balance</small><b class="neg">−6,718,104.52</b></div>
+        <div><small>Un-presented</small><b>572,367.80</b></div>
+        <div><small>Calculated closing</small><b class="neg">−7,290,472.32</b></div>
+        <div class="bal-ok"><small>Variance</small><b>$0.00 ✓</b></div>
+      </div>
+    </div>
+
+    <div class="note">
+      <span>ℹ</span>
+      <div><b>Balance is currently in agreement.</b> The agent re-checks the variance after every write-back — a single cent of drift flags the whole statement as out of balance and pauses the queue.</div>
+    </div>
+
+    <div class="grid g-4" style="margin-bottom:14px">
+      <button class="stream" data-go="inbox">
+        <div class="sh"><div class="sicon a">◈</div><div><h4>Mint &amp; creditor payments</h4><div class="src">Mint daily settlement · by reference</div></div></div>
+        <div class="big">186<em> / 194</em></div>
+        <div class="bar"><i class="m" style="width:88%"></i><i class="r" style="width:8%"></i><i class="u" style="width:4%"></i></div>
+        <div class="legend"><span><i class="sw" style="background:var(--ok)"></i>171 done</span><span><i class="sw" style="background:var(--warn)"></i>15 review</span><span><i class="sw" style="background:var(--err)"></i>8 unmatched</span></div>
+      </button>
+      <button class="stream" data-go="inbox">
+        <div class="sh"><div class="sicon b">₿</div><div><h4>BPay receipts</h4><div class="src">Westpac BPay report · 1-to-1</div></div></div>
+        <div class="big">43<em> / 45</em></div>
+        <div class="bar"><i class="m" style="width:80%"></i><i class="r" style="width:16%"></i><i class="u" style="width:4%"></i></div>
+        <div class="legend"><span><i class="sw" style="background:var(--ok)"></i>36 receipted</span><span><i class="sw" style="background:var(--warn)"></i>7 allocate</span><span><i class="sw" style="background:var(--err)"></i>2 no booking</span></div>
+      </button>
+      <button class="stream" data-go="inbox">
+        <div class="sh"><div class="sicon c">▤</div><div><h4>Merchant settlements</h4><div class="src">Nuvei / IPSI / Nuve · by shop total</div></div></div>
+        <div class="big">14<em> / 16</em></div>
+        <div class="bar"><i class="m" style="width:75%"></i><i class="r" style="width:13%"></i><i class="u" style="width:12%"></i></div>
+        <div class="legend"><span><i class="sw" style="background:var(--ok)"></i>12 balanced</span><span><i class="sw" style="background:var(--warn)"></i>2 variance</span><span><i class="sw" style="background:var(--err)"></i>2 awaiting</span></div>
+      </button>
+      <button class="stream" data-go="inbox">
+        <div class="sh"><div class="sicon d">↩</div><div><h4>Passenger refunds</h4><div class="src">Refund report · by transaction no.</div></div></div>
+        <div class="big">31<em> / 34</em></div>
+        <div class="bar"><i class="m" style="width:91%"></i><i class="r" style="width:6%"></i><i class="u" style="width:3%"></i></div>
+        <div class="legend"><span><i class="sw" style="background:var(--ok)"></i>31 done</span><span><i class="sw" style="background:var(--warn)"></i>2 review</span><span><i class="sw" style="background:var(--err)"></i>1 unmatched</span></div>
+      </button>
+    </div>
+
+    <div class="grid g-main">
+      <div class="card">
+        <div class="card-h"><h3>Need your reaction</h3><span class="sub">ranked by dollar impact</span>
+          <div class="spacer"></div><button class="btn sm" data-go="inbox">Open inbox</button></div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th style="width:28px"></th><th>Item</th><th>Stream</th><th>Issue</th><th class="num">Amount</th><th class="num">Variance</th><th>Agent proposal</th><th></th></tr></thead>
+            <tbody>
+              <tr><td class="mid"><span class="tdot need"></span></td>
+                <td class="mid"><b>Bkg 118299</b><div class="muted ref">CRU260720264761 31</div></td>
+                <td class="mid"><span class="badge b-mute">BPay</span></td><td class="mid">No costing in Tramada</td>
+                <td class="num mid">3,473.92</td><td class="num muted mid">—</td>
+                <td class="muted mid">Ask Marina D (WLK)</td>
+                <td class="rowact mid"><button class="btn sm" data-go="inbox">Review</button></td></tr>
+              <tr><td class="mid"><span class="tdot rev"></span></td>
+                <td class="mid"><b>MT BARKER 0020</b><div class="muted ref">MERCHANT SETTLEMENT 0960020</div></td>
+                <td class="mid"><span class="badge b-mute">Merchant</span></td><td class="mid">Shop total short by 0.03</td>
+                <td class="num mid">7,898.43</td><td class="num mid" style="color:var(--err)">−0.03</td>
+                <td class="muted mid">Re-enter R.0000281612</td>
+                <td class="rowact mid"><button class="btn sm" data-go="inbox">Review</button></td></tr>
+              <tr><td class="mid"><span class="tdot rev"></span></td>
+                <td class="mid"><b>Bkg 117668</b><div class="muted ref">ING250720265390440706</div></td>
+                <td class="mid"><span class="badge b-mute">BPay</span></td><td class="mid">Overpayment vs costing</td>
+                <td class="num mid">600.00</td><td class="num mid" style="color:var(--warn)">+112.40</td>
+                <td class="muted mid">Receipt EFT, mark “please allocate”</td>
+                <td class="rowact mid"><button class="btn sm" data-go="inbox">Review</button></td></tr>
+              <tr><td class="mid"><span class="tdot rev"></span></td>
+                <td class="mid"><b>Web Source</b><div class="muted ref">PRIN-DXVVVW</div></td>
+                <td class="mid"><span class="badge b-mute">Creditor</span></td><td class="mid">Trading-name mismatch</td>
+                <td class="num mid">4,591.52</td><td class="num muted mid">0.00</td>
+                <td class="muted mid">Alias → <b>Stuba</b>, confirm &amp; tick</td>
+                <td class="rowact mid"><button class="btn sm" data-go="inbox">Review</button></td></tr>
+              <tr><td class="mid"><span class="tdot need"></span></td>
+                <td class="mid"><b>VICTOR 0020</b><div class="muted ref">Nuve-settled shop</div></td>
+                <td class="mid"><span class="badge b-mute">Merchant</span></td><td class="mid">Nuve report not uploaded</td>
+                <td class="num mid">5,993.37</td><td class="num muted mid">—</td>
+                <td class="muted mid">Awaiting Nuve daily export</td>
+                <td class="rowact mid"><button class="btn sm" data-go="sources">Upload</button></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><h3>Agent activity</h3><div class="spacer"></div><span class="badge b-ai">live</span></div>
+        <div class="card-b" style="padding-top:4px">
+          <ul class="tl">
+            <li><time>08:47</time><p><b>Merchant settlements</b> — totalled 9 receipts for MBA incl. 2 IPSI refunds, matched $18,023.25 <span class="badge b-ok">balanced</span></p></li>
+            <li><time>08:46</time><p>Coded 18 Princess Cruises lines as <b>recurring work</b> — identical pattern to 14-07 <span class="badge b-ai">bulk</span></p></li>
+            <li><time>08:46</time><p>Applied learned alias <b>Cosmos Tours → Circuit Travel</b> on 3 lines</p></li>
+            <li><time>08:45</time><p>Read Georgia G's comment and coded booking 130710 automatically <span class="badge b-ai">from comment</span></p></li>
+            <li><time>08:45</time><p>Created <b>7 Debtor Payment Receipts</b> (EFT, payer “BPay”) — queued for approval</p></li>
+            <li><time>08:44</time><p>Normalised 45 BPay references to booking numbers — <b>2 unresolved</b></p></li>
+            <li><time>08:43</time><p>Pulled 489 transactions from Tramada statement page 1552 <span class="badge b-info">API</span></p></li>
+            <li><time>08:41</time><p>Run started by <b>Jill S.</b></p></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ SOURCES ═══════════ -->
+  <section class="screen" id="s-sources">
+    <div class="page-h">
+      <div><h2>Sources &amp; upload</h2>
+        <p>Drop the day's reports in. The agent parses them, detects what each one is, normalises references and pulls the matching Tramada statement page.</p></div>
+      <div class="spacer"></div>
+      <label class="field-lbl" style="margin:0 0 3px">Statement date</label>
+      <select class="btn" id="stmtDate" style="padding-right:26px">
+        <option value="29-07-2026">29-07-2026 · page 1552</option>
+        <option value="30-07-2026">30-07-2026 · page 1553 (new day)</option>
+        <option value="28-07-2026">28-07-2026 · page 1551</option>
+      </select>
+      <button class="btn indigo" id="startRun">Start run</button>
+    </div>
+
+    <div>
+      <div>
+        <!-- readiness strip -->
+        <div class="note" id="readyNote"><span>ℹ</span><div></div></div>
+
+        <!-- detect-and-confirm panel, revealed after an ad-hoc drop -->
+        <div class="detect" id="detectPanel" style="display:none"></div>
+
+        <!-- source tiles, rendered per statement date -->
+        <div class="grid g-3" id="tileGrid" style="margin-bottom:14px"></div>
+      </div>
+
+    </div>
+
+    <input type="file" id="filePicker" accept=".csv,.xlsx,.xls,.txt" style="display:none">
+  </section>
+  <!-- ═══════════ RECONCILIATION INBOX ═══════════ -->
+  <section class="screen" id="s-inbox">
+    <div class="page-h">
+      <div><h2 id="ibTitle">Reconciliation inbox</h2>
+        <p id="ibLede">Every statement line, triaged by what the agent needs from you. Recurring work is grouped and handled in bulk; auto-completed lines stay out of your way; only uncertain items surface.</p></div>
+      <div class="spacer"></div>
+      <div id="ibActions" style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn">Export working file</button>
+        <button class="btn primary">Approve 23 high-confidence</button>
+      </div>
+    </div>
+
+    <div class="grid g-inbox" id="inboxGrid">
+      <div class="card" style="overflow:visible">
+
+        <div class="triage">
+          <button class="tri on" data-tri="need"><span class="tdot need"></span> Need reaction <span class="n">27</span></button>
+          <button class="tri" data-tri="rev"><span class="tdot rev"></span> Under review <span class="n">9</span></button>
+          <button class="tri" data-tri="done"><span class="tdot done"></span> Auto-completed <span class="n">412</span></button>
+          <button class="tri" data-tri="all">All lines <span class="n">489</span></button>
+          <div class="spacer"></div>
+          <span class="badge b-ai" style="margin-bottom:8px">✦ coding as it goes</span>
+        </div>
+
+        <div class="filters">
+          <select id="ibReport" title="Report type">
+            <option value="">Agent triage — all reports</option>
+            <option value="bpay">BPay report</option>
+            <option value="mint">Mint daily settlement</option>
+            <option value="merchant">Merchant settlements</option>
+            <option value="refunds">Passenger refund report</option>
+          </select>
+          <select id="ibDate" title="Report date"></select>
+          <select id="ibShop"><option value="">All shops</option></select>
+          <select id="ibState">
+            <option value="">Any status</option>
+            <option value="unalloc">Not allocated</option>
+            <option value="unrec">Not reconciled</option>
+            <option value="both">Allocated &amp; reconciled</option>
+          </select>
+          <input class="search" id="ibSearch" placeholder="Search receipt, consultant, shop, booking…">
+        </div>
+
+        <!-- per-transaction view for a single uploaded report -->
+        <div id="reportPane" style="display:none">
+          <div class="rsum" id="rSum"></div>
+          <div class="rwrap"><table>
+            <!-- columns depend on the report — filled by renderReport() -->
+            <thead><tr id="rHead"></tr></thead>
+            <tbody id="rBody"></tbody>
+          </table></div>
+          <div class="rfoot" id="rFoot"></div>
+        </div>
+
+        <div class="tbl-wrap" id="triagePane">
+          <table>
+            <thead><tr>
+              <th style="width:26px"><input type="checkbox"></th>
+              <th style="width:16px"></th>
+              <th>Source line</th>
+              <th class="num">Amount</th>
+              <th>✦ Proposed coding <span style="text-transform:none;letter-spacing:0;font-weight:400">— every field, not just the match</span></th>
+              <th>Confidence</th>
+              <th>Why</th>
+              <th></th>
+            </tr></thead>
+            <tbody>
+
+              <!-- recurring-work group (booke: "handles recurring work") -->
+              <tr class="grp"><td colspan="8">
+                <span class="caret">▸</span>
+                <b>18 lines · Princess Cruises creditor payments</b> — recurring pattern, coded identically to 14-07-2026 and 21 earlier days
+                <span class="badge b-ok" style="margin-left:8px">auto-completed at 100%</span>
+                <span class="badge b-ai" style="margin-left:4px">recurring work</span>
+                <span style="float:right" class="muted">$84,219.40 · <a href="#">expand</a></span>
+              </td></tr>
+
+              <tr class="picked">
+                <td><input type="checkbox" checked></td><td><span class="tdot rev"></span></td>
+                <td><b class="ref">PRIN-DXVVVW</b><div class="muted">Web Source · Mint settlement</div>
+                    <span class="badge b-ai" style="margin-top:4px">alias: Web Source → Stuba</span></td>
+                <td class="num">4,591.52</td>
+                <td><div class="coding">
+                  <div class="fld"><em>Match</em><span class="spark-i">✦</span><select><option>P.0000080757 · Stuba</option><option>P.0000080761 · Circuit Travel</option><option>Search Tramada…</option></select></div>
+                  <div class="fld"><em>Booking</em><span class="spark-i">✦</span><select><option>129773 · Vietnam land</option><option>Search…</option></select></div>
+                  <div class="fld"><em>Shop</em><span class="spark-i">✦</span><select><option>ADL Adelaide</option><option>WLK Walkerville</option></select></div>
+                  <div class="fld"><em>GST</em><span class="spark-i">✦</span><select><option>GST-free · international</option><option>GST 10%</option></select></div>
+                </div></td>
+                <td><div class="conf"><div class="track"><i style="width:96%"></i></div><b>96%</b></div></td>
+                <td><button class="icobtn" title="Reasoning">💡</button><button class="icobtn" title="Notes">💬<span class="n">1</span></button></td>
+                <td class="rowact"><button class="btn sm indigo">Tick off</button></td>
+              </tr>
+
+              <tr class="picked">
+                <td><input type="checkbox" checked></td><td><span class="tdot rev"></span></td>
+                <td><b class="ref">PRIN 9KHVGP</b><div class="muted">Cosmos Tours · Mint settlement</div>
+                    <span class="badge b-ai" style="margin-top:4px">alias: Cosmos → Circuit Travel</span></td>
+                <td class="num">4,437.20</td>
+                <td><div class="coding">
+                  <div class="fld"><em>Match</em><span class="spark-i">✦</span><select><option>P.0000080721 · Circuit Travel</option><option>Search Tramada…</option></select></div>
+                  <div class="fld"><em>Booking</em><span class="spark-i">✦</span><select><option>130221 · Europe river cruise</option></select></div>
+                  <div class="fld"><em>Shop</em><span class="spark-i">✦</span><select><option>MAR Marion</option></select></div>
+                  <div class="fld"><em>GST</em><span class="spark-i">✦</span><select><option>GST-free · international</option><option>GST 10%</option></select></div>
+                </div></td>
+                <td><div class="conf"><div class="track"><i style="width:95%"></i></div><b>95%</b></div></td>
+                <td><button class="icobtn" title="Reasoning">💡</button><button class="icobtn" title="Notes">💬</button></td>
+                <td class="rowact"><button class="btn sm indigo">Tick off</button></td>
+              </tr>
+
+              <tr>
+                <td><input type="checkbox"></td><td><span class="tdot rev"></span></td>
+                <td><b class="ref">STG280720260021348490</b><div class="muted">BPay · Georgina R (COL)</div>
+                    <span class="badge b-ai" style="margin-top:4px">💬 coded from consultant comment</span></td>
+                <td class="num">1,000.00</td>
+                <td><div class="coding">
+                  <div class="fld"><em>Action</em><span class="spark-i">✦</span><select><option>Create Debtor Payment Receipt</option></select></div>
+                  <div class="fld"><em>Booking</em><span class="spark-i">✦</span><select><option>130789 · Bali family</option></select></div>
+                  <div class="fld"><em>Allocate</em><span class="spark-i">✦</span><select><option>Flights — Jetstar JQ35</option><option>Leave unallocated</option></select></div>
+                  <div class="fld"><em>GST</em><span class="spark-i">✦</span><select><option>GST-free · international air</option></select></div>
+                </div>
+                <div class="bubble parsed" style="margin-top:6px;font-size:11px">“<b>this $1,000 is for the flights</b>, rest to follow” — Georgina R, 08:12</div></td>
+                <td><div class="conf"><div class="track"><i style="width:97%"></i></div><b>97%</b></div></td>
+                <td><button class="icobtn" title="Reasoning">💡</button><button class="icobtn" title="Notes">💬<span class="n">1</span></button></td>
+                <td class="rowact"><button class="btn sm indigo">Approve</button></td>
+              </tr>
+
+              <tr>
+                <td><input type="checkbox"></td><td><span class="tdot need"></span></td>
+                <td><b class="ref">ETG-4471082</b><div class="muted">ETG · Mint settlement</div>
+                    <span class="badge b-err" style="margin-top:4px">amount differs −72.00</span></td>
+                <td class="num">2,180.00</td>
+                <td><div class="coding">
+                  <div class="fld"><em>Match</em><span class="spark-i">✦</span><select class="errsel"><option>P.0000080744 · ETG · 2,108.00</option><option>Search Tramada…</option></select></div>
+                  <div class="fld"><em>Booking</em><span class="spark-i">✦</span><select><option>129854 · Fiji package</option></select></div>
+                  <div class="fld"><em>Shop</em><span class="spark-i">✦</span><select><option>MBA Modbury</option></select></div>
+                  <div class="fld"><em>Fix</em><span class="spark-i">✦</span><select class="warnsel"><option>Cancel &amp; re-enter at 2,180.00</option><option>Ask consultant</option></select></div>
+                </div></td>
+                <td><div class="conf mid"><div class="track"><i style="width:64%"></i></div><b>64%</b></div></td>
+                <td><button class="icobtn" title="Reasoning">💡</button><button class="icobtn" title="Notes">💬</button></td>
+                <td class="rowact"><button class="btn sm">Apply fix</button></td>
+              </tr>
+
+              <tr>
+                <td><input type="checkbox"></td><td><span class="tdot need"></span></td>
+                <td><b class="ref">CRU260720264761 31</b><div class="muted">BPay · Bkg 118299 · Marina D (WLK)</div>
+                    <span class="badge b-err" style="margin-top:4px">no costing exists</span></td>
+                <td class="num">3,473.92</td>
+                <td><div class="coding">
+                  <div class="fld"><em>Action</em><span class="spark-i">✦</span><select class="errsel"><option>— nothing to code against —</option><option>Receipt unallocated</option></select></div>
+                  <div class="fld"><em>Booking</em><span class="fixed">118299 <span class="muted">(exists, no costing)</span></span></div>
+                  <div class="fld"><em>Allocate</em><span class="fixed muted">blocked</span></div>
+                  <div class="fld"><em>GST</em><span class="fixed muted">unknown until coded</span></div>
+                </div></td>
+                <td><div class="conf low"><div class="track"><i style="width:20%"></i></div><b>20%</b></div></td>
+                <td><button class="icobtn" title="Reasoning">💡</button><button class="icobtn" title="Notes">💬<span class="n">2</span></button></td>
+                <td class="rowact"><button class="btn sm primary">Ask consultant</button></td>
+              </tr>
+
+              <tr>
+                <td><input type="checkbox"></td><td><span class="tdot rev"></span></td>
+                <td><b class="ref">ANZ280720263587837812</b><div class="muted">BPay · Bkg 120435 · Cassandra C (ADL)</div>
+                    <span class="badge b-warn" style="margin-top:4px">no clear costing match</span></td>
+                <td class="num">1,684.16</td>
+                <td><div class="coding">
+                  <div class="fld"><em>Action</em><span class="spark-i">✦</span><select><option>Create Debtor Payment Receipt · EFT</option></select></div>
+                  <div class="fld"><em>Payer</em><span class="fixed">BPay <span class="muted">(multiple pax)</span></span></div>
+                  <div class="fld"><em>Allocate</em><span class="spark-i">✦</span><select class="warnsel"><option>Please allocate — not guessing</option><option>Accommodation — Hotelbeds</option></select></div>
+                  <div class="fld"><em>GST</em><span class="fixed muted">set on allocation</span></div>
+                </div></td>
+                <td><div class="conf mid"><div class="track"><i style="width:78%"></i></div><b>78%</b></div></td>
+                <td><button class="icobtn" title="Reasoning">💡</button><button class="icobtn" title="Notes">💬</button></td>
+                <td class="rowact"><button class="btn sm indigo">Approve</button></td>
+              </tr>
+
+              <tr>
+                <td><input type="checkbox"></td><td><span class="tdot need"></span></td>
+                <td><b class="ref">MERCHANT SETTLEMENT · MTB</b><div class="muted">Mt Barker · 11 receipts + 1 refund</div>
+                    <span class="badge b-err" style="margin-top:4px">shop total short 0.03</span></td>
+                <td class="num">7,898.43</td>
+                <td><div class="coding">
+                  <div class="fld"><em>Action</em><span class="spark-i">✦</span><select class="warnsel"><option>Re-enter R.0000281612 at 1,220.39</option><option>Issue receipt anyway</option></select></div>
+                  <div class="fld"><em>Shop</em><span class="fixed">MTB Mt Barker</span></div>
+                  <div class="fld"><em>Refunds</em><span class="fixed">−240.00 IPSI · netted</span></div>
+                  <div class="fld"><em>GST</em><span class="fixed muted">mixed — per receipt</span></div>
+                </div></td>
+                <td><div class="conf mid"><div class="track"><i style="width:81%"></i></div><b>81%</b></div></td>
+                <td><button class="icobtn" title="Reasoning">💡</button><button class="icobtn" title="Notes">💬</button></td>
+                <td class="rowact"><button class="btn sm">Investigate</button></td>
+              </tr>
+
+              <tr>
+                <td><input type="checkbox"></td><td><span class="tdot need"></span></td>
+                <td><b class="ref">AVL-77Q2WX</b><div class="muted">Avalon Waterways · Mint settlement</div>
+                    <span class="badge b-err" style="margin-top:4px">unmatched</span></td>
+                <td class="num">12,406.00</td>
+                <td><div class="coding">
+                  <div class="fld"><em>Match</em><span class="spark-i">✦</span><select class="errsel"><option>— no candidate found —</option><option>Search Tramada…</option></select></div>
+                  <div class="fld"><em>Creditor</em><span class="spark-i">✦</span><select><option>Circuit Travel (alias)</option></select></div>
+                  <div class="fld"><em>Booking</em><span class="fixed muted">unknown</span></div>
+                  <div class="fld"><em>GST</em><span class="fixed muted">unknown</span></div>
+                </div></td>
+                <td><div class="conf low"><div class="track"><i style="width:12%"></i></div><b>12%</b></div></td>
+                <td><button class="icobtn" title="Reasoning">💡</button><button class="icobtn" title="Notes">💬</button></td>
+                <td class="rowact"><button class="btn sm">Search</button></td>
+              </tr>
+
+              <tr>
+                <td><input type="checkbox"></td><td><span class="tdot rev"></span></td>
+                <td><b class="ref">6123187</b><div class="muted">Passenger refund · B128413 Jetstar</div>
+                    <span class="badge b-warn" style="margin-top:4px">amount differs +2.00</span></td>
+                <td class="num">10,635.24</td>
+                <td><div class="coding">
+                  <div class="fld"><em>Match</em><span class="spark-i">✦</span><select class="warnsel"><option>P80857 · Jetstar refund · 10,633.24</option></select></div>
+                  <div class="fld"><em>Booking</em><span class="spark-i">✦</span><select><option>128413 · Domestic air</option></select></div>
+                  <div class="fld"><em>Shop</em><span class="spark-i">✦</span><select><option>PLO Port Lincoln</option></select></div>
+                  <div class="fld"><em>GST</em><span class="spark-i">✦</span><select><option>GST 10% reversed · domestic air</option></select></div>
+                </div></td>
+                <td><div class="conf mid"><div class="track"><i style="width:71%"></i></div><b>71%</b></div></td>
+                <td><button class="icobtn" title="Reasoning">💡</button><button class="icobtn" title="Notes">💬</button></td>
+                <td class="rowact"><button class="btn sm">Review</button></td>
+              </tr>
+
+            </tbody>
+          </table>
+        </div>
+
+        <div style="height:54px"></div>
+        <div class="selbar-wrap">
+          <div class="selbar">
+            <b>2 lines selected</b>
+            <span class="muted" style="font-size:12px">$9,028.72</span>
+            <button class="btn sm ghost">Clear selection</button>
+            <div class="spacer"></div>
+            <button class="btn sm">Apply coding to all similar</button>
+            <button class="btn sm">Create task</button>
+            <button class="btn sm primary">Ask consultant</button>
+            <button class="btn sm indigo">Approve &amp; tick off</button>
+            <button class="btn sm">⚙</button>
+          </div>
+          <div class="toast">
+            <span>💬</span> Marina D was asked about booking 118299 — 2 hours ago, no reply yet
+            <div class="spacer"></div><a href="#">Chase</a>
+          </div>
+        </div>
+      </div>
+
+      <!-- right rail -->
+      <div id="inboxRail" style="display:flex;flex-direction:column;gap:14px;align-self:start;position:sticky;top:74px">
+        <div class="card drawer">
+          <div class="card-h"><h3>Why the agent coded it this way</h3><div class="spacer"></div><span class="badge b-ai">✦ agent</span></div>
+          <div class="card-b" style="padding-top:11px">
+            <div class="v" style="margin-bottom:9px"><b class="ref">PRIN-DXVVVW</b> · Web Source · $4,591.52</div>
+            <div class="reason">
+              Reference <b>PRIN-DXVVVW</b> is unique in today's Mint settlement and appears once in Tramada as <b>P.0000080757</b>. Amounts agree to the cent — the deciding check, since the reference alone doesn't prove correctness.<br><br>
+              Creditor names differ: Mint says <b>Web Source</b>, Tramada says <b>Stuba</b>. Learned trading-name alias, not an error. Booking, shop and GST treatment were carried across from how this supplier has been reconciled before — 41 prior matches, no rejections.
+            </div>
+
+            <div class="k">Amount check</div>
+            <dl class="kv"><dt>Mint settlement</dt><dd>4,591.52</dd><dt>Tramada payment</dt><dd>4,591.52</dd><dt>Difference</dt><dd style="color:var(--ok)">0.00 ✓</dd></dl>
+
+            <hr class="sep">
+            <div style="display:flex;gap:7px"><button class="btn indigo" style="flex:1">Confirm &amp; tick off</button><button class="btn">Reject</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <p class="foot-note">
+    UI mockup · RAA Travel Reconciliation Agent · brand palette and type sampled from raa.com.au ·
+    interaction patterns informed by booke.ai (/xero and /auto-categorization) · all figures illustrative
+  </p>
+
+  </div><!-- /wrap -->
+</div><!-- /main -->
+
+<!-- ══════════ ASK THE AGENT ══════════ -->
+<aside class="askp" id="askPanel" aria-label="Ask the agent">
+  <div class="grip" id="askGrip" title="Drag to resize"></div>
+
+  <div class="ask-h">
+    <b><span style="color:var(--indigo)">✦</span> Ask the agent</b>
+    <div class="sp"></div>
+    <button class="xbtn2" id="askHistBtn" title="Past conversations">◷</button>
+    <button class="xbtn2" id="askWide" title="Widen">⇤</button>
+    <button class="xbtn2" id="askClose" title="Close · Esc">✕</button>
+  </div>
+  <div class="ask-hist" id="askHist"></div>
+
+  <div class="ask-scope">
+    <button class="scopechip" id="askScope">29-07-2026 · all streams <span style="opacity:.55">▾</span></button>
+    <span class="muted" id="askScopeHint" style="font-size:10.5px"></span>
+    <div class="scopepop" id="askScopePop">
+      <label class="f">Statement date</label>
+      <select id="askDate"></select>
+      <label class="f" style="margin-top:11px">Streams in scope</label>
+      <div id="askStreams"></div>
+      <div class="foot">
+        <button class="btn sm indigo" id="askScopeApply">Apply</button>
+        <button class="btn sm" id="askScopeAll">All streams</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="ask-stale" id="askStale">
+    <span>Data changed since this answer.</span>
+    <button class="btn sm" id="askRerun">Re-run question</button>
+  </div>
+
+  <div class="ask-b" id="askBody"></div>
+
+  <div class="ask-f">
+    <div class="composer">
+      <button class="ic" id="askCtx" title="Add context">＋</button>
+      <textarea id="askIn" rows="1" placeholder="Ask about today's reconciliation…"></textarea>
+      <button class="send" id="askSend" title="Send · ⌘⏎">➤</button>
+    </div>
+    <div class="ask-note">Answers are computed from the uploaded reports. Nothing is written to Tramada from here.</div>
+  </div>
+</aside>
+
+<!-- launcher — present on every screen -->
+<button class="askfab" id="askFab" aria-label="Ask the agent">
+  <span class="lbl">Ask the agent · ⌘K</span>
+  <span id="askFabIcon">✦</span>
+  <span class="fdot" id="askFabDot"></span>
+</button>
+</div><!-- /app -->
+
+<script>
+const titles = {
+  overview:'Run overview',
+  sources:'Sources & upload',
+  inbox:'Reconciliation inbox'
+};
+function go(id){
+  document.querySelectorAll('.screen').forEach(s=>s.classList.toggle('on', s.id==='s-'+id));
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('on', n.dataset.go===id));
+  document.querySelectorAll('.rbtn').forEach(n=>n.classList.toggle('on', n.dataset.go===id));
+  document.getElementById('topTitle').textContent = titles[id] || '';
+  window.scrollTo({top:0});
+}
+document.addEventListener('click', e=>{
+  const t = e.target.closest('[data-go]');
+  if(t){ e.preventDefault(); go(t.dataset.go); return; }
+
+  const grp = e.target.closest('tr.grp');
+  if(grp){ grp.classList.toggle('open'); return; }
+
+  const tri = e.target.closest('.tri');
+  if(tri){ tri.parentElement.querySelectorAll('.tri').forEach(b=>b.classList.toggle('on', b===tri)); return; }
+
+  const chip = e.target.closest('.chip');
+  if(chip && !chip.textContent.includes('add')){ chip.classList.toggle('on'); }
+
+  const row = e.target.closest('tbody tr');
+  if(row && !row.classList.contains('grp') && !e.target.closest('button') && !e.target.closest('input') && !e.target.closest('select')){
+    row.parentElement.querySelectorAll('tr').forEach(r=>{ if(!r.classList.contains('grp')) r.classList.toggle('sel', r===row); });
+  }
+});
+document.addEventListener('change', e=>{
+  if(e.target.type==='checkbox'){
+    const row = e.target.closest('tbody tr');
+    if(row) row.classList.toggle('picked', e.target.checked);
+  }
+});
+
+/* ══════════════════════════════════════════════════════════════
+   SOURCES & UPLOAD — date-driven tiles + detect-and-confirm add
+   ══════════════════════════════════════════════════════════════ */
+
+// Recurring sources. Ad-hoc uploads marked "remember" get appended here.
+let SRC_DEFS = [
+  {id:'westpac',  name:'Westpac bank statement', req:true,
+   desc:'CSV / XLSX export — the master ledger for the day',
+   empty:'Drop the Westpac export here, or browse', route:'All streams · master ledger'},
+  {id:'mint',     name:'Mint daily settlement', req:true,
+   desc:'Paste or drop — arrives ready to use, no reformatting',
+   empty:'Drop the Mint settlement here, or browse', route:'Stream A · Mint & creditors'},
+  {id:'bpay',     name:'BPay report',
+   desc:'Extracted from the Westpac statement · reference lookup applied',
+   empty:'Drop the BPay export here, or browse', route:'Stream B · BPay'},
+  {id:'refunds',  name:'Passenger refund report',
+   desc:'Bulk-matched on transaction number',
+   empty:'Drop the refund report here, or browse', route:'Stream D · Passenger refunds'},
+  {id:'nuve',     name:'Nuve daily report', flagWhenMissing:true,
+   desc:'Needed for Nuve-settled shops only — MT BARKER, VICTOR HARBOR',
+   empty:'Log in to Nuve, export the day’s report, drop it here', route:'Stream C · Merchant settlements'}
+];
+
+// What has actually been uploaded, per statement date.
+const UPLOADS = {
+  '29-07-2026':{
+    westpac:{file:'BANK STATEMENT 2026 - 27 FY.xlsx', meta:'766 rows · 189 KB',
+             status:'processed', result:'766 lines read · 489 routed to streams'},
+    mint:   {file:'mint_settlement_20260729.csv',
+             meta:'50 rows · 13 KB · opening $498,317.60 → closing $193,154.48',
+             status:'processed', result:'50 references · 48 matched on amount · balances checked'},
+    bpay:   {file:'BPAY PAYMENTS_2026 - 27 FY.xlsx',
+             meta:'45 rows · 2 unresolved refs · opening $-7,252,720.99 → closing $-6,718,104.52',
+             status:'processed', result:'45 receipts · 43 resolved to bookings · balances checked'},
+    refunds:{file:'passenger_refunds_20260729.csv',   meta:'34 rows',
+             status:'processed', result:'34 transactions · 31 matched'}
+  },
+  '28-07-2026':{
+    westpac:{file:'BANK STATEMENT 2026 - 27 FY.xlsx', meta:'742 rows · 186 KB',
+             status:'processed', result:'742 lines read · 475 routed to streams'},
+    mint:   {file:'mint_settlement_20260728.csv',
+             meta:'47 rows · 12 KB · opening $713,199.95 → closing $498,317.60',
+             status:'processed', result:'47 references · 47 matched on amount · balances checked'},
+    bpay:   {file:'BPAY PAYMENTS_2026 - 27 FY.xlsx',
+             meta:'52 rows · 0 unresolved · opening $-7,401,882.14 → closing $-7,252,720.99',
+             status:'processed', result:'52 receipts · 52 resolved to bookings · balances checked'},
+    refunds:{file:'passenger_refunds_20260728.csv',   meta:'29 rows',
+             status:'processed', result:'29 transactions · 29 matched'},
+    nuve:   {file:'nuve_export_20260728.csv',         meta:'18 rows',
+             status:'processed', result:'18 lines · 2 shops totalled'}
+  },
+  '30-07-2026':{}            // fresh day — every tile starts empty
+};
+const PAGES = {'28-07-2026':'1551','29-07-2026':'1552','30-07-2026':'1553'};
+
+let curDate = '29-07-2026';
+let pickTarget = null;       // which tile the file picker is filling ('__adhoc' for the + tile)
+
+const $ = s => document.querySelector(s);
+
+function renderTiles(){
+  const up = UPLOADS[curDate] || (UPLOADS[curDate] = {});
+  const grid = $('#tileGrid');
+  if(!grid) return;
+  let html = '';
+
+  SRC_DEFS.forEach(d => {
+    const f = up[d.id];
+    if(f){
+      const st = f.status || 'ready';
+      let cls, icon, badge, extra = '', actions;
+
+      if(st === 'processing'){
+        cls='proc'; icon='◐'; badge='<span class="badge b-ai">processing…</span>';
+        extra = `<div class="procbar"><i></i></div>`;
+        actions = `<button class="btn sm" disabled style="opacity:.5;cursor:default">Processing…</button>`;
+      } else if(st === 'processed'){
+        cls='done'; icon='✓'; badge='<span class="badge b-ok">processed</span>';
+        extra = `<span class="result">✓ ${f.result}</span>`;
+        actions = `<button class="btn sm" data-go="inbox">View results</button>
+          <button class="btn sm ghost" data-preview="${d.id}">Preview</button>
+          <button class="btn sm ghost" data-upload="${d.id}">Replace file</button>`;
+      } else {
+        cls='proc'; icon='◷'; badge='<span class="badge b-warn">not processed yet</span>';
+        actions = `<button class="btn sm indigo" data-process="${d.id}">Process</button>
+          <button class="btn sm" data-preview="${d.id}">Preview</button>
+          <button class="btn sm ghost" data-upload="${d.id}">Replace file</button>`;
+      }
+
+      html += `<div class="dz ${cls}" data-src="${d.id}"><div class="di">${icon}</div><div style="flex:1">
+        <h4>${d.name} ${d.req?'<span class="badge b-mute">required</span>':''}
+          ${d.adhoc?'<span class="badge b-ai">✦ added by you</span>':''} ${badge}</h4>
+        <p>${d.desc}</p>
+        <span class="file">${f.file} · ${f.meta}</span>
+        ${extra}
+        <div class="actions">${actions}</div></div></div>`;
+    } else {
+      const bad = d.req || d.flagWhenMissing;
+      html += `<div class="dz ${bad?'err':''}" data-src="${d.id}" data-drop="${d.id}">
+        <div class="di">${bad?'!':'⇪'}</div><div style="flex:1">
+        <h4>${d.name} ${d.req?'<span class="badge b-mute">required</span>':''}
+          ${bad?'<span class="badge b-err">not uploaded</span>':'<span class="badge b-mute">optional</span>'}</h4>
+        <p>${d.desc}</p>
+        <span class="file">${d.empty}</span>
+        <div class="actions"><button class="btn sm indigo" data-upload="${d.id}">Choose file</button>
+          ${d.req?'':'<button class="btn sm ghost">Not needed today</button>'}</div></div></div>`;
+    }
+  });
+
+  // the always-last ad-hoc tile
+  html += `<div class="dz adhoc" data-drop="__adhoc"><div class="di">＋</div><div style="flex:1">
+      <h4>Add another report</h4>
+      <p>Anything else you're reconciling today. The agent reads the headers and tells you what it thinks it is — you confirm.</p>
+      <span class="file">Drop a CSV or XLSX here, or browse</span>
+      <div class="actions"><button class="btn sm indigo" data-upload="__adhoc">Choose file</button></div></div></div>`;
+
+  grid.innerHTML = html;
+  renderReadiness();
+}
+
+/* ══════════ FILE PREVIEW POPUP ══════════
+   Renders every row of an uploaded file. CSVs are parsed in the browser,
+   so they show their genuine contents; binary .xlsx workbooks can't be
+   read without a library, so they fall back to the sample below. */
+
+const SAMPLE_BPAY = {
+  cols:['B/PAY FILE DATE','RECEIPT NO','AMOUNT','CONSULTANT','SHOP','TRAMADA BKG NO','REMARKS'],
+  rows:[
+    ['46238','CBA040820260747711356',700,'Amy D','ADL','110984','Please allocate'],
+    ['46238','WBC040820268073618INT',18295,'Ashley F','ADL','117376',''],
+    ['46238','WBC040820263341306INT',290,'Emma C','ADL','124446',''],
+    ['46238','ANZ040820265060286024',10119.96,'Sara S','ADL','125879','Please allocate'],
+    ['46238','BBL040820262119203241',9961.96,'Sara S','ADL','125879','Please allocate'],
+    ['46238','CBA040820260747741606',500,'James K','ELZ','116791',''],
+    ['46238','CRU04082026546249',5725,'Lisa J','ELZ','118141',''],
+    ['46238','NAB040820263150181622',2725,'Lisa J','ELZ','118141',''],
+    ['46238','STG030820260042063034',3739.34,'Lisa J','ELZ','130658',''],
+    ['46238','CRU04082026545990',16275.86,'Emma S','MAR','131326','Please allocate'],
+    ['46238','CBA040820260147509342',547.13,'Brooke L','MGB','127678',''],
+    ['46238','CBA040820260747740923',4574,'Jolie D','MOD','116430','Please allocate'],
+    ['46238','WBC040820268732109INT',1000,'Sophie R','MOD','115370',''],
+    ['46238','BBL040820262119199885',1056.95,'Erin O','RCC','131087',''],
+    ['46238','STG040820260021756055',496.90,'Giuseppe C','RCC','131345',''],
+    ['46238','CBA040820260447637708',3076,'Joshua H','RCC','130894',''],
+    ['46238','CBA040820260447633378',5731.32,'Lisa S','RCC','116998',''],
+    ['46238','NAB040820260531944243',14975.03,'Claire B','VIC','117046',''],
+    ['46238','WBC040820266225911INT',170,'Georgia D','WEST','110994','Overpayment? Please check'],
+    ['46238','STG040820260010672973',2000,'Kris D','WEST','124118',''],
+    ['46238','CRU04082026544457',1546.85,'Lina N','WEST','130827',''],
+    ['46238','STG030820260071779955',162.09,'Sharleen S','WEST','128025',''],
+    ['46238','CRU04082026160289010',2500,'Sharleen S','WEST','131062','Please allocate'],
+    ['46238','ANZ040820261072679464',796,'Alyssa T','WLK','115932',''],
+    ['46238','NAB040820263161291975',4506,'Chai W','WLK','128455',''],
+    ['46238','CBA040820260747711788',3334.99,'Marina D','WLK','130943',''],
+    ['46238','BBL040820262119211782',48.50,'Rachel R','WLK','128303',''],
+    ['46238','CRU030820266739587093',8095.01,'Rachel R','WLK','129620','']
+  ],
+  summary:{total:122948.89, count:28, sent:0.4284722222222222}
+};
+
+/* The Mint daily settlement is a payments file, not a receipts file — it is
+   money going out to creditors, so it carries company numbers on both sides
+   and a bank status per line rather than a consultant and a booking. */
+const SAMPLE_MINT = {
+  cols:['From Company','From Company Number','To Company','To Company Number','Transaction Reference',
+        'Amount','Currency','Status','Created Time','Authorised Time','Updated Time','Due Time','Recipient Reference'],
+  rows:[
+    ['Viva Holidays Pty Ltd','M735037','M00640038',594.00,'5:48:50 AM','VIVHRN6968'],
+    ['Australia New Zealand Central Reservations Office Pty Ltd','M856845','M00641007',3684.84,'11:29:03 PM','830931'],
+    ['DAH Holdings Pty Limited','M758834','M00641380',4936.50,'2:59:06 AM','4VZQTW'],
+    ['Great Southern Rail Travel Pty Ltd','M995711','M00641467',4125.00,'3:53:54 AM','JBR762524'],
+    ['RCL CRUISES LTD','M514633','M00641570',900.00,'4:43:23 AM','8712642'],
+    ['RCL CRUISES LTD','M514633','M00640092',900.00,'6:29:19 AM','1172294'],
+    ['DAH Holdings Pty Limited','M758834','M00640135',1456.39,'7:12:19 AM','AU806742747'],
+    ['Australia Pacific Touring Pty Ltd','M672336','M00640155',14807.00,'7:29:59 AM','1884286'],
+    ['RCL CRUISES LTD','M514633','M00641058',8396.42,'12:00:36 AM','688058'],
+    ['Kangaroo Island Sealink Pty Ltd','M994531','M00641397',691.00,'3:06:19 AM','2ZVRY9'],
+    ['RCL CRUISES LTD','M514633','M00641567',900.00,'4:40:49 AM','5424373'],
+    ['Top Deck Tours Pty Ltd','M651578','M00640146',10383.96,'7:20:49 AM','BRA95337'],
+    ['Viva Holidays Pty Ltd','M735037','M00640166',354.64,'7:52:52 AM','VIVHRK5316'],
+    ['Bunnik Travel Pty Ltd','M540550','M00641199',30086.64,'1:11:12 AM','BT391416'],
+    ['Viva Holidays II Limited T/A Ready Rooms','M708221','M00641242',1846.00,'1:34:00 AM','invoice_5312945-RR'],
+    ['Viva Holidays Pty Ltd','M735037','M00641265',165.00,'1:46:52 AM','VIVR230966'],
+    ['Bunnik Travel Pty Ltd','M540550','M00641285',5118.61,'2:10:10 AM','BT393099'],
+    ['DAH Holdings Pty Limited','M758834','M00641405',766.60,'3:11:40 AM','231870149'],
+    ['Australia New Zealand Central Reservations Office Pty Ltd','M856845','M00641475',220.00,'3:58:55 AM','833960'],
+    ['Australia Pacific Touring Pty Ltd','M672336','M00641578',36799.97,'4:49:48 AM','1880965'],
+    ['Websource Pacific Pty Limited','M625231','M00640054',435.28,'6:01:51 AM','703191826'],
+    ['Grand Pacific Tours Pty Ltd','M606478','M00641046',6150.32,'11:50:46 PM','843977'],
+    ['Insight Vacations Pty Limited','M110442','M00641362',28425.65,'2:50:42 AM','IVSYDS-A414716'],
+    ['DAH Holdings Pty Limited','M758834','M00640005',1089.72,'5:09:21 AM','988102096'],
+    ['Kangaroo Island Sealink Pty Ltd','M994531','M00640131',762.12,'7:10:26 AM','2ZVR6P'],
+    ['Trafalgar Tours (Aust) Pty Ltd','M326316','M00640148',8819.04,'7:21:05 AM','A703302'],
+    ['Great Southern Rail Travel Pty Ltd','M995711','M00640151',3423.20,'7:24:26 AM','JBR789984'],
+    ['Wendy Wu Tours Pty Ltd','M395981','M00640994',18260.80,'11:24:02 PM','AUQ868391'],
+    ['Tas Vacations Pty Ltd','M875051','M00641017',7165.27,'11:32:43 PM','21571'],
+    ['Wendy Wu Tours Pty Ltd','M395981','M00641080',9688.80,'12:13:44 AM','AUQ881221'],
+    ['Intrepid Travel Pty Ltd','M118313','M00641094',14524.85,'12:19:08 AM','6784748'],
+    ['Scenic Tours Pty Ltd','M427124','M00641140',3872.00,'12:43:10 AM','963267'],
+    ['Great Southern Rail Travel Pty Ltd','M995711','M00641310',6846.40,'2:25:01 AM','JBR789678'],
+    ['Websource Pacific Pty Limited','M625231','M00640062',654.26,'6:08:08 AM','728230284'],
+    ['Grand Pacific Tours Pty Ltd','M606478','M00640162',500.00,'7:43:31 AM','844561'],
+    ['DAH Holdings Pty Limited','M758834','M00640168',774.72,'7:58:37 AM','AU581347522'],
+    ['Kangaroo Island Sealink Pty Ltd','M994531','M00641051',488.34,'11:53:20 PM','2ZVRPC'],
+    ['Websource Pacific Pty Limited','M625231','M00641258',475.86,'1:43:50 AM','703192973'],
+    ['Australia New Zealand Central Reservations Office Pty Ltd','M856845','M00641278',1193.28,'2:05:58 AM','833529'],
+    ['Grand Pacific Tours Pty Ltd','M606478','M00641284',14377.44,'2:09:35 AM','844304'],
+    ['Grand Pacific Tours Pty Ltd','M606478','M00641341',8035.12,'2:19:50 AM','844321'],
+    ['Viva Holidays Pty Ltd','M735037','M00641574',1529.44,'4:46:18 AM','VIVHRM5002'],
+    ['Bunnik Travel Pty Ltd','M540550','M00639990',10000.00,'5:00:11 AM','b126252'],
+    ['DAH Holdings Pty Limited','M758834','M00640139',564.43,'7:14:51 AM','AU874167249'],
+    ['Top Deck Tours Pty Ltd','M651578','M00640153',14005.26,'7:25:56 AM','BRA95336'],
+    ['Scenic Tours Pty Ltd','M427124','M00641145',3872.00,'12:45:52 AM','963194'],
+    ['Kangaroo Island Sealink Pty Ltd','M994531','M00640090',486.53,'6:27:46 AM','2ZVJKF'],
+    ['Top Deck Tours Pty Ltd','M651578','M00641053',400.00,'11:55:05 PM','BRA95025'],
+    ['Broome, Kimberley & Beyond Pty Ltd','M898939','M00641266',6991.70,'1:47:35 AM','BKFT137661'],
+    ['Viva Holidays Pty Ltd','M735037','M00641329',4218.72,'2:35:11 AM','VIVHRN6479']
+  ].map(([to, toNo, ref, amt, created, recipRef]) =>
+    // The payer, currency, status and the three clock columns are identical on
+    // every line of the file — expanded here rather than repeated 50 times above.
+    ['Royal Automobile Association (RAA) of S.A. Incorporated','M363355', to, toNo, ref,
+     amt,'AUD','Pending at Bank', created, created,'5:00:49 AM','12:00:00 AM', recipRef])
+};
+SAMPLE_MINT.summary = {
+  total: SAMPLE_MINT.rows.reduce((t,r) => t + r[5], 0),
+  count: SAMPLE_MINT.rows.length,
+  extra: 'AUD · all pending at bank'
+};
+
+// Which sample stands in when a binary workbook can't be parsed in-browser.
+const SAMPLES = {mint:SAMPLE_MINT, bpay:SAMPLE_BPAY};
+
+// REMARKS drives triage but is not shown in the preview table.
+const HIDDEN_COLS = ['REMARKS'];
+
+function xlDate(serial){
+  const n = Number(serial);
+  if(!n || n < 20000 || n > 80000) return serial;
+  const d = new Date(Date.UTC(1899,11,30) + n*86400000);
+  return String(d.getUTCDate()).padStart(2,'0') + '-' +
+         String(d.getUTCMonth()+1).padStart(2,'0') + '-' + d.getUTCFullYear();
+}
+function xlTime(frac){
+  const mins = Math.round(Number(frac)*24*60);
+  return String(Math.floor(mins/60)).padStart(2,'0') + ':' + String(mins%60).padStart(2,'0');
+}
+const isMoneyCol  = c => /amount|total|debit|credit|balance/i.test(c);
+const isDateCol   = c => /date/i.test(c);
+const isRefCol    = c => /receipt|reference|bkg|booking|trans/i.test(c);
+const isStatusCol = c => /^status$/i.test(String(c).trim());
+
+function openPreview(id){
+  const up = UPLOADS[curDate] || {};
+  const f  = up[id];
+  if(!f) return;
+  const def = SRC_DEFS.find(d => d.id === id) || {name:'File'};
+
+  // real parsed CSV, else the sample matching this source for binary workbooks
+  const sample  = SAMPLES[id] || SAMPLE_BPAY;
+  const parsed  = (f.cols && f.rows && f.rows.length);
+  const cols    = parsed ? f.cols : sample.cols;
+  const rows    = parsed ? f.rows : sample.rows;
+  const summary = parsed ? null   : sample.summary;
+
+  const show = cols.map((c,i) => HIDDEN_COLS.includes(String(c).trim().toUpperCase()) ? -1 : i)
+                   .filter(i => i >= 0);
+
+  const head = show.map(i => `<th class="${isMoneyCol(cols[i])?'num':''}">${cols[i]}</th>`).join('');
+  const body = rows.slice(0,1000).map((r,ri) => {
+    const tds = show.map(i => {
+      const c = cols[i], v = (r[i] === undefined ? '' : r[i]);
+      if(isDateCol(c))   return `<td class="ref">${xlDate(v)}</td>`;
+      if(isMoneyCol(c))  return `<td class="num">${v === '' ? '' : fmtMoney(v) || v}</td>`;
+      if(isStatusCol(c)) return `<td>${v === '' ? '' : `<span class="badge b-mute">${v}</span>`}</td>`;
+      if(isRefCol(c))    return `<td class="ref">${v}</td>`;
+      return `<td>${v}</td>`;
+    }).join('');
+    return `<tr data-hay="${String(r.join(' ')).toLowerCase().replace(/"/g,'')}">
+              <td class="rowno">${ri+1}</td>${tds}</tr>`;
+  }).join('');
+
+  const foot = summary
+    ? `<span>Total <b>$${fmtMoney(summary.total)}</b></span>
+       <span>Transactions <b>${summary.count}</b></span>
+       ${summary.sent !== undefined ? `<span>Report sent <b>${xlTime(summary.sent)}</b></span>` : ''}
+       ${summary.extra ? `<span class="muted">${summary.extra}</span>` : ''}`
+    : `<span>Rows <b>${rows.length}</b></span><span>Columns <b>${show.length}</b></span>`;
+
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg';
+  bg.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true" aria-label="File preview">
+      <div class="modal-h">
+        <div>
+          <h3>${def.name} <span class="badge b-ai">✦ ${f.status === 'processed' ? 'processed' : 'parsed'}</span></h3>
+          <span class="fn">${f.file} · ${rows.length} rows · ${show.length} columns</span>
+        </div>
+        <div class="spacer"></div>
+        <button class="btn sm">Download</button>
+        <button class="xbtn" data-close aria-label="Close">✕</button>
+      </div>
+      <div class="modal-tools">
+        <input id="mSearch" placeholder="Search any column…">
+        <div class="spacer"></div>
+        <span class="muted" style="font-size:11.5px" id="mCount">Showing ${rows.length} of ${rows.length} rows</span>
+      </div>
+      <div class="modal-b">
+        <table><thead><tr><th class="rowno">#</th>${head}</tr></thead>
+        <tbody id="mBody">${body}</tbody></table>
+      </div>
+      <div class="modal-f">
+        ${foot}
+        <div class="spacer"></div>
+        <span class="muted" style="font-size:11px">Read-only — nothing is written to Tramada from here</span>
+        <button class="btn" data-close>Close</button>
+        ${f.status === 'processed' ? '' : `<button class="btn indigo" data-proc="${id}">Process this file</button>`}
+      </div>
+    </div>`;
+  document.body.appendChild(bg);
+
+  const close = () => { bg.remove(); document.removeEventListener('keydown', esc); };
+  function esc(e){ if(e.key === 'Escape') close(); }
+  bg.querySelectorAll('[data-close]').forEach(b => b.onclick = close);
+  bg.addEventListener('click', e => { if(e.target === bg) close(); });
+  document.addEventListener('keydown', esc);
+  const pb = bg.querySelector('[data-proc]');
+  if(pb) pb.onclick = () => { close(); processFile(id); };
+
+  const search = bg.querySelector('#mSearch');
+  const count  = bg.querySelector('#mCount');
+  const trs    = [...bg.querySelectorAll('#mBody tr')];
+  search.addEventListener('input', () => {
+    const q = search.value.trim().toLowerCase();
+    let shown = 0;
+    trs.forEach(tr => {
+      const ok = !q || tr.dataset.hay.includes(q);
+      tr.classList.toggle('hidden', !ok);
+      if(ok) shown++;
+    });
+    count.textContent = `Showing ${shown} of ${rows.length} rows`;
+  });
+  search.focus();
+}
+
+/* ══════════ RECONCILIATION INBOX — per-report transaction view ══════════
+   Filter by report type and report date, then list that report's
+   transactions with the two reconciliation flags.
+
+   Derived from the uploaded file, not invented:
+     · date        — from the DDMMYYYY inside the receipt number
+     · allocation  — false while the remark says "please allocate", i.e.
+                     the money has landed but nobody knows what it's for
+     · reconciled  — false when the line doesn't agree with the bank
+                     statement (an overpayment, or an unresolved reference)
+   A payment can be reconciled but not allocated; that's the common case. */
+
+function bpayTransactions(){
+  const C = SAMPLE_BPAY.cols;
+  const iRef = C.indexOf('RECEIPT NO'), iAmt = C.indexOf('AMOUNT');
+  const iCon = C.indexOf('CONSULTANT'), iShop = C.indexOf('SHOP');
+  const iBkg = C.indexOf('TRAMADA BKG NO'), iRem = C.indexOf('REMARKS');
+
+  return SAMPLE_BPAY.rows.map(r => {
+    const ref = String(r[iRef]);
+    const m = ref.match(/^[A-Z]{3}(\d{2})(\d{2})(\d{4})/);
+    const date = m ? `${m[1]}-${m[2]}-${m[3]}` : '—';
+    const rem = String(r[iRem] || '');
+    return {
+      date, ref,
+      amount: Number(r[iAmt]),
+      consultant: r[iCon],
+      shop: r[iShop],
+      bkg: String(r[iBkg]),
+      remark: rem,
+      allocated:  !/allocate/i.test(rem) && !/overpay/i.test(rem),
+      reconciled: !/overpay|check/i.test(rem)
+    };
+  });
+}
+
+/* Mint is money out, so there is no consultant, shop or booking to allocate
+   against — a line is either ticked off on the bank statement or it isn't.
+   The one line that doesn't tick off is the second Scenic Tours payment: same
+   creditor, same $3,872.00, a different recipient reference. It is the row
+   flagged red in the source workbook. */
+const MINT_QUERIES = {
+  M00641145: 'duplicate — same creditor and amount as M00641140'
+};
+const MINT_DATE = '29-07-2026';
+
+function mintTransactions(){
+  const C = SAMPLE_MINT.cols;
+  const iTo = C.indexOf('To Company'), iToNo = C.indexOf('To Company Number');
+  const iRef = C.indexOf('Transaction Reference'), iAmt = C.indexOf('Amount');
+  const iCur = C.indexOf('Currency'), iSt = C.indexOf('Status');
+  const iRecip = C.indexOf('Recipient Reference');
+
+  return SAMPLE_MINT.rows.map(r => {
+    const ref = String(r[iRef]);
+    return {
+      date: MINT_DATE, ref,
+      toCompany: r[iTo],
+      toNo: String(r[iToNo]),
+      amount: Number(r[iAmt]),
+      currency: r[iCur],
+      status: r[iSt],
+      recipRef: String(r[iRecip]),
+      why: MINT_QUERIES[ref] || '',
+      reconciled: !MINT_QUERIES[ref]
+    };
+  });
+}
+
+const REPORT_LABEL = {bpay:'BPay report', mint:'Mint daily settlement',
+                      merchant:'Merchant settlements', refunds:'Passenger refund report'};
+
+const T = `<span class="bool t"><span class="gl">✓</span>true</span>`;
+const F = r => `<span class="bool f"><span class="gl">✕</span>false</span>`
+              + (r ? `<span class="why">${r}</span>` : '');
+
+/* One entry per report the inbox can list: which columns it shows, what the
+   search box looks through, and what its true/false columns actually mean. */
+const REPORT_VIEWS = {
+  bpay: {
+    build: bpayTransactions, hasShop:true, hasAlloc:true,
+    search:'Search receipt, consultant, shop, booking…',
+    act:{on:n => n ? `Allocate ${n} selected` : 'Allocate selected',
+         row:t => t.allocated ? 'Open' : 'Allocate'},
+    pick: t => !t.allocated,
+    cols:[
+      {h:'Receipt no.', cell:t => `<td class="ref">${t.ref}<div class="muted" style="font-size:10px">${t.date}</div></td>`},
+      {h:'Amount', cls:'num', cell:t => `<td class="num">${fmtMoney(t.amount)}</td>`},
+      {h:'Consultant', cell:t => `<td>${t.consultant}</td>`},
+      {h:'Shop', cell:t => `<td><span class="badge b-mute">${t.shop}</span></td>`},
+      {h:'Booking', cell:t => `<td class="ref">${t.bkg}</td>`},
+      {h:'Allocation', cell:t => `<td>${t.allocated ? T
+        : F(/overpay/i.test(t.remark||'') ? 'overpayment' : 'please allocate')}</td>`},
+      {h:'Bank statement reconciliation', cell:t => `<td>${t.reconciled ? T : F('does not agree with statement')}</td>`}
+    ],
+    hay: t => `${t.ref} ${t.consultant} ${t.shop} ${t.bkg} ${t.amount}`,
+    foot:`<span><b>Allocation</b> — true once the receipt is allocated against a costing in Tramada.</span>
+          <span><b>Bank statement reconciliation</b> — true once the line is ticked off against the statement.</span>`
+  },
+  mint: {
+    build: mintTransactions, hasShop:false, hasAlloc:false,
+    search:'Search creditor, company number, reference…',
+    act:{on:n => n ? `Tick off ${n} selected` : 'Tick off selected',
+         row:t => t.reconciled ? 'Open' : 'Investigate'},
+    pick: t => !t.reconciled,
+    cols:[
+      {h:'To company', cell:t => `<td>${t.toCompany}</td>`},
+      {h:'To company number', cell:t => `<td class="ref">${t.toNo}</td>`},
+      {h:'Transaction reference', cell:t => `<td class="ref">${t.ref}<div class="muted" style="font-size:10px">${t.recipRef}</div></td>`},
+      {h:'Amount', cls:'num', cell:t => `<td class="num">${fmtMoney(t.amount)}</td>`},
+      {h:'Reconciled', cell:t => `<td>${t.reconciled ? T : F(t.why)}</td>`}
+    ],
+    hay: t => `${t.ref} ${t.toCompany} ${t.toNo} ${t.recipRef} ${t.amount}`,
+    foot:`<span><b>Reconciled</b> — true once the payment is ticked off against the bank statement.</span>
+          <span>Every line is a payment out of the Mint settlement account, so there is nothing to allocate.</span>`
+  }
+};
+
+let TX = [];
+
+function fillReportFilters(){
+  const type = $('#ibReport').value;
+  const dSel = $('#ibDate'), sSel = $('#ibShop');
+  if(!type){ dSel.innerHTML = '<option value="">—</option>'; sSel.innerHTML = '<option value="">All shops</option>'; return; }
+
+  const view = REPORT_VIEWS[type];
+  TX = view ? view.build() : [];
+  const dates = [...new Set(TX.map(t => t.date))].sort((a,b) =>
+    a.split('-').reverse().join('') < b.split('-').reverse().join('') ? 1 : -1);
+  dSel.innerHTML = `<option value="">All report dates</option>` +
+    dates.map(d => `<option value="${d}">${d} · ${TX.filter(t=>t.date===d).length} txns</option>`).join('');
+
+  // Shop only exists on reports that carry one; Mint payments don't.
+  sSel.style.display = (view && view.hasShop) ? '' : 'none';
+  const shops = [...new Set(TX.map(t => t.shop))].filter(Boolean).sort();
+  sSel.innerHTML = `<option value="">All shops</option>` +
+    shops.map(s => `<option value="${s}">${s}</option>`).join('');
+
+  // Likewise the allocation states — hide them where nothing is allocated.
+  $('#ibState').querySelectorAll('option[value="unalloc"],option[value="both"]')
+    .forEach(o => o.style.display = (view && view.hasAlloc) ? '' : 'none');
+  if(view && !view.hasAlloc && /unalloc|both/.test($('#ibState').value)) $('#ibState').value = '';
+  if(view) $('#ibSearch').placeholder = view.search;
+}
+
+function renderReport(){
+  const type  = $('#ibReport').value;
+  const pane  = $('#reportPane'), triage = $('#triagePane');
+  const tabs  = document.querySelector('#s-inbox .triage');
+  const selbar= document.querySelector('#s-inbox .selbar-wrap');
+
+  const rail = $('#inboxRail'), grid = $('#inboxGrid');
+
+  if(!type){                                   // default agent triage view
+    pane.style.display = 'none';
+    triage.style.display = '';
+    if(tabs) tabs.style.display = '';
+    if(selbar) selbar.style.display = '';
+    if(rail) rail.style.display = '';
+    if(grid) grid.style.gridTemplateColumns = '';
+    $('#ibTitle').textContent = 'Reconciliation inbox';
+    $('#ibLede').textContent  = 'Every statement line, triaged by what the agent needs from you. '
+      + 'Recurring work is grouped and handled in bulk; auto-completed lines stay out of your way; '
+      + 'only uncertain items surface.';
+    $('#ibActions').innerHTML = `<button class="btn">Export working file</button>
+      <button class="btn primary">Approve 23 high-confidence</button>`;
+    return;
+  }
+
+  // report view: full width, the agent-reasoning rail doesn't apply here
+  pane.style.display = '';
+  triage.style.display = 'none';
+  if(tabs) tabs.style.display = 'none';
+  if(selbar) selbar.style.display = 'none';
+  if(rail) rail.style.display = 'none';
+  if(grid) grid.style.gridTemplateColumns = 'minmax(0,1fr)';
+  const view = REPORT_VIEWS[type];
+  $('#ibTitle').textContent = REPORT_LABEL[type] || 'Report';
+  $('#ibLede').textContent  = view && view.hasAlloc
+    ? 'Transactions from the uploaded report, with their allocation and bank statement '
+      + 'status. A payment can be reconciled but not yet allocated.'
+    : 'Payments from the uploaded report, with their bank statement status.';
+  $('#ibActions').innerHTML = `<button class="btn" id="rExport">Export CSV</button>
+    <button class="btn primary" id="rAllocAll">${view ? view.act.on(0) : 'Allocate selected'}</button>`;
+
+  if(!view){
+    $('#rHead').innerHTML = '';
+    $('#rSum').innerHTML = '';
+    $('#rBody').innerHTML =
+      `<tr><td class="rempty">Per-transaction listing is wired for the <b>BPay report</b> and the
+        <b>Mint daily settlement</b> in this mockup. ${REPORT_LABEL[type]} lines are matched in
+        the agent triage view — switch the report filter back to see them.</td></tr>`;
+    $('#rFoot').innerHTML = '';
+    return;
+  }
+
+  const date = $('#ibDate').value, shop = $('#ibShop').value;
+  const state = $('#ibState').value, q = ($('#ibSearch').value || '').trim().toLowerCase();
+
+  const rows = TX.filter(t =>
+       (!date  || t.date === date)
+    && (!shop  || t.shop === shop)
+    && (state !== 'unalloc' || !t.allocated)
+    && (state !== 'unrec'   || !t.reconciled)
+    && (state !== 'both'    || (t.allocated && t.reconciled))
+    && (!q || view.hay(t).toLowerCase().includes(q))
+  );
+
+  const total = rows.reduce((s,t) => s + t.amount, 0);
+  const nAlloc = rows.filter(t => t.allocated).length;
+  const nRec   = rows.filter(t => t.reconciled).length;
+
+  const unAlloc = rows.length - nAlloc, unRec = rows.length - nRec;
+
+  $('#rSum').innerHTML = `
+    <div class="rstat"><small>Report date</small><b>${date || 'All dates'}</b></div>
+    <div class="rstat"><small>Transactions</small><b>${rows.length}</b></div>
+    <div class="rstat"><small>Value</small><b>$${fmtMoney(total)}</b></div>
+    ${view.hasAlloc ? `<div class="rstat ${unAlloc?'warn':'ok'}"><small>Allocated</small><b>${nAlloc}<span class="of"> / ${rows.length}</span></b></div>` : ''}
+    <div class="rstat ${unRec?'err':'ok'}"><small>Reconciled</small><b>${nRec}<span class="of"> / ${rows.length}</span></b></div>
+    <div class="rflags">
+      ${view.hasAlloc && unAlloc ? `<span class="badge b-warn">${unAlloc} need allocating</span>` : ''}
+      ${unRec   ? `<span class="badge b-err">${unRec} out of balance</span>` : ''}
+      ${!(view.hasAlloc && unAlloc) && !unRec ? '<span class="badge b-ok">✓ all clear</span>' : ''}
+    </div>`;
+
+  $('#rHead').innerHTML = `
+    <th style="width:26px"><input type="checkbox" id="rAll"></th>
+    <th class="rowno">#</th>
+    ${view.cols.map(c => `<th class="${c.cls||''}">${c.h}</th>`).join('')}
+    <th></th>`;
+
+  $('#rBody').innerHTML = rows.length ? rows.map((t,i) => `
+    <tr data-ref="${t.ref}">
+      <td><input type="checkbox" class="rpick"${view.pick(t)?' checked':''}></td>
+      <td class="rowno">${i+1}</td>
+      ${view.cols.map(c => c.cell(t)).join('')}
+      <td class="rowact">
+        <button class="btn sm" data-askrow="${t.ref}" title="Ask about this line">✦</button>
+        <button class="btn sm rowgo">${view.act.row(t)}</button></td>
+    </tr>`).join('')
+    : `<tr><td colspan="${view.cols.length+3}" class="rempty">No transactions match these filters.</td></tr>`;
+
+  $('#rFoot').innerHTML = `${view.foot}
+    <span style="flex:1"></span>
+    <span>Showing ${rows.length} of ${TX.length} transactions</span>`;
+
+  // select-all + per-row selection drive the header's "Allocate selected"
+  const all = $('#rAll'), picks = [...document.querySelectorAll('#rBody .rpick')];
+  const syncPicks = () => {
+    picks.forEach(p => p.closest('tr').classList.toggle('picked', p.checked));
+    const n = picks.filter(p => p.checked).length;
+    const b = $('#rAllocAll');
+    if(b){
+      b.textContent = view ? view.act.on(n) : 'Allocate selected';
+      b.disabled = !n; b.style.opacity = n ? '' : '.45'; b.style.cursor = n ? '' : 'not-allowed';
+    }
+    if(all){ all.checked = n === picks.length && n > 0; all.indeterminate = n > 0 && n < picks.length; }
+  };
+  picks.forEach(p => p.addEventListener('change', syncPicks));
+  if(all) all.onchange = () => { picks.forEach(p => p.checked = all.checked); syncPicks(); };
+  syncPicks();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  if(!$('#ibReport')) return;
+  $('#ibReport').addEventListener('change', () => { fillReportFilters(); renderReport(); });
+  ['ibDate','ibShop','ibState'].forEach(id => $('#'+id).addEventListener('change', renderReport));
+  $('#ibSearch').addEventListener('input', renderReport);
+  fillReportFilters();
+  renderReport();
+});
+
+/* ── processing a parsed file ───────────────────────────────── */
+function resultFor(id, f){
+  const rows = (f.meta.match(/[\d,]+/) || ['0'])[0];
+  const n = parseInt(rows.replace(/,/g,''), 10) || 0;
+  switch(id){
+    case 'westpac': return `${rows} lines read · ${Math.round(n*0.64).toLocaleString()} routed to streams`;
+    case 'mint':    return `${rows} references · ${Math.round(n*0.96).toLocaleString()} matched on amount · balances checked`;
+    case 'bpay':    return `${rows} receipts · ${Math.round(n*0.96)} resolved to bookings · balances checked`;
+    case 'refunds': return `${rows} transactions · ${Math.round(n*0.91)} matched`;
+    case 'nuve':    return `${rows} lines · 2 shops totalled`;
+    default:        return `${rows} rows ingested · queued for matching`;
+  }
+}
+
+function processFile(id){
+  const up = UPLOADS[curDate] || {};
+  const f = up[id];
+  if(!f || f.status === 'processing' || f.status === 'processed') return;
+  f.status = 'processing';
+  renderTiles();
+  setTimeout(() => {
+    f.status = 'processed';
+    f.result = resultFor(id, f);
+    renderTiles();
+    // any answer already on screen was computed before this file landed
+    if(typeof askMarkStale === 'function') askMarkStale();
+  }, 1400);
+}
+
+function renderReadiness(){
+  const up = UPLOADS[curDate] || {};
+  const missing = SRC_DEFS.filter(d => d.req && !up[d.id]);
+  const flagged = SRC_DEFS.filter(d => d.flagWhenMissing && !up[d.id]);
+  const ready   = Object.keys(up).filter(k => (up[k].status || 'ready') === 'ready');
+  const n = Object.keys(up).length;
+  const note = $('#readyNote'), body = note.querySelector('div'), run = $('#startRun');
+
+  // Parsed but not yet processed takes priority — that's the next action.
+  if(ready.length){
+    note.style.background = 'var(--indigo-050)'; note.style.color = 'var(--indigo)';
+    body.innerHTML = `<b>${ready.length} file${ready.length===1?'':'s'} parsed and waiting to be processed.</b>
+      Process them to extract the lines and route them to their streams.
+      <button class="btn sm indigo" id="procAll" style="margin-left:10px">Process all ${ready.length}</button>`;
+    run.disabled = true; run.style.opacity = '.45'; run.style.cursor = 'not-allowed';
+    run.textContent = 'Start run';
+    setTimeout(() => {
+      const b = $('#procAll');
+      if(b) b.onclick = () => ready.forEach((k,i) => setTimeout(() => processFile(k), i*220));
+    }, 0);
+    return;
+  }
+
+  if(missing.length){
+    note.style.background = 'var(--warn-bg)'; note.style.color = 'var(--warn)';
+    body.innerHTML = `<b>${curDate} — not ready to run.</b> ${n} file${n===1?'':'s'} uploaded. `
+      + `Still needed: <b>${missing.map(d=>d.name).join(', ')}</b>.`;
+    run.disabled = true; run.style.opacity = '.45'; run.style.cursor = 'not-allowed';
+    run.textContent = `Start run · ${missing.length} missing`;
+  } else {
+    note.style.background = 'var(--ok-bg)'; note.style.color = 'var(--ok)';
+    body.innerHTML = `<b>${curDate} — ready to run.</b> ${n} file${n===1?'':'s'} uploaded, statement page ${PAGES[curDate]}.`
+      + (flagged.length ? ` ${flagged[0].name} is still missing — Nuve-settled shops will be left out of balance.` : '');
+    run.disabled = false; run.style.opacity = ''; run.style.cursor = '';
+    run.textContent = 'Start run';
+  }
+}
+
+/* ── type detection from filename + CSV headers ── */
+const TYPE_RULES = [
+  {id:'bpay',    name:'BPay report',              route:'Stream B · BPay',
+   fn:/bpay|b_pay/i, cols:['B/PAY FILE DATE','RECEIPT NO','AMOUNT','CONSULTANT','SHOP','TRAMADA BKG NO']},
+  {id:'mint',    name:'Mint daily settlement',    route:'Stream A · Mint & creditors',
+   fn:/mint|settle(ment)?_?2?0?2?/i,
+   cols:['TRANSACTION REFERENCE','TO COMPANY','AMOUNT','CURRENCY','STATUS','RECIPIENT REFERENCE']},
+  {id:'nuve',    name:'Nuve daily report',        route:'Stream C · Merchant settlements',
+   fn:/nuve(?!i)/i, cols:['TERMINAL','SHOP','GROSS','REFUNDS','NET']},
+  {id:'nuvei',   name:'Nuvei merchant settlement',route:'Stream C · Merchant settlements',
+   fn:/nuvei|merchant|ipsi/i, cols:['MID','SHOP CODE','GROSS','REFUNDS','NET','SETTLEMENT DATE']},
+  {id:'refunds', name:'Passenger refund report',  route:'Stream D · Passenger refunds',
+   fn:/refund/i, cols:['TRANSACTION NO','PASSENGER','BOOKING','AMOUNT']},
+  {id:'westpac', name:'Westpac bank statement',   route:'All streams · master ledger',
+   fn:/westpac|bank\s*statement|^statement/i, cols:['DATE','TRANSACTION','DEBIT','CREDIT','PAGE']}
+];
+
+function detectType(filename, headers){
+  let best = null, score = 0;
+  TYPE_RULES.forEach(r => {
+    let s = r.fn.test(filename) ? 60 : 0;
+    if(headers.length){
+      const hit = r.cols.filter(c => headers.some(h => h.toUpperCase().replace(/[^A-Z0-9]/g,'')
+        .includes(c.replace(/[^A-Z0-9]/g,'')))).length;
+      s += Math.round((hit / r.cols.length) * 40);
+    }
+    if(s > score){ score = s; best = r; }
+  });
+  return {rule:best, score:Math.min(score, 99)};
+}
+
+// Dollar amounts: accept "7252720.99", "7,252,720.99", "-7252720.99", "$7,252,720.99"
+function parseMoney(v){
+  if(v === undefined || v === null) return null;
+  const n = parseFloat(String(v).replace(/[$,\s]/g,''));
+  return isNaN(n) ? null : n;
+}
+function fmtMoney(v){
+  const n = parseMoney(v);
+  return n === null ? '' : n.toLocaleString('en-AU',{minimumFractionDigits:2, maximumFractionDigits:2});
+}
+
+const ROUTES = ['Stream A · Mint & creditors','Stream B · BPay','Stream C · Merchant settlements',
+                'Stream D · Passenger refunds','All streams · master ledger','Reference only — do not match'];
+
+/* Types that are proved against a day's opening and closing balance rather
+   than routed by hand. Every line in one of these files belongs to a single
+   stream by definition, so the route dropdown is replaced by the two figures
+   the day has to add up to. */
+const BAL_TYPES = {
+  bpay: {account:'bank account',      route:'Stream B · BPay'},
+  mint: {account:'Mint settlement account', route:'Stream A · Mint & creditors'}
+};
+
+// Everything the type dropdown can offer: current tiles first, then known
+// report shapes that don't have a tile yet, then "something else".
+function typeCatalogue(){
+  const cat = new Map();
+  SRC_DEFS.forEach(d => cat.set(d.id, {id:d.id, name:d.name, route:d.route, hasTile:true}));
+  TYPE_RULES.forEach(r => { if(!cat.has(r.id)) cat.set(r.id, {id:r.id, name:r.name, route:r.route}); });
+  return cat;
+}
+
+/* Confirm step. Shown for EVERY upload, whether it came from a named tile or
+   the + tile. `target` is the tile the file was dropped on, or '__adhoc'. */
+function showDetect(file, headers, target, pcols, prows){
+  const {rule, score} = detectType(file.name, headers);
+  const confident = rule && score >= 45;
+  const cat = typeCatalogue();
+  const kb = (file.size/1024).toFixed(0);
+  const p = $('#detectPanel');
+
+  // Pre-selection: the tile you used wins; otherwise what the agent detected.
+  const preset = (target !== '__adhoc' && cat.has(target)) ? target
+               : (confident ? rule.id : '__new');
+  const presetName = cat.get(preset) ? cat.get(preset).name : 'new source type';
+  const mismatch = confident && target !== '__adhoc' && rule.id !== target && cat.has(target);
+
+  const opts = [...cat.values()].map(t =>
+      `<option value="${t.id}" ${t.id===preset?'selected':''}>${t.name}${t.hasTile?'':' · no tile yet'}</option>`).join('')
+    + `<option value="__new" ${preset==='__new'?'selected':''}>Something else — new source type…</option>`;
+
+  const presetRoute = (cat.get(preset)||{}).route || (confident ? rule.route : '');
+  const routes = ROUTES.map(r => `<option ${r===presetRoute?'selected':''}>${r}</option>`).join('');
+  const bal = {open:'', close:''};   // balance-proved types only — survives type switching
+
+  const colChips = headers.length
+    ? headers.slice(0,10).map(h => {
+        const hit = confident && rule.cols.some(c =>
+          h.toUpperCase().replace(/[^A-Z0-9]/g,'').includes(c.replace(/[^A-Z0-9]/g,'')));
+        return `<span class="col-chip ${hit?'hit':''}">${h.slice(0,26)}</span>`;
+      }).join('')
+    : `<span class="col-chip">binary workbook — headers read on parse</span>`;
+
+  let headline;
+  if(mismatch){
+    headline = `<span class="badge b-warn">Heads up</span> you chose <b>${cat.get(target).name}</b>,
+                but this looks like a <span class="badge b-ai">${rule.name}</span>
+                <span class="badge b-mute">${score}% confident</span>`;
+  } else if(target !== '__adhoc'){
+    headline = `Filing as <span class="badge b-ai">${presetName}</span>
+                ${confident?'<span class="badge b-ok">headers agree</span>':''} — change it below if that's wrong`;
+  } else if(confident){
+    headline = `Looks like a <span class="badge b-ai">${rule.name}</span>
+                <span class="badge b-ok">${score}% confident</span>`;
+  } else {
+    headline = `<span class="badge b-warn">Couldn’t tell what this is</span> — pick the type below`;
+  }
+
+  p.innerHTML = `
+    <h4>✦ ${headline}</h4>
+    <span class="fname">${file.name} · ${kb} KB${headers.length?' · '+headers.length+' columns':''}</span>
+
+    <div class="detect-grid" id="dGrid">
+      <div>
+        <label class="field-lbl">Report type</label>
+        <select id="dType">${opts}</select>
+      </div>
+      <div id="dSlotA"></div>
+      <div id="dSlotB"></div>
+    </div>
+
+    <div id="dExtra" style="margin-top:11px"></div>
+
+    <label class="remember" id="dRememberWrap" style="display:none">
+      <input type="checkbox" id="dRemember" style="margin-top:2px">
+      <div><b>Remember this as a recurring source.</b> It gets its own tile every day, and the agent
+      will expect it before a run is considered ready. Leave unticked for a one-off file.</div>
+    </label>
+
+    <div class="foot">
+      <button class="btn indigo" id="dConfirm">Confirm &amp; parse</button>
+      <button class="btn" id="dCancel">Cancel</button>
+      <span class="muted" style="font-size:11.5px">Nothing is sent to Tramada until you start the run.</span>
+    </div>`;
+  p.style.display = '';
+  p.scrollIntoView({behavior:'smooth', block:'center'});
+
+  /* The fields under the type dropdown depend on the type.
+     Balance-proved types (BPay, Mint) carry the day's opening and closing
+     balances instead of a route and a column list — the reconciliation is
+     proved against those two figures, and every line in the file routes to
+     one stream by definition. */
+  const paintFields = () => {
+    const v = $('#dType').value;
+    const balDef = BAL_TYPES[v];
+    const grid = $('#dGrid');
+
+    if(balDef){
+      grid.style.gridTemplateColumns = 'repeat(auto-fit,minmax(190px,1fr))';
+      $('#dSlotA').innerHTML = `
+        <label class="field-lbl">Opening balance</label>
+        <div class="money"><span>$</span><input id="dOpen" inputmode="decimal"
+          placeholder="0.00" value="${(bal.open||'')}"></div>
+        <span class="hint" id="dOpenHint">${balDef.account} as at start of ${curDate}</span>`;
+      $('#dSlotB').innerHTML = `
+        <label class="field-lbl">Closing balance</label>
+        <div class="money"><span>$</span><input id="dClose" inputmode="decimal"
+          placeholder="0.00" value="${(bal.close||'')}"></div>
+        <span class="hint" id="dCloseHint">${balDef.account} as at end of ${curDate}</span>`;
+      $('#dExtra').innerHTML = '';
+      ['dOpen','dClose'].forEach(id => {
+        const el = $('#'+id);
+        el.addEventListener('input', () => { el.classList.remove('bad'); bal[id==='dOpen'?'open':'close'] = el.value; });
+        el.addEventListener('blur',  () => { if(el.value.trim()) el.value = fmtMoney(el.value); });
+      });
+    } else {
+      grid.style.gridTemplateColumns = 'repeat(auto-fit,minmax(220px,1fr))';
+      $('#dSlotA').innerHTML = `
+        <label class="field-lbl">Route to</label>
+        <select id="dRoute">${routes}</select>`;
+      $('#dSlotB').innerHTML = '';
+      $('#dExtra').innerHTML = `
+        <label class="field-lbl">${headers.length?'Columns found — highlighted ones drove the match':'Columns'}</label>
+        <div class="cols">${colChips}</div>`;
+      const t = cat.get(v);
+      if(t && t.route) $('#dRoute').value = t.route;
+    }
+  };
+
+  // Changing the type repaints the fields and shows the "remember" option
+  // only when the chosen type has no tile of its own yet.
+  const syncType = () => {
+    const v = $('#dType').value;
+    const t = cat.get(v);
+    paintFields();
+    $('#dRememberWrap').style.display = (v === '__new' || !(t && t.hasTile)) ? '' : 'none';
+  };
+  $('#dType').addEventListener('change', syncType);
+  syncType();
+
+  $('#dConfirm').onclick = () => {
+    const tid = $('#dType').value;
+    const label = $('#dType').selectedOptions[0].textContent.replace(' · no tile yet','');
+    const up = UPLOADS[curDate] || (UPLOADS[curDate] = {});
+    const rows = Math.max(1, Math.round(file.size/120));
+    const remember = $('#dRemember') && $('#dRemember').checked;
+    const balDef = BAL_TYPES[tid];
+    const routeVal = $('#dRoute') ? $('#dRoute').value
+                   : (balDef ? balDef.route : 'Stream B · BPay');
+    let meta = `${rows.toLocaleString()} rows · ${kb} KB`;
+
+    // A balance-proved file can't be filed without both figures — they're what the day proves against.
+    if(balDef){
+      const o = $('#dOpen'), c = $('#dClose');
+      let bad = false;
+      [o,c].forEach(el => { if(!parseMoney(el.value)){ el.classList.add('bad'); bad = true; } });
+      if(bad){
+        $('#dOpenHint').className  = 'hint' + (parseMoney(o.value) ? '' : ' err');
+        $('#dCloseHint').className = 'hint' + (parseMoney(c.value) ? '' : ' err');
+        $('#dOpenHint').textContent  = parseMoney(o.value)
+          ? `${balDef.account} as at start of ${curDate}` : 'Enter the opening balance';
+        $('#dCloseHint').textContent = parseMoney(c.value)
+          ? `${balDef.account} as at end of ${curDate}`   : 'Enter the closing balance';
+        return;
+      }
+      meta += ` · opening $${fmtMoney(o.value)} → closing $${fmtMoney(c.value)}`;
+    }
+
+    if(tid === '__new' || !SRC_DEFS.some(d => d.id === tid)){
+      const nid = tid === '__new' ? 'custom_' + SRC_DEFS.length : tid;
+      const nm  = tid === '__new' ? (file.name.replace(/\.[^.]+$/,'').slice(0,34)) : label;
+      SRC_DEFS.push({id:nid, name:nm, adhoc:true, oneOff:!remember, route:routeVal,
+        desc:(remember?'Added from an upload':'One-off file') + ' · routed to ' + routeVal,
+        empty:'Drop the ' + nm + ' export here, or browse'});
+      up[nid] = {file:file.name, meta, cols:pcols, rows:prows};
+    } else {
+      up[tid] = {file:file.name, meta, cols:pcols, rows:prows};
+    }
+    p.style.display = 'none';
+    renderTiles();
+    if(typeof askMarkStale === 'function') askMarkStale();
+  };
+  $('#dCancel').onclick = () => { p.style.display = 'none'; };
+}
+
+/* ── file picking, for both named tiles and the + tile ── */
+function pickFor(target){
+  pickTarget = target;
+  $('#filePicker').value = '';
+  $('#filePicker').click();
+}
+
+// Split one delimited line, respecting "quoted, fields"
+function splitLine(line, delim){
+  const out = []; let cur = '', q = false;
+  for(let i = 0; i < line.length; i++){
+    const ch = line[i];
+    if(ch === '"'){ (q && line[i+1] === '"') ? (cur += '"', i++) : (q = !q); }
+    else if(ch === delim && !q){ out.push(cur); cur = ''; }
+    else cur += ch;
+  }
+  out.push(cur);
+  return out.map(s => s.trim());
+}
+
+function ingest(file){
+  if(!file) return;
+  const target = pickTarget;
+  // headers drive type detection; cols+rows feed the preview popup
+  const finish = (headers, cols, rows) => showDetect(file, headers, target, cols, rows);
+
+  if(/\.(csv|txt|tsv)$/i.test(file.name)){
+    const fr = new FileReader();
+    fr.onload = () => {
+      const lines = String(fr.result).split(/\r?\n/).filter(l => l.trim());
+      if(!lines.length) return finish([]);
+      const delim = (lines[0].match(/\t/g)||[]).length ? '\t'
+                  : (lines[0].match(/;/g)||[]).length > (lines[0].match(/,/g)||[]).length ? ';' : ',';
+      const cols = splitLine(lines[0], delim).filter(Boolean);
+      const rows = lines.slice(1).map(l => splitLine(l, delim));
+      finish(cols, cols, rows);
+    };
+    fr.onerror = () => finish([]);
+    fr.readAsText(file);                    // whole file, not just the header
+  } else { finish([]); }                    // binary workbook — no in-browser parse
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  if(!$('#tileGrid')) return;
+  renderTiles();
+
+  $('#stmtDate').addEventListener('change', e => {
+    curDate = e.target.value;
+    $('#detectPanel').style.display = 'none';
+    document.querySelector('.stmt').innerHTML =
+      `Statement page ${PAGES[curDate]} <em>·</em> ${curDate} <span style="opacity:.5">▾</span>`;
+    renderTiles();
+  });
+
+  $('#filePicker').addEventListener('change', e => ingest(e.target.files[0]));
+
+  // clicks: Choose file / Replace file / clicking an empty tile
+  $('#tileGrid').addEventListener('click', e => {
+    const pv = e.target.closest('[data-preview]');
+    if(pv){ openPreview(pv.dataset.preview); return; }
+    const pr = e.target.closest('[data-process]');
+    if(pr){ processFile(pr.dataset.process); return; }
+    const b = e.target.closest('[data-upload]');
+    if(b){ pickFor(b.dataset.upload); return; }
+    const dz = e.target.closest('[data-drop]');
+    if(dz && !e.target.closest('button')) pickFor(dz.dataset.drop);
+  });
+
+  // drag & drop onto any tile
+  $('#tileGrid').addEventListener('dragover', e => {
+    const dz = e.target.closest('.dz'); if(!dz) return;
+    e.preventDefault(); dz.classList.add('drag');
+  });
+  $('#tileGrid').addEventListener('dragleave', e => {
+    const dz = e.target.closest('.dz'); if(dz) dz.classList.remove('drag');
+  });
+  $('#tileGrid').addEventListener('drop', e => {
+    const dz = e.target.closest('.dz'); if(!dz) return;
+    e.preventDefault(); dz.classList.remove('drag');
+    pickTarget = dz.dataset.drop || dz.dataset.src || '__adhoc';
+    ingest(e.dataTransfer.files[0]);
+  });
+});
+
+/* ══════════════════════════════════════════════════════════════
+   ASK THE AGENT — grounded Q&A over the day's reconciliation
+
+   The engine is deliberately deterministic: every answer is computed
+   from the same arrays the screens render from, so a number in chat and
+   a number in the inbox can never disagree. Where the data can't answer
+   the question, it says so rather than producing a plausible figure —
+   the moment a finance team catches an invented number they stop using
+   the surface, and they don't come back.
+   ══════════════════════════════════════════════════════════════ */
+
+const STREAMS = [
+  {id:'A', label:'Stream A · Mint & creditors',   report:'mint'},
+  {id:'B', label:'Stream B · BPay',               report:'bpay'},
+  {id:'C', label:'Stream C · Merchant settlements',report:'merchant'},
+  {id:'D', label:'Stream D · Passenger refunds',  report:'refunds'}
+];
+
+// Line-level samples only exist for this date; other days answer from the
+// upload record and say plainly that the detail isn't loaded.
+const ASK_LINE_DATE = '29-07-2026';
+
+const ASK_RULES = [
+  {q:/unresolved|can.?t (be )?resolve|unknown booking|no booking/i,
+   name:'Unresolved BPay reference',
+   text:'Receipt as unallocated and circulate in the daily BPay report so the owning consultant can claim it.',
+   why:'A reference that resolves to no booking has nothing to code against. Guessing would put a receipt on the wrong file.'},
+  {q:/guess|never guess|allocat\w* rule|when.*allocate/i,
+   name:'Never guess a BPay allocation',
+   text:'Only allocate on a full payment, an exact costing match, or an explicit comment.',
+   why:'Partial payments against multi-passenger files are the largest source of mis-coding.'},
+  {q:/to the cent|cent|exact amount|amount match/i,
+   name:'Amount must match to the cent',
+   text:'Reference alone never confirms a match — a single cent puts the statement out of balance.',
+   why:'References repeat across bookings; the amount is the deciding check.'},
+  {q:/overpay/i,
+   name:'Overpayment handling',
+   text:'Receipt the full amount, allocate what the costing supports, and leave the remainder as "please allocate".',
+   why:'The bank has the money either way — the statement must reflect it even when the costing does not.'}
+];
+
+const ASK_STATE = {
+  date: '29-07-2026',
+  streams: new Set(['A','B','C','D']),
+  threads: {},          // per statement date
+  stale: false,
+  lastQ: null,
+  busy: false,
+  pinned: null          // {label, ref}
+};
+
+const askEl = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const money = n => '$' + fmtMoney(n);
+
+function askThread(){ return ASK_STATE.threads[ASK_STATE.date] || (ASK_STATE.threads[ASK_STATE.date] = []); }
+function inScope(report){
+  const s = STREAMS.find(x => x.report === report);
+  return s ? ASK_STATE.streams.has(s.id) : true;
+}
+
+/* ── the scoped corpus every handler reads from ───────────────── */
+function corpus(){
+  const lineLevel = ASK_STATE.date === ASK_LINE_DATE;
+  const mint = (lineLevel && inScope('mint')) ? mintTransactions() : [];
+  const bpay = (lineLevel && inScope('bpay')) ? bpayTransactions() : [];
+  const up   = UPLOADS[ASK_STATE.date] || {};
+  const missing = SRC_DEFS.filter(d => (d.req || d.flagWhenMissing) && !up[d.id]);
+  return {lineLevel, mint, bpay, up, missing,
+          all: [...mint.map(t => ({...t, report:'mint'})), ...bpay.map(t => ({...t, report:'bpay'}))]};
+}
+
+/* ── formatting helpers used by the answer blocks ─────────────── */
+// Σ marks a computed value. Retrieved values render plain — a badge on
+// everything trains people to ignore the badge.
+const sigma = (workings) => `<span class="sig" title="${esc(workings)}">Σ</span>`;
+const citeMark = (report, ref, i) => `<button class="cite" data-cite="${report}:${ref}" title="${esc(ref)}">${i}</button>`;
+
+function askTable(cols, rows, allRows, deep){
+  if(!rows.length) return '';
+  const head = cols.map(c => `<th class="${c.num?'num':''}">${c.h}</th>`).join('');
+  const body = rows.map(r => `<tr>${cols.map(c => `<td class="${c.num?'num':''}">${c.cell(r)}</td>`).join('')}</tr>`).join('');
+  // Capped, and "show all" leaves rather than expanding — chat proposes,
+  // the inbox is where the work happens.
+  const more = (allRows && allRows.length > rows.length && deep)
+    ? `<div class="more"><a href="#" data-deep='${esc(JSON.stringify(deep))}'>Show all ${allRows.length} in the inbox →</a></div>` : '';
+  return `<div class="a-tbl"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>${more}</div>`;
+}
+const boolCell = t => t.reconciled
+  ? `<span class="bool t"><span class="gl">✓</span>true</span>`
+  : `<span class="bool f"><span class="gl">✕</span>false</span>`;
+
+/* ══════════ intent handlers ══════════
+   Ordered; first match wins. Each returns the blocks the panel renders:
+   lead (the direct answer, always first), body, table, reasoning,
+   citations, actions, followups, confidence. */
+
+const MONEY_RE = /\$?\s*([\d]{1,3}(?:,\d{3})+(?:\.\d{2})?|\d+\.\d{2})/;
+const REF_RE   = /\b(M00\d{6}|[A-Z]{3}\d{10,}[A-Z]*|CRU\d{6,}|PRIN[- ]?[A-Z0-9]{6}|[A-Z]{3}-\d{7}|IPSI-\d+)\b/i;
+
+const ASK_HANDLERS = [
+
+/* 1 · variance / out of balance — the highest-value question, so it gets
+      its own answer shape: the four figures, then the itemised delta. */
+{
+  test: q => /out of balance|variance|balanc|why.*(short|differ)|don.?t agree/i.test(q),
+  run(q, c){
+    const opens = [], unrec = c.all.filter(t => !t.reconciled);
+    // Stream C has no line-level file at all when Nuve is missing.
+    const nuveMissing = c.missing.some(d => d.id === 'nuve');
+    if(!unrec.length && !nuveMissing){
+      return {lead:`Nothing is out of balance in scope for ${ASK_STATE.date}.`,
+              body:`<p>Every line in the reports in scope has been ticked off against the statement.</p>`,
+              reasoning:[`Checked ${c.all.length} lines across ${[...ASK_STATE.streams].join(', ')}.`]};
+    }
+    const total = unrec.reduce((s,t) => s + t.amount, 0);
+    const parts = [];
+    if(nuveMissing) parts.push(`<b>Stream C</b> has no merchant settlement to total against — the Nuve daily report hasn't been uploaded, so MT BARKER and VICTOR HARBOR are unresolved.`);
+    if(unrec.length) parts.push(`${unrec.length} line${unrec.length===1?'':'s'} worth <b>${money(total)}</b>${sigma(unrec.map(t=>fmtMoney(t.amount)).join(' + ') + ' = ' + fmtMoney(total))} ${unrec.length===1?'does':'do'} not agree with the statement.`);
+    return {
+      lead: unrec.length
+        ? `${unrec.length} line${unrec.length===1?'':'s'} out of balance, worth <b>${money(total)}</b>.`
+        : `Stream C can't be balanced yet — the Nuve report is missing.`,
+      body:`<p>${parts.join(' ')}</p>`,
+      table: askTable([
+        {h:'Ref', cell:t => `<span class="ref">${t.ref}</span>`},
+        {h:'Who', cell:t => t.toCompany || t.consultant || '—'},
+        {h:'Amount', num:true, cell:t => fmtMoney(t.amount)},
+        {h:'Reconciled', cell:boolCell}
+      ], unrec.slice(0,8), unrec, {report:unrec[0] && unrec[0].report, state:'unrec'}),
+      cites: unrec.slice(0,8).map(t => ({report:t.report, ref:t.ref})),
+      reasoning:[
+        `Compared every line in scope against statement page ${PAGES[ASK_STATE.date] || '—'}.`,
+        ...unrec.map(t => `${t.ref} — ${t.why || 'does not agree with the statement'}.`),
+        nuveMissing ? 'Nuve daily report not uploaded, so Stream C is incomplete rather than wrong.' : null
+      ].filter(Boolean),
+      actions: unrec.length ? [{label:`Open ${unrec.length} in the inbox →`, deep:{report:unrec[0].report, state:'unrec'}}] : [],
+      followups:['Which shops does this affect?', 'What is still missing today?']
+    };
+  }
+},
+
+/* 2 · explain one line, by reference */
+{
+  test: q => REF_RE.test(q),
+  run(q, c){
+    const ref = q.match(REF_RE)[1].toUpperCase().replace(/\s/g,'');
+    const t = c.all.find(x => x.ref.toUpperCase() === ref)
+           || c.all.find(x => x.ref.toUpperCase().includes(ref))
+           || c.all.find(x => (x.recipRef||'').toUpperCase() === ref);
+    if(!t) return null;
+    const isMint = t.report === 'mint';
+    const who = isMint ? t.toCompany : `${t.consultant} (${t.shop})`;
+    const state = t.reconciled ? 'ticked off against the statement' : 'not ticked off';
+    return {
+      lead: `<span class="ref">${t.ref}</span> — <b>${money(t.amount)}</b> to ${esc(who)}, ${state}.`,
+      body: isMint
+        ? `<p>Payment out of the Mint settlement account on ${t.date}. Recipient reference <span class="ref">${t.recipRef}</span>, status <span class="badge b-mute">${t.status}</span>.</p>`
+          + (t.why ? `<p><b>Why it doesn't reconcile:</b> ${esc(t.why)}.</p>` : '')
+        : `<p>BPay receipt dated ${t.date} against booking <span class="ref">${t.bkg}</span>. `
+          + `Allocation is <b>${t.allocated}</b>${t.remark ? ` — ${esc(t.remark.toLowerCase())}` : ''}.</p>`,
+      table: askTable([
+        {h:'Field', cell:r => r[0]}, {h:'Value', cell:r => r[1]}
+      ], isMint
+        ? [['To company', esc(t.toCompany)], ['To company number', `<span class="ref">${t.toNo}</span>`],
+           ['Amount', `${fmtMoney(t.amount)} ${t.currency}`], ['Recipient reference', `<span class="ref">${t.recipRef}</span>`],
+           ['Reconciled', boolCell(t)]]
+        : [['Consultant', t.consultant], ['Shop', t.shop], ['Booking', `<span class="ref">${t.bkg}</span>`],
+           ['Amount', fmtMoney(t.amount)], ['Allocated', t.allocated ? 'true' : 'false'], ['Reconciled', boolCell(t)]]),
+      cites:[{report:t.report, ref:t.ref}],
+      reasoning:[
+        `Read from ${isMint ? 'the Mint daily settlement' : 'the BPay report'} for ${t.date}.`,
+        t.reconciled ? 'Amount agrees with the statement to the cent.' : (t.why || 'Amount does not agree with the statement.'),
+        !isMint && !t.allocated ? 'Held unallocated under the rule: never guess a BPay allocation.' : null
+      ].filter(Boolean),
+      actions:[{label:'Open in the inbox →', deep:{report:t.report, search:t.ref}}],
+      followups: isMint
+        ? [`Show every payment to ${t.toCompany.split(' ').slice(0,2).join(' ')}`, 'Why are we out of balance?']
+        : [`Show ${t.shop} lines`, 'What happens if a reference can\'t be resolved?']
+    };
+  }
+},
+
+/* 3 · locate by amount */
+{
+  test: q => MONEY_RE.test(q) && /where|find|which|who|what|show|trace/i.test(q),
+  run(q, c){
+    const target = parseMoney(q.match(MONEY_RE)[1]);
+    const hits = c.all.filter(t => Math.abs(t.amount - target) < 0.005);
+    if(!hits.length){
+      return {lead:`Nothing in scope matches <b>${money(target)}</b>.`,
+              body:`<p>Searched ${c.all.length} lines across ${[...ASK_STATE.streams].sort().join(', ')} for ${ASK_STATE.date}.</p>`,
+              noAnswer:true,
+              followups:['Widen to all streams', 'Why are we out of balance?']};
+    }
+    return {
+      lead: `${hits.length} line${hits.length===1?'':'s'} at <b>${money(target)}</b>.`,
+      body: hits.length > 1 ? `<p>Same amount on more than one line — worth checking for a duplicate payment.</p>` : '',
+      table: askTable([
+        {h:'Ref', cell:t => `<span class="ref">${t.ref}</span>`},
+        {h:'Who', cell:t => t.toCompany || t.consultant},
+        {h:'Amount', num:true, cell:t => fmtMoney(t.amount)},
+        {h:'Reconciled', cell:boolCell}
+      ], hits.slice(0,8), hits, {report:hits[0].report, search:String(target)}),
+      cites: hits.slice(0,8).map(t => ({report:t.report, ref:t.ref})),
+      reasoning:[`Exact amount match to the cent across ${c.all.length} lines in scope.`],
+      actions:[{label:`Open ${hits.length} in the inbox →`, deep:{report:hits[0].report, search:String(target)}}],
+      followups:['Is that unusual for this creditor?', 'Why are we out of balance?']
+    };
+  }
+},
+
+/* 4 · aggregate — how much, total, sum, optionally grouped */
+{
+  test: q => /how much|total|sum|value of|worth/i.test(q),
+  run(q, c){
+    const unalloc = /unalloc|not alloc|need alloc/i.test(q);
+    const unrec   = /unrec|not recon|out of balance/i.test(q);
+    const rep = namedReport(q);
+    let set = rep ? c.all.filter(t => t.report === rep) : c.all;
+    if(unalloc) set = set.filter(t => t.allocated === false);
+    if(unrec)   set = set.filter(t => !t.reconciled);
+    const who = matchParty(q, c);
+    if(who) set = set.filter(t => partyOf(t) === who);
+    if(!set.length) return {lead:'Nothing in scope matches that.', noAnswer:true,
+      body:`<p>Scope is ${ASK_STATE.date}, ${[...ASK_STATE.streams].sort().join(', ')}.</p>`};
+
+    const byShop = /by shop|per shop|each shop/i.test(q);
+    const byWho  = /by creditor|by supplier|by company|per creditor/i.test(q);
+    const total  = set.reduce((s,t) => s + t.amount, 0);
+    let table = '';
+    if(byShop || byWho){
+      const key = byShop ? (t => t.shop || '—') : partyOf;
+      const groups = {};
+      set.forEach(t => { const k = key(t); (groups[k] = groups[k] || {n:0, v:0}).n++; groups[k].v += t.amount; });
+      const rows = Object.entries(groups).sort((a,b) => b[1].v - a[1].v);
+      table = askTable([
+        {h:byShop?'Shop':'Creditor', cell:r => esc(r[0])},
+        {h:'Lines', num:true, cell:r => r[1].n},
+        {h:'Value', num:true, cell:r => fmtMoney(r[1].v)}
+      ], rows.slice(0,8), rows);
+    }
+    return {
+      lead: `<b>${money(total)}</b>${sigma(`${set.length} lines summed`)} across ${set.length} line${set.length===1?'':'s'}`
+            + (rep ? ` in the ${REPORT_LABEL[rep]}` : '')
+            + (who ? ` to ${esc(who)}` : '') + (unalloc ? ', still unallocated' : unrec ? ', not reconciled' : '') + '.',
+      table,
+      reasoning:[`Summed ${set.length} of ${c.all.length} lines in scope for ${ASK_STATE.date}.`,
+                 rep ? `Narrowed to the ${REPORT_LABEL[rep]} because the question named it.` : null,
+                 'Amounts taken from the uploaded reports, not from Tramada.'].filter(Boolean),
+      actions: table ? [] : [{label:'Open these in the inbox →', deep:{report:set[0].report, state:unalloc?'unalloc':unrec?'unrec':''}}],
+      followups:['Break that down by creditor', 'Which are still unreconciled?']
+    };
+  }
+},
+
+/* 5 · list by state */
+{
+  test: q => /unalloc|not alloc|need alloc|unrecon|not recon|still open|outstanding/i.test(q),
+  run(q, c){
+    const wantAlloc = /alloc/i.test(q);
+    const rep = namedReport(q);
+    const pool = rep ? c.all.filter(t => t.report === rep) : c.all;
+    const set = wantAlloc ? pool.filter(t => t.allocated === false) : pool.filter(t => !t.reconciled);
+    if(!set.length) return {lead:`Nothing ${wantAlloc?'unallocated':'unreconciled'} in scope.`,
+      body:`<p>All ${c.all.length} lines are clear for ${ASK_STATE.date}.</p>`};
+    const total = set.reduce((s,t) => s + t.amount, 0);
+    return {
+      lead:`${set.length} line${set.length===1?'':'s'} ${wantAlloc?'still need allocating':'do not agree with the statement'}, worth <b>${money(total)}</b>${sigma(`${set.length} lines summed`)}.`,
+      table: askTable([
+        {h:'Ref', cell:t => `<span class="ref">${t.ref}</span>`},
+        {h:'Who', cell:t => t.toCompany || `${t.consultant} · ${t.shop}`},
+        {h:'Amount', num:true, cell:t => fmtMoney(t.amount)},
+        {h:wantAlloc?'Why':'Reconciled', cell:t => wantAlloc ? `<span class="muted">${esc(t.remark||'please allocate')}</span>` : boolCell(t)}
+      ], set.slice(0,8), set, {report:set[0].report, state:wantAlloc?'unalloc':'unrec'}),
+      cites:set.slice(0,8).map(t => ({report:t.report, ref:t.ref})),
+      reasoning:[wantAlloc
+        ? 'Allocation stays false until a full payment, an exact costing match, or an explicit comment says otherwise.'
+        : 'Reconciled stays false until the line is ticked off against the bank statement.'],
+      actions:[{label:`Open ${set.length} in the inbox →`, deep:{report:set[0].report, state:wantAlloc?'unalloc':'unrec'}},
+               // only offered where it's the actual remedy — unallocated BPay receipts
+               ...(set.some(t => t.report === 'bpay' && !t.allocated) ? [{label:'Draft the daily BPay email', preview:true}] : [])],
+      followups:['Break that down by shop', 'Why are we out of balance?']
+    };
+  }
+},
+
+/* 6 · compare across history — answered against the similarity index */
+{
+  test: q => /unusual|largest|biggest|highest|typical|normal|compare|before/i.test(q),
+  run(q, c){
+    const who = matchParty(q, c);
+    const m = q.match(MONEY_RE);
+    const set = who ? c.all.filter(t => partyOf(t) === who) : c.all;
+    if(!set.length) return null;
+    const top = set.slice().sort((a,b) => b.amount - a.amount)[0];
+    const amount = m ? parseMoney(m[1]) : top.amount;
+    const avg = set.reduce((s,t) => s + t.amount, 0) / set.length;
+    const ratio = amount / avg;
+    return {
+      lead: ratio > 2.5
+        ? `<b>${money(amount)}</b> is well above the run of ${who ? esc(who) : 'today\'s'} payments.`
+        : `<b>${money(amount)}</b> is in the normal range for ${who ? esc(who) : 'today'}.`,
+      body:`<p>Today's ${who ? esc(who)+' ' : ''}lines average <b>${money(avg)}</b>${sigma(`${set.length} lines ÷ ${set.length}`)} over ${set.length} payment${set.length===1?'':'s'}; the largest is ${money(top.amount)} on <span class="ref">${top.ref}</span>.</p>`,
+      confidence: 78,
+      cites:[{report:top.report, ref:top.ref}],
+      reasoning:[
+        'Compared against the lines in scope, plus the 24-month similarity index the agent brain maintains.',
+        'Historical distribution is illustrative in this mockup — only today\'s file is real data.'
+      ],
+      followups:['Show every payment to this creditor', 'How much went out today in total?']
+    };
+  }
+},
+
+/* 7 · locate by party */
+{
+  test: q => !!matchPartyRaw(q),
+  run(q, c){
+    const who = matchParty(q, c);
+    if(!who) return null;
+    const set = c.all.filter(t => partyOf(t) === who);
+    if(!set.length) return null;
+    const total = set.reduce((s,t) => s + t.amount, 0);
+    const bad = set.filter(t => !t.reconciled);
+    return {
+      lead:`${set.length} line${set.length===1?'':'s'} to <b>${esc(who)}</b>, ${money(total)}${sigma(`${set.length} lines summed`)} in total.`,
+      body: bad.length ? `<p>${bad.length} of them ${bad.length===1?'does':'do'} not agree with the statement.</p>` : '',
+      table: askTable([
+        {h:'Ref', cell:t => `<span class="ref">${t.ref}</span>`},
+        {h:'Amount', num:true, cell:t => fmtMoney(t.amount)},
+        {h:'Reference', cell:t => `<span class="ref">${esc(t.recipRef || t.bkg || '')}</span>`},
+        {h:'Reconciled', cell:boolCell}
+      ], set.slice(0,8), set, {report:set[0].report, search:who.split(' ')[0]}),
+      cites:set.slice(0,8).map(t => ({report:t.report, ref:t.ref})),
+      reasoning:[`Matched on the creditor name as it appears in the uploaded file.`,
+                 `Trading-name aliases are resolved from the learned alias list, so "Web Source" and "Stuba" count as one party.`],
+      actions:[{label:`Open ${set.length} in the inbox →`, deep:{report:set[0].report, search:who.split(' ')[0]}}],
+      followups:['Is that unusual for this creditor?', 'Which are unreconciled?']
+    };
+  }
+},
+
+/* 8 · readiness / missing files */
+{
+  test: q => /missing|not upload|ready|what.*(still )?need|waiting on/i.test(q),
+  run(q, c){
+    if(!c.missing.length) return {lead:`Everything expected for ${ASK_STATE.date} is in.`,
+      body:`<p>${Object.keys(c.up).length} files uploaded, statement page ${PAGES[ASK_STATE.date]||'—'}.</p>`};
+    return {
+      lead:`${c.missing.length} report${c.missing.length===1?'':'s'} still missing for ${ASK_STATE.date}.`,
+      body:`<p>${c.missing.map(d => `<b>${esc(d.name)}</b>`).join(', ')} — ${c.missing.some(d=>d.id==='nuve')?'Nuve-settled shops (MT BARKER, VICTOR HARBOR) can\'t be balanced without it.':'the run can\'t be considered complete.'}</p>`,
+      reasoning:[`Read from the upload record for ${ASK_STATE.date}.`],
+      actions:[{label:'Go to Sources & upload →', go:'sources'}],
+      followups:['Why are we out of balance?', 'What is reconciled so far?']
+    };
+  }
+},
+
+/* 9 · policy and rules — quote verbatim, then link to the rule */
+{
+  test: q => ASK_RULES.some(r => r.q.test(q)) || /rule|policy|what happens if|should i|allowed/i.test(q),
+  run(q){
+    const r = ASK_RULES.find(x => x.q.test(q)) || ASK_RULES[1];
+    return {
+      lead:`<b>${esc(r.name)}</b> — ${esc(r.text)}`,
+      body:`<p>${esc(r.why)}</p>`,
+      reasoning:[`Quoted from the active rule set, not inferred.`],
+      followups:['Show today\'s unallocated lines', 'Why are we out of balance?']
+    };
+  }
+}
+];
+
+/* ── party matching, shared by several handlers ─────────────────── */
+function partyOf(t){ return t.toCompany || t.consultant || ''; }
+
+// Naming a report in the question narrows the answer to it, without
+// touching the scope chip — asking "how much went out through Mint"
+// should not silently answer for BPay as well.
+function namedReport(q){
+  if(/\bmint\b|settlement/i.test(q)) return 'mint';
+  if(/\bb.?pay\b|receipt/i.test(q))  return 'bpay';
+  return null;
+}
+let ASK_PARTIES = null;
+function partyList(){
+  if(ASK_PARTIES) return ASK_PARTIES;
+  const s = new Set();
+  mintTransactions().forEach(t => s.add(t.toCompany));
+  bpayTransactions().forEach(t => s.add(t.consultant));
+  return (ASK_PARTIES = [...s]);
+}
+function matchPartyRaw(q){
+  const ql = q.toLowerCase();
+  // longest match wins, so "Grand Pacific Tours" beats "Pacific"
+  return partyList()
+    .filter(p => { const first = p.toLowerCase().split(/[\s,]+/).filter(w => w.length > 3)[0];
+                   return first && ql.includes(first); })
+    .sort((a,b) => b.length - a.length)[0] || null;
+}
+function matchParty(q, c){
+  const p = matchPartyRaw(q);
+  if(!p) return null;
+  return (c.all.some(t => partyOf(t) === p)) ? p : null;
+}
+
+/* ── run a question through the handlers ────────────────────────── */
+function askAnswer(q){
+  const c = corpus();
+  if(!c.lineLevel && !/missing|ready|upload|rule|policy|balance/i.test(q)){
+    return {lead:`Line-level detail for ${ASK_STATE.date} isn't loaded in this mockup.`,
+            body:`<p>Only ${ASK_LINE_DATE} has parsed transactions. The upload record for ${ASK_STATE.date} is available — ask about balances, or what's missing.</p>`,
+            noAnswer:true,
+            actions:[{label:`Switch scope to ${ASK_LINE_DATE}`, scope:ASK_LINE_DATE}],
+            followups:['What is still missing?', 'Show the opening and closing balances']};
+  }
+  for(const h of ASK_HANDLERS){
+    if(!h.test(q)) continue;
+    const r = h.run(q, c);
+    if(r) return r;
+  }
+  // Refuse rather than guess.
+  return {
+    lead:`I can't answer that from the data in scope.`,
+    body:`<p>Searched ${c.all.length} lines for ${ASK_STATE.date} across ${[...ASK_STATE.streams].sort().join(', ')}. `
+        +`Try a reference, an amount, a creditor name, or ask why something is out of balance.</p>`,
+    noAnswer:true,
+    followups:['Why are we out of balance?', 'What is still missing today?', 'How much is unallocated?']
+  };
+}
+
+/* ── rendering ─────────────────────────────────────────────────── */
+const SUGGESTIONS = {
+  overview:   ['Why are we out of balance today?', 'What is still missing?', 'How much went out through Mint today?', 'Show everything not reconciled'],
+  sources:    ['What is still missing today?', 'Show the opening and closing balances', 'Why are we out of balance today?', 'What happens if a BPay reference can\'t be resolved?'],
+  inbox:      ['Why is M00641145 not reconciled?', 'How much is unallocated by shop?', 'Show every payment to Grand Pacific Tours', 'Where did the $3,872.00 go?'],
+};
+function currentScreen(){
+  const on = document.querySelector('.screen.on');
+  return on ? on.id.replace('s-','') : 'overview';
+}
+
+function askRenderEmpty(){
+  const s = SUGGESTIONS[currentScreen()] || SUGGESTIONS.overview;
+  askEl('#askBody').innerHTML = `
+    <div class="ask-empty">
+      <div class="mk">✦</div>
+      <h5>Ask about today's reconciliation.</h5>
+      <div>Answers come from the uploaded reports and the match results — never from anywhere else.</div>
+      <div class="sugg">${s.map(t => `<button data-sugg="${esc(t)}">${esc(t)}</button>`).join('')}</div>
+    </div>`;
+}
+
+function askRenderThread(){
+  const th = askThread();
+  if(!th.length) return askRenderEmpty();
+  const body = askEl('#askBody');
+  body.innerHTML = `<div class="daydiv">— ${ASK_STATE.date} —</div>` + th.map(turnHTML).join('');
+  body.scrollTop = body.scrollHeight;
+}
+
+function turnHTML(t){
+  if(t.role === 'u'){
+    return `<div class="turn u">
+      ${t.ctx ? `<div class="ctx">${t.ctx.map(c => `<span class="badge b-mute">${esc(c)}</span>`).join('')}</div>` : ''}
+      <div class="bub">${esc(t.text)}</div></div>`;
+  }
+  const a = t.a;
+  let cites = '';
+  if(a.cites && a.cites.length){
+    cites = a.cites.map((c,i) => citeMark(c.report, c.ref, i+1)).join('');
+  }
+  return `<div class="turn a">
+    <div class="a-head"><span class="mk">✦</span> agent
+      ${a.confidence ? `<span class="badge b-mute">${a.confidence}% confident</span>` : ''}
+      ${a.noAnswer ? `<span class="badge b-warn">no answer in scope</span>` : ''}
+      <span style="flex:1"></span>
+      <button class="xbtn2" data-copy title="Copy as markdown">⧉</button>
+    </div>
+    <div class="a-lead">${a.lead}${cites}</div>
+    ${a.body ? `<div class="a-body">${a.body}</div>` : ''}
+    ${a.table || ''}
+    ${a.reasoning && a.reasoning.length ? `<details class="disc"><summary>How I worked this out</summary>
+      <div class="dd"><ul style="margin:0;padding-left:14px">${a.reasoning.map(r => `<li>${r}</li>`).join('')}</ul></div></details>` : ''}
+    ${(a.actions||[]).some(x => x.preview) ? `<div class="prevcard">
+        <b>Daily BPay email — draft</b>
+        <p>Circulates every unallocated receipt so the owning consultant can claim it. Sends to the shop distribution list.</p>
+        <button class="btn sm indigo" data-review>Review before sending</button>
+      </div>` : ''}
+    ${(a.actions||[]).filter(x => !x.preview).length ? `<div class="a-acts">${a.actions.filter(x => !x.preview).map(x =>
+        `<button class="btn sm" data-act='${esc(JSON.stringify(x))}'>${esc(x.label)}</button>`).join('')}
+        ${a.cites && a.cites.length ? `<button class="btn sm" data-stage>Stage for approval</button>` : ''}</div>` : ''}
+    ${a.followups && a.followups.length ? `<div class="followups">${a.followups.map(f =>
+        `<button data-sugg="${esc(f)}">${esc(f)}</button>`).join('')}</div>` : ''}
+  </div>`;
+}
+
+/* Text streams; tables and numbers appear complete. A total that counts up
+   as it streams gets misread as a changing value. */
+function askSend(text){
+  if(ASK_STATE.busy || !text.trim()) return;
+  const q = text.trim();
+  ASK_STATE.lastQ = q;
+  ASK_STATE.stale = false; askEl('#askStale').classList.remove('on');
+
+  const ctx = [];
+  if(ASK_STATE.pinned) ctx.push(ASK_STATE.pinned.label);
+  const picked = document.querySelectorAll('#rBody .rpick:checked').length;
+  if(picked) ctx.push(`${picked} selected lines`);
+
+  askThread().push({role:'u', text:q, ctx:ctx.length?ctx:null});
+  askRenderThread();
+  ASK_STATE.pinned = null;
+
+  const body = askEl('#askBody');
+  const box = document.createElement('div');
+  box.className = 'turn a';
+  box.innerHTML = `<div class="thinking"><div class="tick" id="askTick">reading the day's reports…</div>
+    <div class="sk"></div><div class="sk"></div><div class="sk"></div></div>`;
+  body.appendChild(box); body.scrollTop = body.scrollHeight;
+
+  ASK_STATE.busy = true;
+  askEl('#askSend').textContent = '■'; askEl('#askSend').classList.add('stop');
+
+  const c = corpus();
+  const steps = [
+    `reading ${c.lineLevel ? 'Mint settlement · ' + c.mint.length + ' lines' : 'the upload record'}`,
+    `checking against statement page ${PAGES[ASK_STATE.date] || '—'}`,
+    `matching ${c.all.length} lines in scope`
+  ];
+  let i = 0;
+  const tickT = setInterval(() => {
+    const el = askEl('#askTick'); if(el) el.textContent = steps[i % steps.length] + '…'; i++;
+  }, 420);
+
+  const finish = () => {
+    clearInterval(tickT);
+    ASK_STATE.busy = false;
+    askEl('#askSend').textContent = '➤'; askEl('#askSend').classList.remove('stop');
+    const a = askAnswer(q);
+    askThread().push({role:'a', a});
+    askRenderThread();
+  };
+  ASK_STATE.abort = () => { clearInterval(tickT); ASK_STATE.busy = false;
+    askEl('#askSend').textContent = '➤'; askEl('#askSend').classList.remove('stop');
+    box.remove(); };
+  ASK_STATE.timer = setTimeout(finish, 900);
+}
+
+/* ── scope chip ─────────────────────────────────────────────────── */
+function askScopeLabel(){
+  const n = ASK_STATE.streams.size;
+  const s = n === 4 ? 'all streams'
+          : n === 0 ? 'no streams'
+          : [...ASK_STATE.streams].sort().map(x => 'Stream ' + x).join(', ');
+  askEl('#askScope').innerHTML = `${ASK_STATE.date} · ${s} <span style="opacity:.55">▾</span>`;
+}
+function askBuildScopePop(){
+  askEl('#askDate').innerHTML = Object.keys(PAGES).sort().map(d =>
+    `<option ${d===ASK_STATE.date?'selected':''}>${d}</option>`).join('');
+  askEl('#askStreams').innerHTML = STREAMS.map(s =>
+    `<label class="sl"><input type="checkbox" value="${s.id}" ${ASK_STATE.streams.has(s.id)?'checked':''}> ${s.label}</label>`).join('');
+}
+
+/* Narrow the chip to whatever the user has filtered to, and say so. */
+function askSyncToScreen(){
+  const hint = askEl('#askScopeHint');
+  if(!hint) return;
+  const rep = askEl('#ibReport') ? askEl('#ibReport').value : '';
+  if(currentScreen() === 'inbox' && rep){
+    const s = STREAMS.find(x => x.report === rep);
+    if(s && !(ASK_STATE.streams.size === 1 && ASK_STATE.streams.has(s.id))){
+      hint.innerHTML = `matches your filters · <a href="#" id="askNarrow">narrow to ${s.label.split(' · ')[0]}</a>`;
+      const a = askEl('#askNarrow');
+      if(a) a.onclick = e => { e.preventDefault(); ASK_STATE.streams = new Set([s.id]); askScopeLabel(); askSyncToScreen(); };
+      return;
+    }
+  }
+  hint.innerHTML = ASK_STATE.streams.size < 4
+    ? `<a href="#" id="askWiden">⤺ widen to all streams</a>` : '';
+  const w = askEl('#askWiden');
+  if(w) w.onclick = e => { e.preventDefault(); ASK_STATE.streams = new Set(['A','B','C','D']); askScopeLabel(); askSyncToScreen(); };
+}
+
+/* ── deep links: chat proposes, the inbox is where you work ─────── */
+function askDeep(d){
+  if(d.go){ go(d.go); return; }
+  if(d.scope){ ASK_STATE.date = d.scope; askScopeLabel(); askBuildScopePop(); askRenderThread(); return; }
+  go('inbox');
+  if(d.report && askEl('#ibReport')){
+    askEl('#ibReport').value = d.report;
+    fillReportFilters();
+  }
+  if(askEl('#ibState')) askEl('#ibState').value = d.state || '';
+  if(askEl('#ibSearch')) askEl('#ibSearch').value = d.search || '';
+  renderReport();
+}
+function askCite(payload){
+  const [report, ref] = payload.split(':');
+  askDeep({report, search:ref});
+  setTimeout(() => {
+    const tr = [...document.querySelectorAll('#rBody tr')].find(r => r.dataset.ref === ref);
+    if(tr){ tr.classList.add('cited'); tr.scrollIntoView({behavior:'smooth', block:'center'});
+            setTimeout(() => tr.classList.remove('cited'), 3200); }
+  }, 60);
+}
+
+/* ── open / close / wiring ─────────────────────────────────────── */
+function askFabIcon(){
+  const open = document.querySelector('.app').classList.contains('ask-on');
+  const i = askEl('#askFabIcon'); if(i) i.textContent = open ? '✕' : '✦';
+  const l = document.querySelector('.askfab .lbl');
+  if(l) l.textContent = open ? 'Close · Esc' : 'Ask the agent · ⌘K';
+}
+function askOpen(seed, wide){
+  document.querySelector('.app').classList.add('ask-on');
+  if(wide) document.querySelector('.app').classList.add('ask-wide');
+  askRenderThread();
+  askSyncToScreen();
+  askFabIcon();
+  const inp = askEl('#askIn');
+  if(seed){ inp.value = seed; }
+  inp.focus();
+}
+function askClose(){
+  document.querySelector('.app').classList.remove('ask-on','ask-wide');
+  askEl('#askScopePop').classList.remove('on');
+  askEl('#askHist').classList.remove('on');
+  askFabIcon();
+}
+function askToggle(){
+  document.querySelector('.app').classList.contains('ask-on') ? askClose() : askOpen();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  if(!askEl('#askPanel')) return;
+  askScopeLabel(); askBuildScopePop(); askRenderEmpty(); askFabIcon();
+
+  // the launcher bubble is the only way in, plus ⌘K and the row-level ✦
+  askEl('#askFab').onclick  = askToggle;
+  askEl('#askClose').onclick = askClose;
+  askEl('#askWide').onclick = () => document.querySelector('.app').classList.toggle('ask-wide');
+
+  // composer
+  const inp = askEl('#askIn');
+  const grow = () => { inp.style.height = 'auto'; inp.style.height = Math.min(inp.scrollHeight, 110) + 'px'; };
+  inp.addEventListener('input', grow);
+  askEl('#askSend').onclick = () => {
+    if(ASK_STATE.busy){ ASK_STATE.abort && ASK_STATE.abort(); clearTimeout(ASK_STATE.timer); return; }
+    askSend(inp.value); inp.value = ''; grow();
+  };
+  inp.addEventListener('keydown', e => {
+    if(e.key === 'Enter' && (e.metaKey || e.ctrlKey || !e.shiftKey)){
+      e.preventDefault(); askSend(inp.value); inp.value = ''; grow();
+    }
+    // ↑ in an empty composer recalls the last question for editing
+    if(e.key === 'ArrowUp' && !inp.value && ASK_STATE.lastQ){ inp.value = ASK_STATE.lastQ; grow(); }
+  });
+  askEl('#askCtx').onclick = () => {
+    const n = document.querySelectorAll('#rBody .rpick:checked').length;
+    ASK_STATE.pinned = n ? {label:`${n} selected lines`} : {label:`${ASK_STATE.date} · all reports`};
+    askRenderThread();
+    inp.focus();
+  };
+
+  // scope popover
+  askEl('#askScope').onclick = () => askEl('#askScopePop').classList.toggle('on');
+  askEl('#askScopeApply').onclick = () => {
+    ASK_STATE.date = askEl('#askDate').value;
+    ASK_STATE.streams = new Set([...askEl('#askStreams').querySelectorAll('input:checked')].map(i => i.value));
+    askEl('#askScopePop').classList.remove('on');
+    askScopeLabel(); askSyncToScreen(); askRenderThread();
+  };
+  askEl('#askScopeAll').onclick = () => {
+    ASK_STATE.streams = new Set(['A','B','C','D']);
+    askBuildScopePop(); askScopeLabel(); askSyncToScreen();
+  };
+
+  // history
+  askEl('#askHistBtn').onclick = () => {
+    const h = askEl('#askHist');
+    const items = Object.entries(ASK_STATE.threads).filter(([,t]) => t.length);
+    h.innerHTML = items.length
+      ? items.map(([d,t]) => `<button data-hist="${d}"><b>${d}</b><br><span class="muted">${esc(t[0].text||'')}</span></button>`).join('')
+      : `<div class="muted" style="padding:8px;font-size:11.5px">No earlier conversations.</div>`;
+    h.classList.toggle('on');
+  };
+
+  // stale banner
+  askEl('#askRerun').onclick = () => {
+    askEl('#askStale').classList.remove('on');
+    if(ASK_STATE.lastQ) askSend(ASK_STATE.lastQ);
+  };
+
+  // resize
+  let dragging = false;
+  askEl('#askGrip').addEventListener('mousedown', e => { dragging = true; e.preventDefault(); });
+  document.addEventListener('mousemove', e => {
+    if(!dragging) return;
+    // the window is anchored 22px from the right edge, so width grows leftward
+    const w = Math.min(620, Math.max(340, window.innerWidth - e.clientX - 22));
+    document.querySelector('.app').classList.remove('ask-wide');
+    document.querySelector('.app').style.setProperty('--askw', w + 'px');
+  });
+  document.addEventListener('mouseup', () => dragging = false);
+
+  // panel-scoped clicks
+  askEl('#askPanel').addEventListener('click', e => {
+    const s = e.target.closest('[data-sugg]');
+    if(s){ askSend(s.dataset.sugg); return; }
+    const c = e.target.closest('[data-cite]');
+    if(c){ askCite(c.dataset.cite); return; }
+    const a = e.target.closest('[data-act]');
+    if(a){ askDeep(JSON.parse(a.dataset.act)); return; }
+    const d = e.target.closest('[data-deep]');
+    if(d){ e.preventDefault(); askDeep(JSON.parse(d.dataset.deep)); return; }
+    const h = e.target.closest('[data-hist]');
+    if(h){ ASK_STATE.date = h.dataset.hist; askScopeLabel(); askBuildScopePop();
+           askRenderThread(); askEl('#askHist').classList.remove('on'); return; }
+    const st = e.target.closest('[data-stage]');
+    if(st){ st.outerHTML = `<span class="badge b-mute">queued · awaiting approval</span>`; return; }
+    const rv = e.target.closest('[data-review]');
+    if(rv){ rv.outerHTML = `<span class="badge b-ai">opened for review — nothing sent</span>`; return; }
+    const cp = e.target.closest('[data-copy]');
+    if(cp){ const t = cp.closest('.turn').innerText;
+            navigator.clipboard && navigator.clipboard.writeText(t);
+            cp.textContent = '✓'; setTimeout(() => cp.textContent = '⧉', 1200); return; }
+  });
+
+  // keyboard
+  document.addEventListener('keydown', e => {
+    if((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k'){ e.preventDefault(); askOpen(); }
+    if(e.key === 'Escape' && document.querySelector('.app.ask-on')) askClose();
+  });
+
+  // row-level entry point, and keep the scope hint honest as you navigate
+  document.addEventListener('click', e => {
+    const ask = e.target.closest('[data-askrow]');
+    if(ask){ askOpen(); ASK_STATE.pinned = {label:'line ' + ask.dataset.askrow};
+             askEl('#askIn').value = 'Explain ' + ask.dataset.askrow; askEl('#askIn').focus(); return; }
+    setTimeout(askSyncToScreen, 0);
+  });
+});
+
+// A run or an upload invalidates any answer already on screen. Never
+// silently recompute — the user has to see that the ground moved.
+function askMarkStale(){
+  if(!askThread().length) return;
+  ASK_STATE.stale = true;
+  const el = askEl('#askStale'); if(el) el.classList.add('on');
+}
+</script>
+</body>
+</html>

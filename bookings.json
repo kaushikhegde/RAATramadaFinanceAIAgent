@@ -1,0 +1,191 @@
+{
+  "_comment": [
+    "run-bookings.js input. Booking 1 is the SMALL END-TO-END TEST:",
+    "",
+    "  node run-bookings.js --limit 1",
+    "  node statement-csv.js --rows statement-rows.json --bookings created-bookings.json --in-order --limit 1",
+    "",
+    "  Booking 1  hotel only, 150.00 (75.00 x 2 nights). No flight, no costing.",
+    "     CSV row 1 is 150.00 -> settles the one segment exactly -> Allocated",
+    "",
+    "  NOTE: with a SINGLE segment, picking 'the only segment' is picking all of",
+    "  them, so this goes down the proven Select All path. The per-segment",
+    "  tick-then-type path only runs when a booking has more than one segment and",
+    "  the receipt covers some of them \u2014 bookings 2 and 3 below do that.",
+    "",
+    "Bookings 2 and 3 are the fuller set, run with all six CSV rows:",
+    "",
+    "  booking 2  hotel  60.00, ticket 200.00",
+    "     row 2  200.00  -> settles the ticket exactly        Allocated",
+    "     row 5  100.00  -> settles the 60.00 hotel only      Part allocated",
+    "",
+    "  booking 3  hotel 790.00, ticket 250.00",
+    "     row 3  200.00  -> nothing is small enough           Not allocated",
+    "     row 6  790.00  -> settles the hotel exactly         Allocated",
+    "",
+    "THE HOTEL `rate` IS PER NIGHT \u2014 verified live on booking 13127, where rate",
+    "100.00 over 2 nights produced Due inc GST 200.00. A segment's Debtor Due is",
+    "rate x nights for the hotel, and the fare for the ticket.",
+    "",
+    "A receipt settles WHOLE segments only, picking the combination whose total is",
+    "the largest that does not exceed it.",
+    "",
+    "clientCode must already exist in Tramada (SURNAME/FIRSTNAME), and creditor",
+    "must be a real Tramada creditor \u2014 an unmatched one stops the run and asks."
+  ],
+  "dryRun": false,
+  "bookings": [
+    {
+      "label": "SYD hotel only, 2 nights",
+      "clientCode": "GRAY/SPIDER",
+      "booking": {
+        "originCode": "MEL",
+        "destinationCode": "SYD",
+        "departureDate": "2026-09-14",
+        "returnDate": "2026-09-16",
+        "tripType": "return",
+        "adults": 1,
+        "passengers": [
+          {
+            "firstName": "Spider",
+            "lastName": "Gray",
+            "type": "adult"
+          }
+        ]
+      },
+      "segments": [
+        {
+          "kind": "hotel",
+          "hotelName": "Test Hotel Sydney",
+          "cityCode": "SYD",
+          "roomType": "Standard King",
+          "checkInDate": "2026-09-14",
+          "checkOutDate": "2026-09-16",
+          "creditor": "TEMPO HOLIDAYS",
+          "rate": "75.00",
+          "rooms": 1,
+          "nights": 2,
+          "status": "HK"
+        }
+      ],
+      "costings": [],
+      "_segments": "hotel 150.00 (=75.00 x 2 nights) \u2014 the only segment"
+    },
+    {
+      "label": "ADL \u2192 BNE, 3 nights",
+      "clientCode": "GRAY/SPIDER",
+      "booking": {
+        "originCode": "ADL",
+        "destinationCode": "BNE",
+        "departureDate": "2026-09-21",
+        "returnDate": "2026-09-24",
+        "tripType": "return",
+        "adults": 1,
+        "passengers": [
+          {
+            "firstName": "Spider",
+            "lastName": "Gray",
+            "type": "adult"
+          }
+        ]
+      },
+      "segments": [
+        {
+          "kind": "flight",
+          "airline": "VA",
+          "flightNumber": "412",
+          "class": "Economy",
+          "fromCity": "ADL",
+          "toCity": "BNE",
+          "departureDate": "2026-09-21",
+          "departureTime": "07:40",
+          "arrivalDate": "2026-09-21",
+          "arrivalTime": "10:05",
+          "status": "HK"
+        },
+        {
+          "kind": "hotel",
+          "hotelName": "Test Hotel Brisbane",
+          "cityCode": "BNE",
+          "roomType": "Standard Queen",
+          "checkInDate": "2026-09-21",
+          "checkOutDate": "2026-09-24",
+          "creditor": "TEMPO HOLIDAYS",
+          "rate": "20.00",
+          "rooms": 1,
+          "nights": 3,
+          "status": "HK"
+        }
+      ],
+      "costings": [
+        {
+          "creditor": "TEMPO HOLIDAYS",
+          "airline": "VA",
+          "class": "Economy",
+          "fare": "200.00",
+          "passengerType": "Adult",
+          "fareType": "Published"
+        }
+      ],
+      "_segments": "hotel 60.00 (=20.00 x 3 nights), ticket 200.00"
+    },
+    {
+      "label": "SYD \u2192 OOL, 4 nights",
+      "clientCode": "GRAY/SPIDER",
+      "booking": {
+        "originCode": "SYD",
+        "destinationCode": "OOL",
+        "departureDate": "2026-10-05",
+        "returnDate": "2026-10-09",
+        "tripType": "return",
+        "adults": 1,
+        "passengers": [
+          {
+            "firstName": "Spider",
+            "lastName": "Gray",
+            "type": "adult"
+          }
+        ]
+      },
+      "segments": [
+        {
+          "kind": "flight",
+          "airline": "QF",
+          "flightNumber": "880",
+          "class": "Economy",
+          "fromCity": "SYD",
+          "toCity": "OOL",
+          "departureDate": "2026-10-05",
+          "departureTime": "11:15",
+          "arrivalDate": "2026-10-05",
+          "arrivalTime": "12:40",
+          "status": "HK"
+        },
+        {
+          "kind": "hotel",
+          "hotelName": "Test Hotel Gold Coast",
+          "cityCode": "OOL",
+          "roomType": "Ocean View",
+          "checkInDate": "2026-10-05",
+          "checkOutDate": "2026-10-09",
+          "creditor": "TEMPO HOLIDAYS",
+          "rate": "197.50",
+          "rooms": 1,
+          "nights": 4,
+          "status": "HK"
+        }
+      ],
+      "costings": [
+        {
+          "creditor": "TEMPO HOLIDAYS",
+          "airline": "QF",
+          "class": "Economy",
+          "fare": "250.00",
+          "passengerType": "Adult",
+          "fareType": "Published"
+        }
+      ],
+      "_segments": "hotel 790.00 (=197.50 x 4 nights), ticket 250.00"
+    }
+  ]
+}

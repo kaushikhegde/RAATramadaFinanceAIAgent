@@ -1,0 +1,110 @@
+# Bank reconciliation agent
+
+Files the day's payments into Tramada, creates the bank statement page, and
+checks that what it filed reached it.
+
+Two reports, two jobs:
+
+| | **BPay receipts** | **Mint daily settlement** |
+|---|---|---|
+| File | `.csv` | `.xlsx` or `.csv` |
+| Columns | Date, Reference, Rec/Pay Type, Amount, Booking No | Transaction Reference, Amount, To Company |
+| Writes to Tramada | **yes** — one receipt per row | **no** — nothing is filed |
+| Statement filter | `Client Payment Receipt` | `Creditor Payment` |
+| Reconciled when | the receipt number it was handed appears as a `Trans. No` at the same amount | the transaction reference appears as a `Trans. No` |
+
+A run creates its own statement page, so **one report per run**. The page holds
+both, and Start run refuses while both are loaded.
+
+## Running it
+
+```bash
+npm install
+npx playwright install chromium      # only if you have no Chrome to drive
+cp .env.example .env                 # nothing in it is required to start
+
+npm run start:chrome                 # opens Chrome with CDP on 9222
+#   ↳ SIGN INTO TRAMADA IN THAT WINDOW. The run waits for you and never
+#     types credentials itself.
+
+npm start                            # http://localhost:3000
+```
+
+Then: drop a report on its card, fill in the statement date and the opening and
+closing balances, and press **Start run**.
+
+**Start run writes to Tramada immediately.** For a BPay report it files a real
+receipt per row against a real booking, and nothing rolls back. The card's
+**Preview** is the only check before it does.
+
+## What it touches, and what it will not
+
+On the reconciliation page it sets the sort and the filter and clicks their two
+buttons. **Nothing else** — no Done, no Export, no ticking transactions, no
+Save. That is the difference between a run that reads a statement and a run that
+commits one.
+
+## The code
+
+| | |
+|---|---|
+| `recon-core.js` | Every decision, pure and tested. Allocation, matching, page numbers, column mapping, error tidying. **If you find a rule anywhere else, it is in the wrong place.** |
+| `recon-run.js` | The browser half. Pages and clicks, no judgements. |
+| `xlsx-lite.js` | Reads .xlsx with no dependencies — a workbook is a zip of XML and node ships `zlib`. |
+| `tramada-receipt.js` | The booking receipt form. |
+| `server.js` | One page, one socket. |
+| `recon-wire.html` | The live wiring added to the client's mockup. |
+| `build-recon.js` | `public/index.html` ← `recon-ui-mockup.html` + `recon-wire.html` |
+
+### The page is generated — never hand-edit `public/index.html`
+
+```bash
+npm run build
+```
+
+The client's mockup arrives as `recon-ui-mockup.html` and changes. It is not a
+styling prototype: it carries ~90 KB of its own demo JavaScript with
+`document`-level click and change handlers, so **the build disables its script**
+and the wiring reimplements the one thing the page needs from it (screen
+navigation). Put your changes in `recon-wire.html`; anything typed straight into
+`public/index.html` is lost on the next mockup.
+
+Screens the wiring does not drive keep the mockup's invented figures and are
+marked *sample data*.
+
+## Tests
+
+```bash
+npm test        # 223 assertions, all offline — no network, no browser
+npm run shots   # screenshots of the page, a BPay run and a Mint run
+```
+
+The tests never open Tramada and never launch Playwright. The rules are checked
+against values captured from the live pages; `test-xlsx-lite.js` runs against
+the client's actual `mint.xlsx`, which is how it caught a parser bug that a
+hand-written fixture would have agreed with.
+
+The screenshot tools are not tests — they replay invented frames and prove
+nothing about the automation. They exist because a whole class of bug here only
+fails when you look at it: progress frames arriving and being dropped, a stop
+reason wiped by the next repaint, a raw Playwright call log rendered into a
+table cell. None of those show up in a node test.
+
+## Sample data
+
+| | |
+|---|---|
+| `tramada-statement-lines.csv` | Six real statement lines, for BPay |
+| `mint.xlsx` | The client's own Mint export |
+| `mint-payments.csv` | Three real creditor payments, all correct |
+| `mint-payments-varied.csv` | The same three distorted, plus one that does not exist — one run, every outcome |
+| `bookings.json` + `run-bookings.js` | Builds bookings for a BPay run to reconcile against |
+
+## Where the portal is written down
+
+`docs/tramada-field-map.md` — routes, field ids, the real dropdown
+vocabularies, and the things that cost a run to discover: which fields need real
+keystrokes, that changing the bank account posts the form back, that sorting
+clears the filter, and that filtering hides rows rather than removing them.
+
+Read it before touching a Tramada page. `CLAUDE.md` has the standing rules.

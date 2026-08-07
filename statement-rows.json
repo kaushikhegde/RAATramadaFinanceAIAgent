@@ -1,0 +1,56 @@
+[
+  {
+    "date": "01-11-2021",
+    "transNo": "R.0000001384",
+    "recPayType": "Debtor Payment Receipt",
+    "transType": "ET",
+    "reference": "Deposit - Jill Shields",
+    "payee": "RAA of SA Limited (Retail)",
+    "amount": "150.00"
+  },
+  {
+    "date": "20-11-2021",
+    "transNo": "R.0000001387",
+    "recPayType": "Debtor Payment Receipt",
+    "transType": "ET",
+    "reference": "Trip File Tsfr 1105",
+    "payee": "RAA of SA Limited (Retail)",
+    "amount": "200.00"
+  },
+  {
+    "date": "24-11-2021",
+    "transNo": "R.0000001377",
+    "recPayType": "Debtor Payment Receipt",
+    "transType": "ET",
+    "reference": "NW",
+    "payee": "RAA of SA Limited (Retail)",
+    "amount": "200.00"
+  },
+  {
+    "date": "13-12-2021",
+    "transNo": "R.0000001582",
+    "recPayType": "Debtor Payment Receipt",
+    "transType": "ET",
+    "reference": "VIX122334",
+    "payee": "RAA of SA Limited (Retail)",
+    "amount": "145.54"
+  },
+  {
+    "date": "17-01-2022",
+    "transNo": "R.0000001816",
+    "recPayType": "Debtor Payment Receipt",
+    "transType": "ET",
+    "reference": "PROMO",
+    "payee": "RAA of SA Limited (Retail)",
+    "amount": "100.00"
+  },
+  {
+    "date": "22-02-2022",
+    "transNo": "R.0000002084",
+    "recPayType": "Debtor Payment Receipt",
+    "transType": "ET",
+    "reference": "Trip File Transfer",
+    "payee": "RAA of SA Limited (Retail)",
+    "amount": "790.00"
+  }
+]
