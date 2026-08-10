@@ -637,3 +637,73 @@ Trust Account holds pages **1–9**; page 9 is `31-05-2020`, opening `111753.97`
 closing `1300000.00`, Balanced `N`, with 4,257 transaction rows of which 52 are
 already ticked. The page 10 recorded earlier in this file is gone — a page
 number read from the grid, never remembered.
+
+---
+
+## The creditor payment form, mapped live (10-08-2026)
+
+`booking/booking-creditor-payment.htm?mode=add&parentId={bookingNo}`, reached
+from `booking/booking-payments.htm?mode=edit&id={bookingNo}` → **`#add`**
+("Add / Issue Payment"). Measured on booking 13175.
+
+**This is the only form in the project that moves money OUT.**
+
+### It is the receipt form with different columns
+
+```
+#paymenttransactionTypeCode   ""  CQ=Cheque  ET=EFT      ← only two, not five
+#paymentagencyBankAccount     1=[TRUST] Trust Account
+#creditor                     ""  309=READY ROOMS (READY)
+#paymentpayeeName  #paymentpaymentDate (dd-mm-yyyy)
+#paymentpaymentAmount  #paymentreferenceNumber
+#selectAll  #deselectAll  #roundRemaining
+#preview (submit)   #issue (submit)
+hidden: #parentId #mode #hiddenRecordType=CREDITOR_PAYMENT
+        #hiddenAllocatedAmount #hiddenRoundingAmount
+```
+
+`#creditor` offers **only creditors this booking actually owes**, so a creditor
+missing from the list is a fact about the booking, not a broken selector.
+Choosing one posts the segment table back — wait for it.
+
+### The segment columns are NOT the receipt form's
+
+```
+receipt   D | Seg. Type | Invoice No. | Reference | Creditor ID |
+          Debtor Invoiced | Debtor Receipted | Debtor Due | Allocate | A
+payment   D | Seg. Type | Reference | Creditor ID |
+          Creditor Nett | Creditor Paid | Creditor Payable | Allocate | A
+```
+
+**Creditor Payable is index 6; Debtor Due is index 7.** The payment form has no
+Invoice No. column. `tramada-receipt.js` hardcodes `cells[7]`; `tramada-payment.js`
+maps by header name instead (`recon-core.mapColumns`), which is the rule
+everything else here already follows.
+
+Booking 13175's row, verbatim: `* | HTL | READY ROOMS | 309 | 300.00 | 0.00 | 300.00`.
+
+`#allocationAmount_{segId}` ships **`disabled readonly`**, and the row checkbox
+`input[name="segmentsToAllocate"][value="{segId}"]` is what enables it — same
+name and same order-of-operations as the receipt form. Tick first, then type.
+
+### The remittance email
+
+```
+#useEmail (UNCHECKED on load)  #emailSubject  #tos  #emailFormat
+#documentType   REMITTANCE_PLUS_ALLOCATION | REMITTANCE_ONLY
+```
+
+Ticking `#useEmail` mails the creditor a remittance on Issue. Nothing in this
+project ticks it. Leave it alone.
+
+### What a payment looks like afterwards
+
+The Booking Payments list is
+`Action | Payment No. | Payment Category | Payment Type | Trans. Type | Paid To | Reference | Payment Date | Amount`,
+and the number is **`P.0000000161`** — the same shape as a receipt's `R.` and
+exactly what Mint's export carries as its Transaction Reference. On the
+reconcile page those rows read `Rec/Pay Type = Creditor Payment`, `Trans Type = ET`.
+
+Its sort order is undocumented, so `findIssuedPayment()` searches the whole list
+for the reference AND amount it just filed rather than trusting the top row —
+see CODE-REVIEW.md §2 for what trusting it costs.

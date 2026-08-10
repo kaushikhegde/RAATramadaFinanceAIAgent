@@ -120,9 +120,9 @@ check("and what reconciled in each", [split.bpay.reconciled, split.mint.reconcil
 // Runs recorded before combined runs existed have no `src` on their rows.
 check("an old single-source run still reads right",
   C.sourceBreakdown({ source: "mint", rows: [{}, {}] }).mint.rows, 2);
-check("a combined run counts under both sources on the dashboard",
+check("a combined run counts under every report it carried",
   C.overviewFrom([{ id: "x", startedAt: "2026-08-10T00:00:00Z", source: "both", status: "done", rows: mixed }]).bySource,
-  { bpay: 1, mint: 1 });
+  { bpay: 1, mint: 1, travelpay: 0 });
 
 console.log("\nthe overview");
 const runs = [
@@ -148,7 +148,9 @@ const o = C.overviewFrom(runs);
 check("every run", o.runs, 3);
 check("completed", o.completed, 2);
 check("failed", o.failed, 1);
-check("by source", o.bySource, { bpay: 2, mint: 1 });
+// Built from REPORTS, so a report nobody ran still appears, at zero — the
+// dashboard says "no TravelPay today" rather than staying silent about it.
+check("by source", o.bySource, { bpay: 2, mint: 1, travelpay: 0 });
 check("rows across every run", o.rows, 6);
 check("money across every run", o.amountCents, 180000);
 check("reconciled across every run", o.reconciledCents, 155000);

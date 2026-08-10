@@ -95,7 +95,9 @@ function send(session, m) {
  */
 function handleReconParse(session, msg) {
   const name = String(msg.name || "the file");
-  const reply = (extra) => send(session, { type: "recon_parsed", source: "mint", name, ...extra });
+  // Mint and TravelPay are both read here, by the parser the run itself uses.
+  const source = msg.source === "travelpay" ? "travelpay" : "mint";
+  const reply = (extra) => send(session, { type: "recon_parsed", source, name, ...extra });
 
   // ~8 MB of base64 is ~6 MB of file. A daily settlement is tens of kilobytes.
   if (!msg.base64 || String(msg.base64).length > 8 * 1024 * 1024) {
@@ -108,12 +110,14 @@ function handleReconParse(session, msg) {
     // Kept before it is parsed. The bytes are the only thing that settles a
     // disputed figure three weeks later, and they are already here — asking the
     // page to send them a second time would be sending the same file twice.
-    keep(session, "mint", name, buf);
+    keep(session, source, name, buf);
     // A zip starts "PK". That is the file's own container saying what it is —
     // not a guess from its name or its contents.
     const isZip = buf.length > 1 && buf[0] === 0x50 && buf[1] === 0x4b;
     const sheet = isZip ? xlsxLite.readSheet(buf) : reconCore.csvGrid(buf.toString("utf8"));
-    const { rows, problems } = reconCore.parseMintRows(sheet.headers, sheet.rows);
+    const { rows, problems } = source === "travelpay"
+      ? reconCore.parseTravelPayRows(sheet.headers, sheet.rows)
+      : reconCore.parseMintRows(sheet.headers, sheet.rows);
     reply({ rows, problems, headers: sheet.headers, sheetRows: sheet.rows.length });
   } catch (err) {
     reply({ error: reconCore.tidyError(err.message) });
@@ -209,7 +213,7 @@ const callbacks = (session, run) => ({
 
 async function handleReconRun(session, msg) {
   if (msg.source === "both") return handleCombinedRun(session, msg);
-  if (msg.source === "mint") return handleMintRun(session, msg);
+  if (msg.source === "mint" || msg.source === "travelpay") return handleMintRun(session, msg);
 
   const { rows, problems } = reconCore.parseReconCsv(csvOf(msg.rows));
 
@@ -263,14 +267,20 @@ async function handleReconRun(session, msg) {
  * The Mint half already came from this server's own parser.
  */
 async function handleCombinedRun(session, msg) {
-  const { rows: bpayRows, problems } = reconCore.parseReconCsv(csvOf(msg.bpayRows));
-  const mintRows = Array.isArray(msg.mintRows) ? msg.mintRows : [];
+  const given = msg.byReport || {};
+  const { rows: bpayRows, problems } = reconCore.parseReconCsv(csvOf(given.bpay));
+  const byReport = { bpay: bpayRows };
+  // Everything that is not BPay was parsed by this server already, on its way
+  // in — it round-tripped through the page only so a person could look at it.
+  for (const k of Object.keys(reconCore.REPORTS)) {
+    if (k !== "bpay") byReport[k] = Array.isArray(given[k]) ? given[k] : [];
+  }
 
   for (const p of problems) {
     send(session, { type: "recon_progress", message: `Line ${p.line}: ${p.why}`, ok: false });
   }
-  if (!bpayRows.length && !mintRows.length) {
-    send(session, { type: "recon_done", error: "neither report had anything that could be run" });
+  if (!Object.values(byReport).some((rs) => rs.length)) {
+    send(session, { type: "recon_done", error: "none of those reports had anything that could be run" });
     return;
   }
   if (session.reconRunning) {
@@ -279,16 +289,13 @@ async function handleCombinedRun(session, msg) {
   }
   session.reconRunning = true;
 
-  // One record, both reports. Rows carry their own `src` so the overview can
+  // One record, every report. Rows carry their own `src` so the overview can
   // still tell them apart on a screen whose stream cards are per report.
-  const run = openRun(session, "both", msg, [
-    ...bpayRows.map((r) => ({ ...r, src: "bpay" })),
-    ...mintRows.map((r) => ({ ...r, src: "mint" })),
-  ]);
+  const run = openRun(session, "both", msg,
+    Object.keys(byReport).flatMap((k) => byReport[k].map((r) => ({ ...r, src: k }))));
   try {
     const out = await runCombinedReconciliation({
-      bpayRows,
-      mintRows,
+      byReport,
       statementDate: msg.statementDate,
       openingBalance: msg.openingBalance,
       closingBalance: msg.closingBalance,
@@ -299,7 +306,7 @@ async function handleCombinedRun(session, msg) {
     send(session, {
       type: "recon_progress",
       message: `${s.reconciled} of ${s.total} reconciled on page ${out.pageNumber} ` +
-        `(${s.bpay} BPay, ${s.mint} Mint)` +
+        ` (${s.perReport})` +
         (s.allocated ? `, ${s.allocated} allocated` : "") +
         (s.failed ? `, ${s.failed} failed` : ""),
     });
@@ -356,10 +363,19 @@ function closeRun(run, out, error) {
 }
 
 /** Mint: create the page, then look each transaction reference up on it. */
+/**
+ * Mint and TravelPay: create the page, then look each reference up on it.
+ *
+ * One handler for both because they are the same job — nothing is filed, a
+ * reference either reached the page or it did not. All that differs is which
+ * Rec/Pay Type the page is filtered to, and that comes from `REPORTS`.
+ */
 async function handleMintRun(session, msg) {
+  const source = msg.source === "travelpay" ? "travelpay" : "mint";
+  const report = reconCore.REPORTS[source];
   const rows = Array.isArray(msg.rows) ? msg.rows : [];
   if (!rows.length) {
-    send(session, { type: "recon_done", error: "nothing in that workbook could be checked" });
+    send(session, { type: "recon_done", error: `nothing in that ${report.title} file could be checked` });
     return;
   }
   if (session.reconRunning) {
@@ -368,10 +384,11 @@ async function handleMintRun(session, msg) {
   }
   session.reconRunning = true;
 
-  const run = openRun(session, "mint", msg, rows);
+  const run = openRun(session, source, msg, rows.map((r) => ({ ...r, src: source })));
   try {
     const out = await runMintReconciliation({
       rows,
+      recPayType: report.recPayType,
       statementDate: msg.statementDate,
       openingBalance: msg.openingBalance,
       closingBalance: msg.closingBalance,

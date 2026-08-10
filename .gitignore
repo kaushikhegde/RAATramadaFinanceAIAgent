@@ -2,6 +2,8 @@ node_modules/
 .env
 .jetstar-profile-cdp/
 created-bookings.json
+created-bookings-*.json
+csv_uploads/
 *.png
 uploads/
 runs.json

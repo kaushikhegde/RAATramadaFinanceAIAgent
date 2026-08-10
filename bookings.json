@@ -11,7 +11,7 @@
     "  NOTE: with a SINGLE segment, picking 'the only segment' is picking all of",
     "  them, so this goes down the proven Select All path. The per-segment",
     "  tick-then-type path only runs when a booking has more than one segment and",
-    "  the receipt covers some of them \u2014 bookings 2 and 3 below do that.",
+    "  the receipt covers some of them — bookings 2 and 3 below do that.",
     "",
     "Bookings 2 and 3 are the fuller set, run with all six CSV rows:",
     "",
@@ -23,7 +23,7 @@
     "     row 3  200.00  -> nothing is small enough           Not allocated",
     "     row 6  790.00  -> settles the hotel exactly         Allocated",
     "",
-    "THE HOTEL `rate` IS PER NIGHT \u2014 verified live on booking 13127, where rate",
+    "THE HOTEL `rate` IS PER NIGHT — verified live on booking 13127, where rate",
     "100.00 over 2 nights produced Due inc GST 200.00. A segment's Debtor Due is",
     "rate x nights for the hotel, and the fare for the ticket.",
     "",
@@ -31,7 +31,7 @@
     "the largest that does not exceed it.",
     "",
     "clientCode must already exist in Tramada (SURNAME/FIRSTNAME), and creditor",
-    "must be a real Tramada creditor \u2014 an unmatched one stops the run and asks."
+    "must be a real Tramada creditor — an unmatched one stops the run and asks."
   ],
   "dryRun": false,
   "bookings": [
@@ -61,7 +61,7 @@
           "roomType": "Standard King",
           "checkInDate": "2026-09-14",
           "checkOutDate": "2026-09-16",
-          "creditor": "TEMPO HOLIDAYS",
+          "creditor": "READY ROOMS",
           "rate": "75.00",
           "rooms": 1,
           "nights": 2,
@@ -69,10 +69,10 @@
         }
       ],
       "costings": [],
-      "_segments": "hotel 150.00 (=75.00 x 2 nights) \u2014 the only segment"
+      "_segments": "hotel 150.00 (=75.00 x 2 nights) — the only segment"
     },
     {
-      "label": "ADL \u2192 BNE, 3 nights",
+      "label": "ADL → BNE, 3 nights",
       "clientCode": "GRAY/SPIDER",
       "booking": {
         "originCode": "ADL",
@@ -110,7 +110,7 @@
           "roomType": "Standard Queen",
           "checkInDate": "2026-09-21",
           "checkOutDate": "2026-09-24",
-          "creditor": "TEMPO HOLIDAYS",
+          "creditor": "READY ROOMS",
           "rate": "20.00",
           "rooms": 1,
           "nights": 3,
@@ -119,7 +119,7 @@
       ],
       "costings": [
         {
-          "creditor": "TEMPO HOLIDAYS",
+          "creditor": "READY ROOMS",
           "airline": "VA",
           "class": "Economy",
           "fare": "200.00",
@@ -130,7 +130,7 @@
       "_segments": "hotel 60.00 (=20.00 x 3 nights), ticket 200.00"
     },
     {
-      "label": "SYD \u2192 OOL, 4 nights",
+      "label": "SYD → OOL, 4 nights",
       "clientCode": "GRAY/SPIDER",
       "booking": {
         "originCode": "SYD",
@@ -168,7 +168,7 @@
           "roomType": "Ocean View",
           "checkInDate": "2026-10-05",
           "checkOutDate": "2026-10-09",
-          "creditor": "TEMPO HOLIDAYS",
+          "creditor": "READY ROOMS",
           "rate": "197.50",
           "rooms": 1,
           "nights": 4,
@@ -177,7 +177,7 @@
       ],
       "costings": [
         {
-          "creditor": "TEMPO HOLIDAYS",
+          "creditor": "READY ROOMS",
           "airline": "QF",
           "class": "Economy",
           "fare": "250.00",

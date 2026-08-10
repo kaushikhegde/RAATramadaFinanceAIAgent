@@ -648,6 +648,160 @@ function tidyError(msg) {
   return m;
 }
 
+/* ── the TravelPay merchant settlement ───────────────────────────────────── */
+
+/**
+ * The three columns the TravelPay run uses, by header name.
+ *
+ * **`Payment Reference` is what reconciles a row**, not `Processor Reference`
+ * and not `Customer Reference` — all three are in the file and only one of them
+ * is what Tramada posts the transaction under.
+ *
+ * The amount is `Processed Amount`, which is `Base Amount` + `Customer Fee`.
+ * The sample's fees are all zero so the two columns agree there, and they will
+ * not agree on the first row that carries a fee: the bank moved the processed
+ * figure, so that is the figure to reconcile against.
+ */
+const TRAVELPAY_COLUMNS = {
+  transNo: ["payment reference"],
+  amount: ["processed amount"],
+  toCompany: ["merchantcompanyname", "merchant company name", "merchant name"],
+  status: ["transaction status"],
+  reference: ["additional reference"],
+  failure: ["failure reason"],
+  date: ["processing date"],
+  settlementDate: ["merchant settlement date"],
+};
+
+/**
+ * An Excel serial number as `yyyy-mm-dd`.
+ *
+ * TravelPay's Processing Date arrives as `46204`, because that is what a
+ * workbook stores and `xlsx-lite` deliberately does not convert dates — turning
+ * one back needs the number format out of styles.xml, and until now nothing
+ * needed one. TravelPay does.
+ *
+ * The epoch is 1899-12-30, not 1900-01-01: Excel believes 1900 was a leap year,
+ * and the two-day offset is how everybody else's code stays compatible with
+ * that. Anything that is not a plain positive number comes back untouched —
+ * a date this does not recognise is reported, never reformatted into a wrong
+ * one.
+ */
+function serialDate(v) {
+  const s = String(v == null ? "" : v).trim();
+  if (!/^\d+(\.\d+)?$/.test(s)) return s;
+  const n = parseFloat(s);
+  if (!Number.isFinite(n) || n <= 0) return s;
+  const d = new Date(Date.UTC(1899, 11, 30) + Math.floor(n) * 86400000);
+  const p = (x) => String(x).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}`;
+}
+
+/**
+ * The booking number buried in TravelPay's `Additional Reference`.
+ *
+ * The real values are `"Client Name -  128380"` and `"Client Name - B128297  "`
+ * — a doubled space in one, trailing spaces on the other, and a `B` prefix on
+ * only one of them. Nothing here is filed against that booking (the run checks,
+ * it does not write), so this is for showing a person which booking a
+ * settlement belongs to; it is deliberately not used to match.
+ */
+function bookingFromReference(v) {
+  const m = String(v == null ? "" : v).trim().match(/([A-Za-z]?\d{4,})\s*$/);
+  return m ? m[1] : "";
+}
+
+/**
+ * A TravelPay export's rows → rows the run can check.
+ *
+ * Like Mint, this files NOTHING: these are settlements Tramada already holds
+ * and the only question is whether each reached the statement page.
+ *
+ * A transaction that did not succeed is HELD BACK rather than checked. It never
+ * reached the bank, so it cannot be on the statement, and calling it "not
+ * reconciled" would put a failure on the screen that reads exactly like a
+ * settlement that went missing. The reason it gives is TravelPay's own.
+ */
+function parseTravelPayRows(headers, gridRows) {
+  const cols = mapColumns(headers, TRAVELPAY_COLUMNS);
+  const missing = ["transNo", "amount"].filter((k) => cols[k] < 0);
+  if (missing.length) {
+    const want = missing.map((k) => TRAVELPAY_COLUMNS[k][0]).join(", ");
+    return { rows: [], problems: [{ line: 1, why: `the sheet has no column for: ${want}` }] };
+  }
+
+  const at = (cells, key) => (cols[key] >= 0 && cells[cols[key]] != null ? String(cells[cols[key]]).trim() : "");
+  const rows = [];
+  const problems = [];
+  (gridRows || []).forEach((cells, i) => {
+    const row = {
+      line: i + 2,                       // +1 for the header, +1 for 1-based
+      transNo: at(cells, "transNo"),
+      amount: at(cells, "amount"),
+      toCompany: at(cells, "toCompany"),
+      status: at(cells, "status"),
+      reference: at(cells, "reference"),
+      // Straight out of a workbook these are Excel serials (46204); out of the
+      // CSV they are already dates. serialDate leaves anything that is not a
+      // plain number alone, so one call covers both containers.
+      date: serialDate(at(cells, "date")),
+      settlementDate: serialDate(at(cells, "settlementDate")),
+    };
+    row.bookingNo = bookingFromReference(row.reference);
+    row.rawAmount = row.amount;
+    row.amountCents = cents(row.amount);
+    // Same reason as Mint: a workbook hands back what the float actually holds,
+    // so 10383.96 arrives as "10383.959999999999".
+    if (row.amountCents != null) row.amount = money(row.amountCents);
+
+    const why = [];
+    if (!row.transNo) why.push("no payment reference");
+    if (row.amountCents == null) why.push(`unreadable amount "${row.rawAmount}"`);
+    if (row.status && !/^success/i.test(row.status)) {
+      const reason = at(cells, "failure");
+      why.push(`the transaction was "${row.status}"${reason ? ` — ${reason}` : ""}, so it never reached the bank`);
+    }
+    if (why.length) problems.push({ line: row.line, why: why.join("; "), row });
+    else rows.push(row);
+  });
+  return { rows, problems };
+}
+
+/* ── the reports this system knows ───────────────────────────────────────── */
+
+/**
+ * One place that says what each report IS.
+ *
+ * Server, run and page all need the same three facts about a report — what it
+ * is filtered to on the reconcile page, whether it writes anything, and how a
+ * row is matched. Held once here, because a fourth report added in three places
+ * is a fourth report added correctly in two of them.
+ */
+const REPORTS = {
+  bpay: {
+    key: "bpay",
+    title: "BPay receipts",
+    recPayType: "Client Payment Receipt",
+    files: true,                          // one real receipt per row
+  },
+  mint: {
+    key: "mint",
+    title: "Mint daily settlement",
+    recPayType: "Creditor Payment",
+    files: false,
+  },
+  travelpay: {
+    key: "travelpay",
+    title: "TravelPay merchant settlement",
+    // Client Payment Receipt, confirmed 10-08-2026 — the same type the BPay
+    // receipts land under, NOT the Finance Merchant Payment Receipt its name
+    // suggests. On a combined run that means BPay and TravelPay share one
+    // filter pass and Mint gets its own.
+    recPayType: "Client Payment Receipt",
+    files: false,
+  },
+};
+
 /* ── the run's own summary ───────────────────────────────────────────────── */
 
 /** Counts for the UI's filter chips, from the finished result rows. */
@@ -772,11 +926,11 @@ function overviewFrom(runs) {
     completed: done.length,
     failed: all.filter((r) => r.status === "failed").length,
     running: all.filter((r) => r.status === "running").length,
-    // A combined run counts under BOTH, because it really did run both.
-    bySource: {
-      bpay: all.filter((r) => sourceBreakdown(r).bpay.rows > 0).length,
-      mint: all.filter((r) => sourceBreakdown(r).mint.rows > 0).length,
-    },
+    // A combined run counts under EVERY report it carried, because it really
+    // did run them all. Built from REPORTS so a fourth one appears here without
+    // anybody remembering to add it.
+    bySource: Object.fromEntries(Object.keys(REPORTS).map((k) =>
+      [k, all.filter((r) => sourceBreakdown(r)[k].rows > 0).length])),
     rows: all.reduce((a, r) => a + ((r.totals && r.totals.rows) || 0), 0),
     amountCents: add("amountCents"),
     reconciledCents: add("reconciledCents"),
@@ -830,12 +984,20 @@ function overviewFrom(runs) {
  */
 function summariseCombined(results) {
   const r = results || [];
-  const bpay = r.filter((x) => x.src !== "mint");
-  const mint = r.filter((x) => x.src === "mint");
+  // Only a report that FILES can be allocated. Counting the ones that merely
+  // check as "not allocated" would put failures on a screen where nothing
+  // failed — so the split is by what the report does, not by its name.
+  const bpay = r.filter((x) => REPORTS[x.src] ? REPORTS[x.src].files : x.src !== "mint");
+  const mint = r.filter((x) => !bpay.includes(x));
+  const counted = Object.keys(REPORTS)
+    .map((k) => [k, r.filter((x) => x.src === k).length])
+    .filter(([, n]) => n);
   return {
     total: r.length,
     bpay: bpay.length,
     mint: mint.length,
+    byReport: Object.fromEntries(counted),
+    perReport: counted.map(([k, n]) => `${n} ${REPORTS[k].title}`).join(", "),
     allocated: bpay.filter((x) => x.allocation === "Allocated").length,
     partAllocated: bpay.filter((x) => x.allocation === "Part allocated").length,
     notAllocated: bpay.filter((x) => x.allocation === "Not allocated").length,
@@ -856,9 +1018,12 @@ function summariseCombined(results) {
  * existed.
  */
 function sourceBreakdown(run) {
-  const out = { bpay: { rows: 0, reconciled: 0 }, mint: { rows: 0, reconciled: 0 } };
+  const out = {};
+  for (const k of Object.keys(REPORTS)) out[k] = { rows: 0, reconciled: 0 };
   for (const r of (run && run.rows) || []) {
-    const key = r.src === "mint" || (!r.src && run.source === "mint") ? "mint" : "bpay";
+    // The row's own source, falling back to the run's for every run recorded
+    // before a row knew which report it came from.
+    const key = REPORTS[r.src] ? r.src : (REPORTS[run.source] ? run.source : "bpay");
     out[key].rows++;
     if (r.reconciliation === "Reconciled") out[key].reconciled++;
   }
@@ -876,6 +1041,7 @@ module.exports = {
   mapColumns, rowsByHeader,
   STATEMENT_COLUMNS, TRANSACTION_COLUMNS, TRANSACTION_FALLBACK,
   MINT_COLUMNS, csvGrid, parseMintRows, matchMintAgainstStatement, summariseMint,
+  TRAVELPAY_COLUMNS, parseTravelPayRows, serialDate, bookingFromReference, REPORTS,
   tidyError,
   summarise,
 };

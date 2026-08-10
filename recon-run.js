@@ -1097,25 +1097,27 @@ async function runCombinedReconciliation(o = {}) {
   const say = cb.onProgress || (() => {});
   const row = cb.onRow || (() => {});
   const accountLabel = o.accountLabel || "[TRUST] Trust Account";
-  const mintType = o.recPayType || "Creditor Payment";
 
-  // One numbering across both reports: `n` reaches the page and the store, and
-  // two rows called 1 would overwrite each other in both.
-  const results = [
-    ...(o.bpayRows || []).map((r) => ({ ...r, src: "bpay" })),
-    ...(o.mintRows || []).map((r) => ({ ...r, src: "mint" })),
-  ].map((r, i) => ({ ...r, n: i + 1 }));
+  /* One numbering across every report: `n` reaches the page and the store, and
+     two rows called 1 would overwrite each other in both. `byReport` arrives as
+     { bpay: [...], mint: [...], travelpay: [...] } — whichever cards were
+     loaded. */
+  const byReport = o.byReport || {};
+  const order = Object.keys(core.REPORTS).filter((k) => (byReport[k] || []).length);
+  const results = order
+    .flatMap((k) => byReport[k].map((r) => ({ ...r, src: k })))
+    .map((r, i) => ({ ...r, n: i + 1 }));
   if (!results.length) throw new Error("No rows to run.");
 
-  const bpay = results.filter((r) => r.src === "bpay");
-  const mint = results.filter((r) => r.src === "mint");
-  say(`${bpay.length} BPay row${bpay.length === 1 ? "" : "s"} and ${mint.length} Mint settlement` +
-    `${mint.length === 1 ? "" : "s"}, on one statement page. ` +
-    (bpay.length ? "The BPay rows are filed as receipts; " : "") +
-    "the Mint rows are only looked for.");
+  const rowsOf = (k) => results.filter((r) => r.src === k);
+  const writes = order.filter((k) => core.REPORTS[k].files);
+  say(order.map((k) => `${rowsOf(k).length} ${core.REPORTS[k].title}`).join(" and ") +
+    ", on one statement page. " +
+    (writes.length ? `${writes.map((k) => core.REPORTS[k].title).join(" and ")} are filed as receipts; ` : "") +
+    "the rest are only looked for.");
 
-  if (bpay.length) {
-    await fileReceipts(bpay, {
+  for (const k of writes) {
+    await fileReceipts(rowsOf(k), {
       auth: { username: process.env.TRAMADA_USERNAME, password: process.env.TRAMADA_PASSWORD },
       cb, say, row,
     });
@@ -1143,36 +1145,54 @@ async function runCombinedReconciliation(o = {}) {
     let futureDated = [];
     let seen = 0;
 
-    // One pass per report: filter, read, match, tick. Ticking inside the pass
-    // rather than at the end is deliberate — a row hidden by the NEXT filter
-    // cannot be clicked, and Playwright will not click what it cannot see.
-    const pass = async (label, rowsForPass, match) => {
-      if (!rowsForPass.length) return;
-      say(`Filtering to ${label}…`);
-      await applyFilter(page, label);
+    /* ONE PASS PER FILTER, not per report.
+     *
+     * BPay and TravelPay both sit under Client Payment Receipt, so grouping by
+     * report would filter to the same thing twice and read the same grid twice
+     * — and worse, the second read would happen after the first pass had
+     * ticked rows, which reorders the table. Group by the filter itself and
+     * every report that uses it is matched against one read.
+     *
+     * Ticking happens inside the pass rather than at the end because a row
+     * hidden by the NEXT filter cannot be clicked, and Playwright will not
+     * click what it cannot see. */
+    const passes = [];
+    for (const k of order) {
+      const type = k === "mint" && o.recPayType ? o.recPayType : core.REPORTS[k].recPayType;
+      const existing = passes.find((p) => p.type === type);
+      if (existing) existing.reports.push(k);
+      else passes.push({ type, reports: [k] });
+    }
+
+    for (const p of passes) {
+      say(`Filtering to ${p.type}…`);
+      await applyFilter(page, p.type);
       const statement = await readVisibleTransactions(page);
       seen += statement.length;
-      say(`${statement.length} ${label} transaction${statement.length === 1 ? "" : "s"} showing.`);
+      say(`${statement.length} ${p.type} transaction${statement.length === 1 ? "" : "s"} showing` +
+        ` — checking ${p.reports.map((k) => core.REPORTS[k].title).join(" and ")}.`);
 
       const matched = [];
-      for (const r of rowsForPass) {
-        const m = match(r, statement);
-        r.reconciliation = m.status;
-        r.mismatch = m.mismatch;
-        r.why = r.error ? r.why : m.reason;
-        if (m.duplicates) r.why += ` — ${m.duplicates} transactions carry that number`;
-        if (m.reconciled && m.transNo) { r.transNo = m.transNo; matched.push(m.transNo); }
-        row(r.n, { reconciliation: r.reconciliation, why: r.why, mismatch: r.mismatch, transNo: r.transNo });
-        say(`Row ${r.n}: ${m.status} — ${m.reason}`, m.reconciled);
+      for (const k of p.reports) {
+        // BPay reconciles on the receipt number Tramada handed back; everything
+        // else on the reference the report itself carries.
+        const match = core.REPORTS[k].files ? core.matchAgainstStatement : core.matchMintAgainstStatement;
+        for (const r of rowsOf(k)) {
+          const m = match(r, statement);
+          r.reconciliation = m.status;
+          r.mismatch = m.mismatch;
+          r.why = r.error ? r.why : m.reason;
+          if (m.duplicates) r.why += ` — ${m.duplicates} transactions carry that number`;
+          if (m.reconciled && m.transNo) { r.transNo = m.transNo; matched.push(m.transNo); }
+          row(r.n, { reconciliation: r.reconciliation, why: r.why, mismatch: r.mismatch, transNo: r.transNo });
+          say(`Row ${r.n}: ${m.status} — ${m.reason}`, m.reconciled);
+        }
       }
       const sel = await selectMatchedTransactions(page, statement, matched, say);
       ticked = ticked.concat(sel.ticked);
       missing = missing.concat(sel.missing);
       futureDated = futureDated.concat(sel.futureDated);
-    };
-
-    await pass("Client Payment Receipt", bpay, core.matchAgainstStatement);
-    await pass(mintType, mint, core.matchMintAgainstStatement);
+    }
 
     const balances = await setStatementBalances(page, {
       openingBalance: o.openingBalance,

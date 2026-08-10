@@ -3,9 +3,8 @@
  *
  * The screen used to refuse this outright — "Two reports are loaded… remove the
  * one you are not running" — and Start run stayed dead. This drives the real
- * page: picks a BPay CSV on one card, a Mint CSV on the other, and checks that
- * the button comes alive and that what goes down the socket is ONE combined run
- * rather than two.
+ * page: picks a CSV on each of the three cards and checks that the button comes
+ * alive and that what goes down the socket is ONE combined run, not three.
  *
  * The socket is stubbed, so nothing reaches Tramada.
  *
@@ -66,6 +65,7 @@ const ok = (name, cond, detail) => {
     !(await page.locator("#startRun").isDisabled()));
 
   await pick("mint", "mint-payments.csv");
+  await pick("travelpay", "travelpay-payments.csv");
   await page.waitForTimeout(900);
 
   const state = await page.evaluate(() => ({
@@ -89,10 +89,14 @@ const ok = (name, cond, detail) => {
   const sent = await page.evaluate(() => window.__sent.filter((m) => m.type === "recon_run"));
   ok("exactly ONE run is sent, not two", sent.length === 1, JSON.stringify(sent.map((s) => s.source)));
   ok("and it is a combined run", sent[0] && sent[0].source === "both", sent[0] && sent[0].source);
-  ok("carrying the BPay rows", sent[0] && (sent[0].bpayRows || []).length > 0,
-    JSON.stringify(sent[0] && (sent[0].bpayRows || []).length));
-  ok("and the Mint rows", sent[0] && (sent[0].mintRows || []).length > 0,
-    JSON.stringify(sent[0] && (sent[0].mintRows || []).length));
+  const br = (sent[0] || {}).byReport || {};
+  ok("carrying the BPay rows", (br.bpay || []).length > 0, JSON.stringify(Object.keys(br)));
+  ok("and the Mint rows", (br.mint || []).length > 0, JSON.stringify(Object.keys(br)));
+  ok("and the TravelPay rows", (br.travelpay || []).length > 0, JSON.stringify(Object.keys(br)));
+  ok("a slot for every report it knows",
+    ["bpay", "mint", "travelpay"].every((k) => Array.isArray(br[k])), JSON.stringify(Object.keys(br)));
+  ok("three cards on the Sources screen",
+    state.cards === 3, String(state.cards));
   ok("with the statement date and balances",
     sent[0] && sent[0].statementDate === "10-08-2026" && sent[0].openingBalance === "111753.97",
     JSON.stringify(sent[0] && { d: sent[0].statementDate, o: sent[0].openingBalance }));
@@ -113,9 +117,13 @@ const ok = (name, cond, detail) => {
   ok("a Mint row names its transaction, not a bare dot",
     inbox.rows.some((r) => r.join(" ").includes("P.0000004123")), JSON.stringify(inbox.rows.slice(1, 2)));
   ok("and says which report it came from",
-    inbox.rows.some((r) => r.join(" ").includes("Mint settlement")), JSON.stringify(inbox.rows.slice(1, 2)));
-  ok("no Mint row claims a pending allocation",
-    !inbox.rows.filter((r) => r.join(" ").includes("Mint settlement")).some((r) => r.join(" ").includes("pending")),
+    inbox.rows.some((r) => r.join(" ").includes("Mint daily settlement")) &&
+    inbox.rows.some((r) => r.join(" ").includes("TravelPay merchant settlement")),
+    JSON.stringify(inbox.rows.map((r) => r[1]).slice(1)));
+  ok("a TravelPay row names its payment reference",
+    inbox.rows.some((r) => r.join(" ").includes("31282716")), JSON.stringify(inbox.rows.slice(-1)));
+  ok("no check-only row claims a pending allocation",
+    !inbox.rows.filter((r) => /settlement/.test(r.join(" "))).some((r) => r.join(" ").includes("pending")),
     JSON.stringify(inbox.rows.slice(1, 2)));
 
   ok("no page errors", problems.length === 0, problems.join(" | "));

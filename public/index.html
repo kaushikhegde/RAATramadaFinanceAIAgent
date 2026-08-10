@@ -3003,10 +3003,30 @@ function askMarkStale(){
       accept: '.xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       columns: 'Transaction Reference, Amount, To Company — .xlsx or .csv',
     },
+    travelpay: {
+      title: 'TravelPay merchant settlement',
+      blurb: 'Card and direct-debit settlements TravelPay has already put through. Nothing is '
+           + 'filed — the run checks each payment reference reached the statement page. '
+           + 'A transaction that did not succeed is held back, not counted as missing.',
+      accept: '.csv,text/csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      columns: 'Payment Reference, Processed Amount, MerchantCompanyName — .csv or .xlsx',
+    },
   };
 
-  const source = { bpay: null, mint: null };   // each: { file, rows, previewOpen, note }
-  let active = null;                            // 'bpay' | 'mint' — which one a run would use
+  const source = { bpay: null, mint: null, travelpay: null };  // each: { file, rows, previewOpen }
+  let active = null;              // a report key, or 'both' when more than one is loaded
+
+  /* Only BPay FILES anything. Everything else is a report of payments that
+     already happened, which the run only looks for — so the difference the page
+     cares about is 'does this write', not 'is this Mint'. Written once here
+     because a fourth report added by copying `=== \'mint\'` around is a fourth
+     report that half works. */
+  const checksOnly = (kind) => kind !== 'bpay';
+  /* Does THIS run write anything? A combined run is 'both', which is not any
+     one report's key — asking checksOnly('both') answered true and dropped the
+     inbox to the check-only column set, so the BPay rows in it lost their
+     booking and allocation columns. The question is about the loaded set. */
+  const runWrites = () => loaded().some((k) => !checksOnly(k));
   let rows = [];        // the active source's rows
   let results = [];     // what the run made of them
   let running = false;
@@ -3175,7 +3195,7 @@ function askMarkStale(){
       const n = parseFloat(String(r.amount).replace(/[$,\s]/g, ''));
       return sum + (isFinite(n) ? n : 0);
     }, 0);
-    if (kind === 'mint') {
+    if (checksOnly(kind)) {
       const companies = new Set(rs.map((r) => r.toCompany).filter(Boolean));
       return rs.length + ' reference' + (rs.length === 1 ? '' : 's') +
         ' · ' + companies.size + ' compan' + (companies.size === 1 ? 'y' : 'ies') +
@@ -3305,10 +3325,12 @@ function askMarkStale(){
      does" — before this there was no preview to be the check. */
   function previewTable(kind) {
     const rs = (source[kind] && source[kind].rows) || [];
-    const head = kind === 'mint'
-      ? '<th>Transaction reference</th><th>To company</th><th class="num">Amount</th>'
+    const head = checksOnly(kind)
+      ? '<th>' + (kind === 'travelpay' ? 'Payment reference' : 'Transaction reference') +
+        '</th><th>' + (kind === 'travelpay' ? 'Merchant' : 'To company') +
+        '</th><th class="num">Amount</th>'
       : '<th>Date</th><th>Reference</th><th>Rec/Pay type</th><th class="num">Amount</th><th>Booking</th>';
-    const body = rs.map((r) => kind === 'mint'
+    const body = rs.map((r) => checksOnly(kind)
       ? '<tr><td class="mono">' + esc(r.transNo) + '</td><td>' + esc(r.toCompany) + '</td>' +
         '<td class="num">' + esc(r.amount) + '</td></tr>'
       : '<tr><td>' + esc(r.date) + '</td><td class="mono">' + esc(r.reference) + '</td>' +
@@ -3337,11 +3359,11 @@ function askMarkStale(){
      overwrite each other in the inbox and in runs.json alike. */
   function allResults() {
     let n = 0;
-    return ['bpay', 'mint'].reduce((acc, kind) => {
+    return Object.keys(SOURCES).reduce((acc, kind) => {
       if (!source[kind]) return acc;
-      return acc.concat((source[kind].rows || []).map((x) => (kind === 'mint'
-        ? { ...x, n: ++n, src: 'mint', reconciliation: 'Pending' }
-        : { ...x, n: ++n, src: 'bpay', allocation: 'Pending', reconciliation: 'Pending' })));
+      return acc.concat((source[kind].rows || []).map((x) => (checksOnly(kind)
+        ? { ...x, n: ++n, src: kind, reconciliation: 'Pending' }
+        : { ...x, n: ++n, src: kind, allocation: 'Pending', reconciliation: 'Pending' })));
     }, []);
   }
 
@@ -3358,7 +3380,7 @@ function askMarkStale(){
     if (skipped && skipped.length) {
       hint(kind, '<span style="color:var(--warn,#8a6d00)">Skipped ' +
         (skipped.length === 1 ? 'line ' : 'lines ') + skipped.join(', ') + ' — ' +
-        (kind === 'mint' ? 'missing a transaction reference or amount.'
+        (checksOnly(kind) ? 'missing a reference or amount, or the transaction did not succeed.'
                          : 'missing a reference, booking number or amount.') + '</span>');
     }
   }
@@ -3376,21 +3398,21 @@ function askMarkStale(){
     if (!file || !kind) return;
     const fr = new FileReader();
 
-    if (kind === 'mint') {
-      // The workbook goes to the server whole. `xlsx-lite` is node, and a
-      // second parser in the browser is a second thing to keep in agreement
-      // with the one the run actually uses.
+    if (checksOnly(kind)) {
+      // The file goes to the server whole, workbook or CSV. `xlsx-lite` is
+      // node, and a second parser in the browser is a second thing to keep in
+      // agreement with the one the run actually uses.
       fr.onload = () => {
         const bytes = new Uint8Array(fr.result);
         let bin = '';
         for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
         if (!ws || ws.readyState !== 1) {
-          reject('mint', file.name, 'not connected to the server — is it still running?');
+          reject(kind, file.name, 'not connected to the server — is it still running?');
           return;
         }
-        hint('mint', 'Reading ' + esc(file.name) + '…');
-        pending.mint = { name: file.name, size: file.size };
-        ws.send(JSON.stringify({ type: 'recon_parse', source: 'mint', name: file.name, base64: btoa(bin) }));
+        hint(kind, 'Reading ' + esc(file.name) + '…');
+        pending[kind] = { name: file.name, size: file.size };
+        ws.send(JSON.stringify({ type: 'recon_parse', source: kind, name: file.name, base64: btoa(bin) }));
       };
       fr.readAsArrayBuffer(file);
       return;
@@ -3452,7 +3474,9 @@ function askMarkStale(){
       ['done', 'Reconciled', (r) => r.reconciliation === 'Reconciled'],
     ],
   };
-  const filters = () => FILTER_SETS[kindOf() === 'mint' ? 'mint' : 'bpay'];
+  // A run with any BPay in it needs the allocation chips; one without cannot
+  // use them, because nothing in it allocates.
+  const filters = () => FILTER_SETS[runWrites() ? 'bpay' : 'mint'];
 
   // The search box searches what a person has in front of them: the reference
   // they were given, the booking they are chasing, the receipt number they are
@@ -3464,7 +3488,7 @@ function askMarkStale(){
   function render() {
     const pane = $('#triagePane');
     if (!pane) return;
-    const mint = kindOf() === 'mint';
+    const mint = !runWrites();
     const SET = filters();
     if (!SET.some(([k]) => k === filter)) filter = 'all';    // chips differ per report
 
@@ -3505,9 +3529,9 @@ function askMarkStale(){
          Allocation badge for a report that allocates nothing and never will.
          So each row is drawn from what it IS, not from what the run is. */
       : '<tr><td><span class="tdot ' + dot(r) + '"></span></td>' +
-        (r.src === 'mint'
+        (checksOnly(r.src)
           ? '<td><b class="ref">' + esc(r.transNo) + '</b><div class="muted">' +
-            esc(r.toCompany || '') + ' · Mint settlement</div></td>'
+            esc(r.toCompany || '') + ' · ' + esc((SOURCES[r.src] || {}).title || r.src) + '</div></td>'
           : '<td><b class="ref">' + esc(r.reference) + '</b><div class="muted">' +
             esc(r.date) + ' · ' + esc(r.recPayType) + '</div></td>') +
         '<td class="num">' + esc(r.amount) + '</td>' +
@@ -3516,7 +3540,7 @@ function askMarkStale(){
         // Nothing is filed for a Mint row, so its Allocation cell is empty
         // rather than "pending" — "pending" promises something that is never
         // coming.
-        '<td>' + (r.src === 'mint' ? '<span class="muted">—</span>' : badge(r.allocation)) + '</td>' +
+        '<td>' + (checksOnly(r.src) ? '<span class="muted">—</span>' : badge(r.allocation)) + '</td>' +
         '<td>' + badge(r.reconciliation) + '</td>' +
         '<td class="muted">' + esc(r.why || '') + '</td></tr>').join('');
 
@@ -3675,7 +3699,7 @@ function askMarkStale(){
        Allocation column is honest where "Pending" forever is not. On a combined
        run both kinds of row sit in one table, so this is decided per ROW rather
        than per run. */
-    results = allResults().map((r) => (r.src === 'mint'
+    results = allResults().map((r) => (checksOnly(r.src)
       ? { ...r, reconciliation: 'Pending', mismatch: undefined, why: '' }
       : { ...r, allocation: 'Running', reconciliation: 'Pending', receiptNo: '', why: '' }));
 
@@ -3691,8 +3715,10 @@ function askMarkStale(){
     ws.send(JSON.stringify(kind === 'both'
       ? {
           type: 'recon_run', source: 'both',
-          bpayRows: (source.bpay || {}).rows || [],
-          mintRows: (source.mint || {}).rows || [],
+          byReport: Object.keys(SOURCES).reduce((a, k) => {
+            a[k] = (source[k] || {}).rows || [];
+            return a;
+          }, {}),
           ...common,
         }
       : { type: 'recon_run', source: kind, rows, ...common }));
@@ -3703,7 +3729,7 @@ function askMarkStale(){
       // The workbook came back from the server, read by the same parser the run
       // will use. `pending` holds the file's own facts, which the server never
       // saw and does not need to.
-      const kind = m.source || 'mint';
+      const kind = SOURCES[m.source] ? m.source : 'mint';
       const f = pending[kind];
       delete pending[kind];
       if (m.error || !f) { reject(kind, m.name || 'that file', m.error || 'the answer arrived for a file I was not waiting on'); return; }
@@ -3768,7 +3794,7 @@ function askMarkStale(){
     };
     // The working file carries the report's OWN columns. A Mint export with an
     // empty Booking No and Allocation column reads as data that went missing.
-    const mint = kindOf() === 'mint';
+    const mint = !runWrites();
     const head = mint
       ? ['Transaction Reference', 'Amount', 'To Company', 'Reconciled', 'Difference', 'Why']
       : ['Date', 'Reference', 'Rec/Pay Type', 'Amount', 'Booking No', 'Receipt No', 'Allocation', 'Reconciled', 'Why'];

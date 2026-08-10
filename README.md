@@ -124,7 +124,7 @@ marked *sample data*.
 ## Tests
 
 ```bash
-npm test        # 313 assertions, all offline — no network, no browser
+npm test        # 356 assertions, all offline — no network, no browser
 npm run shots   # screenshots of the page, a BPay run and a Mint run
 ```
 
@@ -148,6 +148,37 @@ table cell. None of those show up in a node test.
 | `mint-payments.csv` | Three real creditor payments, all correct |
 | `mint-payments-varied.csv` | The same three distorted, plus one that does not exist — one run, every outcome |
 | `bookings.json` + `run-bookings.js` | Builds bookings for a BPay run to reconcile against |
+
+## Building something to reconcile against
+
+```bash
+npm run start:chrome        # once, and sign into Tramada in that window
+node make-fixtures.js all   # or: bpay | travelpay | mint
+```
+
+Creates REAL bookings, and then whatever that report needs to exist before its
+run can find anything — receipts for TravelPay, creditor payments to Ready
+Rooms for Mint. **BPay gets no receipts, on purpose**: raising them is the BPay
+run's whole job, and pre-receipting would leave every row with nothing
+outstanding and a fixture that comes back green while testing the opposite.
+
+| | creates in Tramada | writes |
+|---|---|---|
+| `bpay` | bookings + costings | `csv_uploads/tramada-statement-lines.csv` |
+| `travelpay` | + receipts | `csv_uploads/travelpay-payments.csv` |
+| `mint` | + creditor payments | `csv_uploads/mint-payments.csv` |
+
+The bookings each run created are listed in
+`created-bookings-{bpay,travelpay,mint}.json`.
+
+`all` runs the three **in order, never in parallel** — every Tramada module
+closes the shared CDP browser in its `finally`, so two at once would close it
+out from under each other with real bookings, receipts and payments already
+created.
+
+`--dry-run` says what it would do and touches nothing. `--limit 1` tries the
+whole chain against a single booking, which is worth doing before `mint` —
+that is the one that moves money out.
 
 ## Where the portal is written down
 
