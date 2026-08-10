@@ -137,6 +137,50 @@ Read what the page says; never encode today's answer as tomorrow's bug.
   creating a statement lands on the one that looks like the form you submitted,
   so a page created perfectly well was reported as a failure. Confirm by what is
   on screen.
+- **A readonly input accepts everything you type and keeps none of it.** No
+  error, no exception, no change. Tramada ships the statement balances readonly
+  behind an unnamed `Edit` button, which is how the opening balance went missing.
+  Click Edit, assert `readOnly` actually cleared, type, read back.
+- **Setting `.checked` is not ticking a box.** Both the receipt form's segments
+  and the reconcile screen's transactions hang their arithmetic off a bound
+  click handler. Real clicks, then verify — and expect the row to move, because
+  the reconcile screen's handler reorders the table under you.
+- **Sort submits; filter does not.** `#sortButton` is `type="submit"` and comes
+  back having wiped every tick. `#filterButton` is `type="button"` and only
+  hides rows in the page already on screen. That is the whole reason two report
+  types can share one statement page: sort once, then swap the filter per
+  report and the ticks made under the first one survive.
+- **Two reports = one run, never two concurrent ones.** `runTramadaReceipt`
+  closes the shared CDP browser in its `finally`, so a second flow running
+  alongside would close the first's page mid-run with real receipts already
+  filed. `runCombinedReconciliation` does both in order, on one page.
+- **The run commits the statement page** (`#done`), as of 10-08-2026. Only rows
+  it positively matched are ticked, never `Select All`; every tick is verified
+  before Done; nothing matched means Done is not pressed. If you are relaxing
+  any of those three, you are removing the only thing between this and
+  committing a page it never read.
+
+---
+
+## 6b. Every run is written down
+
+`run-store.js` — `uploads/` for the report exactly as it arrived, `runs.json`
+for the run. The Run overview screen reads this and nothing else.
+
+- **Keep the bytes, not just the parse.** "What was actually in the file" is the
+  only thing that settles a disputed figure weeks later.
+- **Write a row when its verdict is known, not at the end.** A run that dies on
+  row 7 has filed six real receipts and nothing rolls back.
+- **Recording a run must never be able to stop one.** Every store call at the
+  server boundary swallows its own failure. A full disk is a reason to lose the
+  archive copy; it is not a reason to abandon a run with receipts already filed.
+- **A `runs.json` that will not parse is moved aside, never overwritten.** It is
+  somebody's record of money that moved, and it became interesting at exactly
+  the moment it stopped parsing.
+- The figures themselves are decided in `recon-core.js` (`runTotals`,
+  `overviewFrom`) and tested offline. A dashboard is the one screen whose being
+  wrong is invisible — every figure on it looks like a figure, and nobody
+  re-adds one.
 
 ---
 

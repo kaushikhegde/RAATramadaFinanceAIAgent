@@ -538,3 +538,102 @@ references are wildly inconsistent: `Deposit - Jill Shields`, `Trip File Tsfr
   **then read the value back**. A click that appears to land often does not.
 - Check for the error box after saving. A refused save looks like a successful
   one until you look.
+
+---
+
+## The reconcile screen, mapped live (10-08-2026)
+
+Read off `finance-statement-generation.htm?bankStatementId=9` in a signed-in
+Chrome. Everything below was measured, not inferred.
+
+### `finance-statement-generation.htm` is a real route
+
+An earlier note in `recon-run.js` called it "a name that never existed". It
+exists, and it is the reconcile screen. The search results grid carries **two**
+Action links per row, and the difference matters:
+
+```
+Reconcile Bank Statement  → finance/finance-statement-generation.htm?bankStatementId=N
+Edit Page Balances        → finance/finance-statement.htm?bankStatementId=N
+```
+
+`finance-statement.htm` is the balances form (`#pageNumber` readonly,
+`#bankAccount` disabled, `#openingBalance` / `#closingBalance` / `#periodBalance`
+editable, `#continue` to save). `finance-statement-generation.htm` is the
+transaction list, the ticks and Done. Two screens, and both answer to
+`#openingBalance` — a selector written for one will find the other quite
+happily.
+
+### The balance fields are READONLY until an unnamed button says otherwise
+
+```
+#openingBalance  #closingBalance  #statementDate   ← all readonly on load
+#fieldGroupUnpresentedBalance  #calculatedClosingBalance   ← readonly, live tallies
+```
+
+The only thing that unlocks them is
+
+```html
+<input type="button" value="Edit" class="button">   <!-- no id, no name -->
+```
+
+inside `dl.edit > dt.input-short-button`. There is exactly one of these on the
+page, so `dl.edit input[type="button"][value="Edit"]` finds it.
+
+**This is why the opening balance was never set.** Typing into a readonly input
+succeeds silently — no error, no exception, no change — so the run typed the
+figure on the NEW-STATEMENT form, where it is accepted, and the reconcile screen
+went on showing the account's own number. `setStatementBalances()` clicks Edit,
+asserts `readOnly` actually cleared, types, and reads back.
+
+### The transaction checkbox
+
+```html
+<input type="checkbox" name="selected" id="selected" value="666">
+```
+
+- **`id="selected"` is duplicated across all 4,257 rows.** `#selected` is
+  useless. The `value` is the statement record's id and is unique — it is the
+  only stable handle on a row.
+- It carries a **bound jQuery click handler** (`calculateTotal`). Setting
+  `.checked = true` skips it, so the tallies never move and the page submits a
+  tick the form does not believe in. Real clicks only — the same rule as the
+  receipt form's segment checkboxes, for the same reason.
+- `calculateTotal` calls **`moveCheckedToTop()`**: the ticked row *jumps to the
+  top of the table*. Anything holding a row index is pointing at a different row
+  by the next tick. Address rows by `input[name="selected"][value="<id>"]`.
+
+### Ticking a future-dated transaction raises a `confirm()`
+
+`checkSelectedTransaction` → `transactionDateIsAfterStatementDate` → a browser
+confirm, answered into `#hiddenKeepTransaction` (`"true"` / `"false"`), with
+`highlightRowInRed` on the row either way.
+
+An unhandled dialog **freezes Playwright outright** — every later command hangs.
+Register a dialog handler before the first click. The run accepts, because the
+only rows it ticks are ones it matched to a receipt it filed itself, and reports
+every firing.
+
+### The buttons
+
+```
+#clearFilterButton "Clear Filter"   #filterButton "Filter"   #sortButton "Sort"
+#selectAll "Select All"             #deselectAll "Deselect All"
+#printButton "Export Results"       #done "Done"      ← submit, name=done
+hidden: #hiddenSelectedStatementRecords  #hiddenKeepTransaction
+        #bankStatementId #id #version #account #page #column #ascending
+```
+
+`#done` submits the form; `preSubmitForm()` gathers the ticked rows into
+`#hiddenSelectedStatementRecords` on the way out. **Done commits the page.**
+
+`#selectAll` on this screen ticks every unpresented transaction — 4,257 of them
+on page 9. It is not the same button as the receipt form's `#selectAll` and it
+is never what a reconciliation run wants.
+
+### What the account actually holds (10-08-2026)
+
+Trust Account holds pages **1–9**; page 9 is `31-05-2020`, opening `111753.97`,
+closing `1300000.00`, Balanced `N`, with 4,257 transaction rows of which 52 are
+already ticked. The page 10 recorded earlier in this file is gone — a page
+number read from the grid, never remembered.

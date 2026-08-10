@@ -19,12 +19,20 @@
  * This file's whole job is pages and clicks; if you find a rule being decided
  * here, it is in the wrong place.
  *
- * ── What it will not touch ───────────────────────────────────────────────
+ * ── What it touches on the reconciliation page ───────────────────────────
  *
- * On the reconciliation page it sets the sort and the filter and clicks their
- * two buttons. Nothing else. No Done, no Export, no ticking transactions, no
- * Save. That was asked for explicitly, and it is also the difference between a
- * run that reads a statement and a run that commits one.
+ * Sort, filter, the statement balances, the transactions it matched, and Done.
+ *
+ * This page COMMITS. Until 10-Aug-2026 the run deliberately stopped short of it
+ * — sort and filter and nothing else — and the difference between a run that
+ * reads a statement and a run that commits one was the whole point. It now
+ * commits, by request. Two things follow from that and neither is optional:
+ *
+ *   - only rows this run positively MATCHED are ticked, never `Select All`;
+ *   - the tick is verified before Done is pressed, because a Done that commits
+ *     a page whose rows never registered is worse than no Done at all.
+ *
+ * Export is still never clicked.
  */
 
 require("dotenv").config();
@@ -297,10 +305,16 @@ async function createStatement(page, { pageNumber, statementDate, openingBalance
    * SUCCESS IS THE RECONCILE SCREEN BEING ON IT, NOT A URL.
    *
    * The landing URL is `/finance/finance-statement.htm`. This checked for
-   * `finance-statement-generation.htm` — a name that never existed — so a page
-   * created perfectly well was reported as a failure every time. Page 10 was
-   * sitting there on screen, headed "Reconcile Bank Statement Page 10", while
-   * the run said it had not been made.
+   * `finance-statement-generation.htm` and a page created perfectly well was
+   * reported as a failure every time. Page 10 was sitting there on screen,
+   * headed "Reconcile Bank Statement Page 10", while the run said it had not
+   * been made.
+   *
+   * (That route does exist — corrected 10-08-2026, it is the reconcile screen
+   * itself, reached from the search grid's "Reconcile Bank Statement" icon. It
+   * simply is not where CREATING a statement lands you. The original note here
+   * said the name never existed, which sent the next reader looking for the
+   * wrong thing.)
    *
    * A URL is a guess about someone else's routing. The screen's own controls
    * and heading are the thing we actually need to be true, so they are what is
@@ -391,22 +405,32 @@ async function createStatement(page, { pageNumber, statementDate, openingBalance
  * transaction in the system while looking like it had respected the filter, so
  * only rows actually on screen are read.
  *
- * Sort and Filter are the only things clicked here. No Done, no Export, no
- * ticking transactions, no Save.
+ * Sort and Filter are the only things clicked HERE. Ticking and Done happen in
+ * `selectMatchedTransactions` / `finishStatementPage`, after the matching is
+ * done and only for rows that matched. Export is never clicked.
  */
-async function filterAndRead(page, recPayType = "Client Payment Receipt") {
+/**
+ * Sort the page. SUBMITS, so it happens ONCE and it happens first.
+ *
+ * `#sortButton` is `type="submit"` — it posts the form and Tramada hands back a
+ * rebuilt list with the filter dropdowns at their blank default AND every tick
+ * gone. `#filterButton` is `type="button"`: its handler only hides rows in the
+ * page that is already there. That difference is what makes a run over two
+ * report types possible at all — sort once, then swap the filter as often as
+ * you like and the ticks made in between survive.
+ */
+async function sortPage(page) {
   await page.waitForSelector("#filterColumn", { timeout: 20000 });
-
-  // 1 — sort. This wipes any filter, so it cannot come second.
   await page.selectOption("#sortBy", { label: "Date" }).catch(() => {});
   await page.selectOption("#sortOrder", { label: "Descending" }).catch(() => {});
   await page.click("#sortButton").catch(() => {});
   await page.waitForLoadState("domcontentloaded").catch(() => {});
   await sleep(1500);
-
-  // 2 — then filter. Re-select #filterColumn after the sort: the screen has
-  // been rebuilt and the dropdown is back at its blank default.
   await page.waitForSelector("#filterColumn", { timeout: 20000 });
+}
+
+/** Show one Rec/Pay Type. Client-side; ticks already made are not disturbed. */
+async function applyFilter(page, recPayType) {
   await page.selectOption("#filterColumn", { label: "Rec/Pay Type" });
   await page.waitForSelector("#recPayType", { state: "visible", timeout: 10000 });
   await page.selectOption("#recPayType", { label: recPayType });
@@ -424,13 +448,27 @@ async function filterAndRead(page, recPayType = "Client Payment Receipt") {
   if (applied.trim() !== recPayType) {
     throw new Error(`The ${recPayType} filter did not stick (the screen reads "${applied.trim()}").`);
   }
+}
 
-  // BY HEADER NAME, as on the search grid. The documented layout is
-  //   Date | Trans. No | Rec/Pay Type | Trans Type | Reference |
-  //   Receipt For/Payment To | Debit | Credit | ☑
-  // but that was measured once, and the search grid taught us what a single
-  // unexpected leading column does: every field shifts and every row still
-  // looks plausible. Positions are the fallback, not the plan.
+async function filterAndRead(page, recPayType = "Client Payment Receipt") {
+  await sortPage(page);
+  await applyFilter(page, recPayType);
+  return readVisibleTransactions(page);
+}
+
+/**
+ * The rows currently ON SCREEN, with each one's checkbox id.
+ *
+ * BY HEADER NAME, as on the search grid. The documented layout is
+ *
+ *   Date | Trans. No | Rec/Pay Type | Trans Type | Reference |
+ *   Receipt For/Payment To | Debit | Credit | ☑
+ *
+ * but that was measured once, and the search grid taught us what a single
+ * unexpected leading column does: every field shifts and every row still looks
+ * plausible. Positions are the fallback, not the plan.
+ */
+async function readVisibleTransactions(page) {
   const grid = await page.evaluate(() => {
     const norm = (s) => String(s == null ? "" : s).replace(/\s+/g, " ").trim();
     const t = [...document.querySelectorAll("table")]
@@ -438,25 +476,266 @@ async function filterAndRead(page, recPayType = "Client Payment Receipt") {
     if (!t) return { headers: [], rows: [] };
     const trs = [...t.querySelectorAll("tr")];
     const headRow = trs.find((tr) => /rec\/pay\s*type/i.test(tr.textContent));
+    // Only rows actually on screen — see the note above about the filter
+    // hiding rows rather than removing them.
+    const body = trs.filter((tr) =>
+      tr !== headRow && tr.querySelectorAll("td").length >= 7 && tr.offsetParent !== null);
     return {
       headers: headRow ? [...headRow.children].map((c) => norm(c.textContent)) : [],
-      // Only rows actually on screen — see the note above about the filter
-      // hiding rows rather than removing them.
-      rows: trs
-        .filter((tr) => tr !== headRow && tr.querySelectorAll("td").length >= 7 && tr.offsetParent !== null)
-        .map((tr) => [...tr.children].map((c) => norm(c.textContent))),
+      rows: body.map((tr) => [...tr.children].map((c) => norm(c.textContent))),
+      /**
+       * The row's own checkbox VALUE, carried alongside its text.
+       *
+       * Every one of these checkboxes is `name="selected"` with `id="selected"`
+       * — the id is duplicated across all 4,257 of them and is useless as a
+       * selector. The `value` is the statement record's id and is unique, so
+       * it is the only stable handle on a row. Read here, while we already
+       * have the row, rather than scraped a second time later: ticking calls
+       * `moveCheckedToTop()` and REORDERS the table, so any index taken now
+       * would be pointing at a different row by the second tick.
+       */
+      ids: body.map((tr) => {
+        const cb = tr.querySelector('input[type="checkbox"][name="selected"]');
+        return cb ? { value: cb.value, checked: !!cb.checked } : null;
+      }),
     };
   });
 
   return core
     .rowsByHeader(grid.headers, grid.rows, core.TRANSACTION_COLUMNS, core.TRANSACTION_FALLBACK)
-    .map((r) => ({
+    .map((r, i) => ({
       date: r.date, transNo: r.transNo, recPayType: r.recPayType, transType: r.transType,
       reference: r.reference, payee: r.payee,
       // Debit or credit, whichever the row carries — a receipt is a credit, but
       // reading only one column would silently score a debit as zero.
       amount: r.credit || r.debit || "",
+      selectId: (grid.ids[i] && grid.ids[i].value) || null,
+      alreadyTicked: !!(grid.ids[i] && grid.ids[i].checked),
     }));
+}
+
+/* ── the statement balances, on the reconcile page ───────────────────────── */
+
+/**
+ * The three balance fields ship READONLY and ONE unnamed button unlocks them.
+ *
+ * Measured live 10-Aug-2026 on page 9. `#openingBalance`, `#closingBalance` and
+ * `#statementDate` are all `readonly` when the reconcile screen renders, and the
+ * only thing that clears that is an `<input type="button" value="Edit">` with no
+ * id and no name, sitting in `dl.edit > dt.input-short-button`. Typing into a
+ * readonly input succeeds silently and changes nothing, which is exactly why
+ * the opening balance never appeared: the run typed it on the NEW-STATEMENT
+ * form, where it is accepted, and then the reconcile page — the one anybody
+ * actually looks at — showed the account's own figure instead.
+ *
+ * The value is normalised through `cents()` before it is typed. The agent types
+ * "111,753.97" as readily as "111753.97" and the raw string is not what a money
+ * field should be handed.
+ */
+const BALANCE_EDIT_BUTTON =
+  'dl.edit input[type="button"][value="Edit"], input.button[type="button"][value="Edit"]';
+
+async function setStatementBalances(page, { openingBalance, closingBalance } = {}, say = () => {}) {
+  const want = {
+    openingBalance: core.money(core.cents(openingBalance)),
+    closingBalance: core.money(core.cents(closingBalance)),
+  };
+  // An unreadable balance is refused rather than typed. Nothing here rounds a
+  // number it merely failed to parse (recon-core §money).
+  for (const [field, v] of Object.entries(want)) {
+    const given = field === "openingBalance" ? openingBalance : closingBalance;
+    if (v === "" && given != null && String(given).trim() !== "") {
+      throw new Error(`The ${field === "openingBalance" ? "opening" : "closing"} balance "${given}" could not be read as an amount.`);
+    }
+  }
+  if (!want.openingBalance && !want.closingBalance) return null;
+
+  await page.waitForSelector("#openingBalance", { timeout: 20000 });
+
+  const locked = await page.$eval("#openingBalance", (el) => el.readOnly).catch(() => false);
+  if (locked) {
+    const edit = page.locator(BALANCE_EDIT_BUTTON).first();
+    if (!(await edit.count())) {
+      const controls = await page.evaluate(() =>
+        [...document.querySelectorAll("input[type=button], input[type=submit]")]
+          .map((n) => `${n.id ? "#" + n.id : ""}[${n.value}]`).join(" | ")).catch(() => "");
+      throw new Error(
+        `The statement balances are read-only and the Edit button that unlocks them is not on the page. It offered: ${controls}`
+      );
+    }
+    await edit.click();
+    await page
+      .waitForFunction(() => {
+        const el = document.querySelector("#openingBalance");
+        return el && !el.readOnly;
+      }, null, { timeout: 10000 })
+      .catch(() => {});
+  }
+
+  const stillLocked = await page.$eval("#openingBalance", (el) => el.readOnly).catch(() => true);
+  if (stillLocked) {
+    throw new Error("Clicked Edit but the statement balance fields are still read-only.");
+  }
+
+  // Real keystrokes, and TRIPLE-CLICK rather than Control+A to clear what is
+  // already there — Control+A is Cmd+A on a Mac, so the selection never
+  // happens and the typed figure lands next to the existing one. That lesson
+  // is already written down against the allocation box in tramada-receipt.js;
+  // it applies to every prefilled money field on this portal.
+  const typeInto = async (selector, value) => {
+    if (!value) return;
+    const el = page.locator(selector);
+    await el.click({ clickCount: 3 });
+    await el.pressSequentially(String(value), { delay: 40 });
+    await el.press("Tab").catch(() => {});
+    await sleep(200);
+  };
+  await typeInto("#openingBalance", want.openingBalance);
+  await typeInto("#closingBalance", want.closingBalance);
+
+  // Read back. A balance that did not stick leaves the reconciliation
+  // unanchored, and the page is about to be committed.
+  const back = await page.evaluate(() => ({
+    opening: (document.querySelector("#openingBalance") || {}).value || "",
+    closing: (document.querySelector("#closingBalance") || {}).value || "",
+    calculated: (document.querySelector("#calculatedClosingBalance") || {}).value || "",
+    unpresented: (document.querySelector("#fieldGroupUnpresentedBalance") || {}).value || "",
+  }));
+  for (const [field, label] of [["opening", "opening"], ["closing", "closing"]]) {
+    const wanted = want[`${label}Balance`];
+    if (wanted && core.cents(back[field]) !== core.cents(wanted)) {
+      throw new Error(
+        `The ${label} balance did not stick: typed $${wanted}, the field reads "${back[field]}".`
+      );
+    }
+  }
+  say(`Statement balances set — opening $${back.opening}, closing $${back.closing}.`, true);
+  return back;
+}
+
+/* ── ticking what matched, then Done ─────────────────────────────────────── */
+
+/**
+ * Tick the transactions this run matched. Real clicks, one at a time, verified.
+ *
+ * Three things about this page make the obvious implementation wrong, all
+ * measured live 10-Aug-2026:
+ *
+ *   1. `checked = true` DOES NOTHING USEFUL. The checkbox carries a bound
+ *      jQuery click handler (`calculateTotal`), which is what updates
+ *      `#calculatedClosingBalance` and `#fieldGroupUnpresentedBalance`. Setting
+ *      the property skips it, so the page would submit a tick whose balances
+ *      never moved. Same rule as the receipt form's segment checkboxes.
+ *   2. `calculateTotal` calls `moveCheckedToTop()` — the row JUMPS to the top
+ *      of the table the moment it is ticked. Anything holding a row index is
+ *      pointing somewhere else by the next tick, so rows are addressed by
+ *      `input[name="selected"][value="<record id>"]`, which does not move.
+ *   3. A transaction dated AFTER the statement date raises a `confirm()` and
+ *      turns the row red (`checkSelectedTransaction`,
+ *      `transactionDateIsAfterStatementDate`, `#hiddenKeepTransaction`). An
+ *      unhandled dialog freezes Playwright outright, so one is registered
+ *      before the first click and every firing is reported.
+ *
+ * `Select All` is never used. It would tick all 4,257 unpresented transactions
+ * on the page, which is not what "reconcile what this run filed" means.
+ */
+async function selectMatchedTransactions(page, statementRows, matchedTransNos, say = () => {}) {
+  const wanted = new Map();
+  for (const t of matchedTransNos || []) {
+    const k = core.receiptKey(t);
+    if (k) wanted.set(k, t);
+  }
+  if (!wanted.size) return { ticked: [], missing: [], futureDated: [] };
+
+  const byKey = new Map();
+  for (const r of statementRows || []) {
+    if (r.selectId) byKey.set(core.receiptKey(r.transNo), r);
+  }
+
+  const futureDated = [];
+  const onDialog = async (d) => {
+    futureDated.push(String(d.message() || "").replace(/\s+/g, " ").trim().slice(0, 200));
+    // Accept: the only rows this run ticks are ones it matched to a receipt it
+    // filed itself, so "keep the future dated transaction" is yes. It is still
+    // reported — a receipt dated past its own statement page is worth seeing.
+    await d.accept().catch(() => {});
+  };
+  page.on("dialog", onDialog);
+
+  const ticked = [];
+  const missing = [];
+  try {
+    for (const [key, shown] of wanted) {
+      const row = byKey.get(key);
+      if (!row) { missing.push(shown); continue; }
+      if (row.alreadyTicked) { ticked.push(shown); continue; }
+
+      const box = page.locator(`input[type="checkbox"][name="selected"][value="${row.selectId}"]`).first();
+      if (!(await box.count())) { missing.push(shown); continue; }
+      await box.click();
+      await sleep(250);
+
+      // Verify this one before moving on. A tick that did not register is the
+      // difference between committing what we filed and committing nothing.
+      const on = await box.isChecked().catch(() => false);
+      if (!on) {
+        throw new Error(`Ticking transaction ${shown} did not register on the page.`);
+      }
+      ticked.push(shown);
+    }
+  } finally {
+    page.off("dialog", onDialog);
+  }
+
+  say(`${ticked.length} transaction${ticked.length === 1 ? "" : "s"} ticked` +
+    (missing.length ? `; ${missing.length} could not be found on the page` : "") +
+    (futureDated.length ? `; ${futureDated.length} dated after the statement date and were kept` : "") + ".",
+    !missing.length);
+  return { ticked, missing, futureDated };
+}
+
+/**
+ * Press Done. This COMMITS the page.
+ *
+ * `#done` is a submit on the reconcile form; Tramada's `preSubmitForm()`
+ * gathers the ticked rows into `#hiddenSelectedStatementRecords` on the way
+ * out. Nothing is clicked here unless at least one row was ticked and verified
+ * — committing an empty page is not a no-op, it finalises a statement that
+ * reconciles nothing.
+ */
+async function finishStatementPage(page, tickedCount, say = () => {}) {
+  if (!tickedCount) {
+    say("Nothing matched, so Done was not pressed — the page is left open, uncommitted.", false);
+    return { done: false, reason: "nothing was ticked" };
+  }
+  const done = page.locator("#done");
+  if (!(await done.count())) {
+    throw new Error("The reconcile page has no Done button (#done).");
+  }
+  await done.click();
+  await page.waitForLoadState("domcontentloaded").catch(() => {});
+  await sleep(1500);
+
+  // Did it take? Either we are off the reconcile screen, or the screen is
+  // telling us why not.
+  const after = await page.evaluate(() => {
+    const clean = (s) => String(s || "").replace(/\s+/g, " ").trim();
+    const boxes = [...document.querySelectorAll('.error, .errors, .errorMessage, [class*="error" i]')]
+      .map((b) => clean(b.textContent)).filter((t) => t && t.length < 300);
+    return {
+      url: location.href,
+      stillOnReconcile: !!document.querySelector("#done"),
+      error: boxes[0] || "",
+    };
+  }).catch(() => ({ url: "", stillOnReconcile: false, error: "" }));
+
+  if (after.stillOnReconcile) {
+    throw new Error(
+      `Done was pressed but the reconcile page is still showing${after.error ? ` — Tramada said: ${after.error}` : ""}.`
+    );
+  }
+  say(`Done — the statement page is committed with ${tickedCount} transaction${tickedCount === 1 ? "" : "s"} reconciled.`, true);
+  return { done: true, tickedCount };
 }
 
 /* ── the run ─────────────────────────────────────────────────────────────── */
@@ -526,40 +805,28 @@ async function openFreshStatementPage(page, o) {
   return pageNumber;
 }
 
+/* ── phase one: the receipts ─────────────────────────────────────────────── */
+
 /**
- * @param {object} o
- *   rows              parsed CSV rows (recon-core.parseReconCsv)
- *   statementDate     dd-mm-yyyy or ISO
- *   openingBalance    what the agent typed
- *   closingBalance    what the agent typed
- *   accountLabel      defaults to the Trust Account
- *   callbacks         { onProgress(msg, ok), onRow(n, patch), onNeedLogin() }
+ * File a receipt per row. NO PAGE OF OUR OWN IS HELD HERE, and that is not an
+ * accident.
+ *
+ * `runTramadaReceipt` opens its own CDP connection and calls `browser.close()`
+ * in its finally. Over CDP that tears down the shared browser, so a page opened
+ * before this loop is dead by the end of it — the first run stopped with
+ * "Target page, context or browser has been closed" the moment the statement
+ * phase touched its page again.
+ *
+ * So: the receipts run first, each managing its own connection, and the caller
+ * only connects once they are all done. That is also why two report types
+ * cannot be run as two concurrent flows — the second one's `browser.close()`
+ * would pull the page out from under the first, with real receipts already
+ * filed. One run does both, in order.
+ *
+ * Each row is its own attempt — a booking that fails must not stop the rest,
+ * because the receipts already filed are real and nothing rolls back.
  */
-async function runReconciliation(o = {}) {
-  const cb = o.callbacks || {};
-  const say = cb.onProgress || (() => {});
-  const row = cb.onRow || (() => {});
-  const accountLabel = o.accountLabel || "[TRUST] Trust Account";
-  const auth = { username: process.env.TRAMADA_USERNAME, password: process.env.TRAMADA_PASSWORD };
-  const rows = o.rows || [];
-  if (!rows.length) throw new Error("No rows to run.");
-
-  const results = rows.map((r, i) => ({ ...r, n: i + 1 }));
-
-  /* 1 — the receipts.
-   *
-   * NO PAGE OF OUR OWN IS HELD HERE, and that is not an accident.
-   * `runTramadaReceipt` opens its own CDP connection and calls
-   * `browser.close()` in its finally. Over CDP that tears down the shared
-   * browser, so a page opened before this loop is dead by the end of it — the
-   * first run stopped with "Target page, context or browser has been closed"
-   * the moment the statement phase touched its page again.
-   *
-   * So: the receipts run first, each managing its own connection, and this
-   * function only connects once they are all done.
-   *
-   * Each row is its own attempt — a booking that fails must not stop the rest,
-   * because the receipts already filed are real and nothing rolls back. */
+async function fileReceipts(results, { auth, cb, say, row }) {
   for (const r of results) {
     row(r.n, { allocation: "Running" });
     try {
@@ -621,6 +888,34 @@ async function runReconciliation(o = {}) {
       say(`Row ${r.n}: ${why}`, false);
     }
   }
+  return results;
+}
+
+/* ── the runs ────────────────────────────────────────────────────────────── */
+
+/**
+ * The BPay run on its own — one report, its own statement page.
+ *
+ * @param {object} o
+ *   rows              parsed CSV rows (recon-core.parseReconCsv)
+ *   statementDate     dd-mm-yyyy or ISO
+ *   openingBalance    what the agent typed
+ *   closingBalance    what the agent typed
+ *   accountLabel      defaults to the Trust Account
+ *   callbacks         { onProgress(msg, ok), onRow(n, patch), onNeedLogin() }
+ */
+async function runReconciliation(o = {}) {
+  const cb = o.callbacks || {};
+  const say = cb.onProgress || (() => {});
+  const row = cb.onRow || (() => {});
+  const accountLabel = o.accountLabel || "[TRUST] Trust Account";
+  const rows = o.rows || [];
+  if (!rows.length) throw new Error("No rows to run.");
+  const results = rows.map((r, i) => ({ ...r, n: i + 1 }));
+  await fileReceipts(results, {
+    auth: { username: process.env.TRAMADA_USERNAME, password: process.env.TRAMADA_PASSWORD },
+    cb, say, row,
+  });
 
   /* 2 — only NOW is it safe to hold a page: nothing else will close the
      browser out from under it. */
@@ -645,17 +940,34 @@ async function runReconciliation(o = {}) {
     const statement = await filterAndRead(page);
     say(`${statement.length} transaction${statement.length === 1 ? "" : "s"} showing after the filter.`);
 
+    const matched = [];
     for (const r of results) {
       const m = core.matchAgainstStatement(r, statement);
       r.reconciliation = m.status;
       r.why = r.error ? r.why : m.reason;
       if (m.duplicates) r.why += ` — ${m.duplicates} transactions carry that number`;
-      row(r.n, { reconciliation: r.reconciliation, why: r.why });
+      if (m.reconciled && m.transNo) { r.transNo = m.transNo; matched.push(m.transNo); }
+      row(r.n, { reconciliation: r.reconciliation, why: r.why, transNo: r.transNo });
       say(`Row ${r.n}: ${m.status} — ${m.reason}`, m.reconciled);
     }
 
+    /* 4 — the balances, then the ticks, then Done. In that order and all after
+       the sort and the filter: sorting rebuilds the page, so anything typed
+       before it would be typed into a document that no longer exists. */
+    const balances = await setStatementBalances(page, {
+      openingBalance: o.openingBalance,
+      closingBalance: o.closingBalance,
+    }, say);
+
+    const selection = await selectMatchedTransactions(page, statement, matched, say);
+    const finished = await finishStatementPage(page, selection.ticked.length, say);
+
     ok = true;
-    return { results, pageNumber, statementRows: statement.length, summary: core.summarise(results) };
+    return {
+      results, pageNumber, statementRows: statement.length,
+      summary: core.summarise(results),
+      balances, selection, finished,
+    };
   } finally {
     // On success close our tab; on failure leave it open so the page that
     // stopped the run is still on screen. Closing a CDP browser only drops the
@@ -720,18 +1032,162 @@ async function runMintReconciliation(o = {}) {
     const statement = await filterAndRead(page, recPayType);
     say(`${statement.length} transaction${statement.length === 1 ? "" : "s"} showing after the filter.`);
 
+    const matched = [];
     for (const r of results) {
       const m = core.matchMintAgainstStatement(r, statement);
       r.reconciliation = m.status;
       r.mismatch = m.mismatch;
       r.why = m.reason;
       if (m.duplicates) r.why += ` — ${m.duplicates} transactions carry that number`;
-      row(r.n, { reconciliation: r.reconciliation, why: r.why, mismatch: r.mismatch });
+      if (m.reconciled && m.transNo) { r.transNo = m.transNo; matched.push(m.transNo); }
+      row(r.n, { reconciliation: r.reconciliation, why: r.why, mismatch: r.mismatch, transNo: r.transNo });
       say(`Row ${r.n}: ${m.status} — ${m.reason}`, m.reconciled);
     }
 
+    const balances = await setStatementBalances(page, {
+      openingBalance: o.openingBalance,
+      closingBalance: o.closingBalance,
+    }, say);
+
+    const selection = await selectMatchedTransactions(page, statement, matched, say);
+    const finished = await finishStatementPage(page, selection.ticked.length, say);
+
     ok = true;
-    return { results, pageNumber, statementRows: statement.length, summary: core.summariseMint(results) };
+    return {
+      results, pageNumber, statementRows: statement.length,
+      summary: core.summariseMint(results),
+      balances, selection, finished,
+    };
+  } finally {
+    if (ok && page) await page.close().catch(() => {});
+    await browser.close().catch(() => {});
+  }
+}
+
+/**
+ * Both reports, one run, ONE statement page.
+ *
+ * A freshly created page lists every unpresented transaction on the account —
+ * measured, not assumed (docs/tramada-field-map.md: page 10, created empty,
+ * immediately showed 4,191 rows going back to 2020). So the BPay receipts this
+ * run files and the Mint creditor payments Tramada already holds are both
+ * already sitting on the same page. Reconciling them together is not a
+ * convenience, it is what the page was always showing.
+ *
+ * The order is forced by the portal, not chosen:
+ *
+ *   1. RECEIPTS FIRST, and not concurrently with anything. `runTramadaReceipt`
+ *      closes the shared CDP browser in its finally, so nothing else may hold a
+ *      page while it runs. This is why "run them in parallel" is not on the
+ *      table — the second flow would close the first one's page mid-run with
+ *      real receipts already filed.
+ *   2. SORT ONCE. `#sortButton` submits and comes back with every tick gone.
+ *   3. THEN SWAP THE FILTER PER REPORT. `#filterButton` only hides rows in the
+ *      page already on screen, so ticks made under the first filter survive the
+ *      second. Client Payment Receipt for the BPay rows, Creditor Payment for
+ *      the Mint ones.
+ *   4. Balances, then ONE Done for both.
+ *
+ * A failure in one report does not stop the other, and Done still commits what
+ * matched: the receipts that were filed are real whatever happens next, and
+ * abandoning the page would leave them unreconciled as well as unexplained.
+ */
+async function runCombinedReconciliation(o = {}) {
+  const cb = o.callbacks || {};
+  const say = cb.onProgress || (() => {});
+  const row = cb.onRow || (() => {});
+  const accountLabel = o.accountLabel || "[TRUST] Trust Account";
+  const mintType = o.recPayType || "Creditor Payment";
+
+  // One numbering across both reports: `n` reaches the page and the store, and
+  // two rows called 1 would overwrite each other in both.
+  const results = [
+    ...(o.bpayRows || []).map((r) => ({ ...r, src: "bpay" })),
+    ...(o.mintRows || []).map((r) => ({ ...r, src: "mint" })),
+  ].map((r, i) => ({ ...r, n: i + 1 }));
+  if (!results.length) throw new Error("No rows to run.");
+
+  const bpay = results.filter((r) => r.src === "bpay");
+  const mint = results.filter((r) => r.src === "mint");
+  say(`${bpay.length} BPay row${bpay.length === 1 ? "" : "s"} and ${mint.length} Mint settlement` +
+    `${mint.length === 1 ? "" : "s"}, on one statement page. ` +
+    (bpay.length ? "The BPay rows are filed as receipts; " : "") +
+    "the Mint rows are only looked for.");
+
+  if (bpay.length) {
+    await fileReceipts(bpay, {
+      auth: { username: process.env.TRAMADA_USERNAME, password: process.env.TRAMADA_PASSWORD },
+      cb, say, row,
+    });
+  }
+
+  const browser = await openBrowser();
+  let page;
+  let ok = false;
+  try {
+    const ctx = browser.contexts()[0] || (await browser.newContext());
+    page = await ctx.newPage();
+    await ensureLoggedIn(page, cb.onNeedLogin);
+
+    const pageNumber = await openFreshStatementPage(page, {
+      accountLabel,
+      statementDate: o.statementDate,
+      openingBalance: o.openingBalance,
+      closingBalance: o.closingBalance,
+      say,
+    });
+
+    await sortPage(page);
+    let ticked = [];
+    let missing = [];
+    let futureDated = [];
+    let seen = 0;
+
+    // One pass per report: filter, read, match, tick. Ticking inside the pass
+    // rather than at the end is deliberate — a row hidden by the NEXT filter
+    // cannot be clicked, and Playwright will not click what it cannot see.
+    const pass = async (label, rowsForPass, match) => {
+      if (!rowsForPass.length) return;
+      say(`Filtering to ${label}…`);
+      await applyFilter(page, label);
+      const statement = await readVisibleTransactions(page);
+      seen += statement.length;
+      say(`${statement.length} ${label} transaction${statement.length === 1 ? "" : "s"} showing.`);
+
+      const matched = [];
+      for (const r of rowsForPass) {
+        const m = match(r, statement);
+        r.reconciliation = m.status;
+        r.mismatch = m.mismatch;
+        r.why = r.error ? r.why : m.reason;
+        if (m.duplicates) r.why += ` — ${m.duplicates} transactions carry that number`;
+        if (m.reconciled && m.transNo) { r.transNo = m.transNo; matched.push(m.transNo); }
+        row(r.n, { reconciliation: r.reconciliation, why: r.why, mismatch: r.mismatch, transNo: r.transNo });
+        say(`Row ${r.n}: ${m.status} — ${m.reason}`, m.reconciled);
+      }
+      const sel = await selectMatchedTransactions(page, statement, matched, say);
+      ticked = ticked.concat(sel.ticked);
+      missing = missing.concat(sel.missing);
+      futureDated = futureDated.concat(sel.futureDated);
+    };
+
+    await pass("Client Payment Receipt", bpay, core.matchAgainstStatement);
+    await pass(mintType, mint, core.matchMintAgainstStatement);
+
+    const balances = await setStatementBalances(page, {
+      openingBalance: o.openingBalance,
+      closingBalance: o.closingBalance,
+    }, say);
+
+    const selection = { ticked, missing, futureDated };
+    const finished = await finishStatementPage(page, ticked.length, say);
+
+    ok = true;
+    return {
+      results, pageNumber, statementRows: seen,
+      summary: core.summariseCombined(results),
+      balances, selection, finished,
+    };
   } finally {
     if (ok && page) await page.close().catch(() => {});
     await browser.close().catch(() => {});
@@ -739,6 +1195,8 @@ async function runMintReconciliation(o = {}) {
 }
 
 module.exports = {
-  runReconciliation, runMintReconciliation,
+  runReconciliation, runMintReconciliation, runCombinedReconciliation,
+  sortPage, applyFilter, readVisibleTransactions, fileReceipts,
   readExistingPages, createStatement, openFreshStatementPage, filterAndRead,
+  setStatementBalances, selectMatchedTransactions, finishStatementPage,
 };

@@ -9,10 +9,12 @@
     "dev": "CDP_MODE=external DEBUG=true node --watch server.js",
     "start:chrome": "./start-chrome.sh",
     "build": "node build-recon.js",
-    "test": "node test-xlsx-lite.js && node test-statement-csv.js && node test-recon-core.js",
+    "test": "node test-xlsx-lite.js && node test-statement-csv.js && node test-recon-core.js && node test-run-store.js",
     "test:core": "node test-recon-core.js",
     "test:xlsx": "node test-xlsx-lite.js",
-    "shots": "node shot-recon.js && node shot-recon-run.js && node shot-mint-run.js"
+    "shots": "node shot-recon.js && node shot-recon-run.js && node shot-mint-run.js && node shot-overview.js && node shot-both.js",
+    "test:store": "node test-run-store.js",
+    "smoke": "node smoke-store.js"
   },
   "dependencies": {
     "dotenv": "^16.4.0",

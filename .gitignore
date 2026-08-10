@@ -3,3 +3,6 @@ node_modules/
 .jetstar-profile-cdp/
 created-bookings.json
 *.png
+uploads/
+runs.json
+runs.json.corrupt-*

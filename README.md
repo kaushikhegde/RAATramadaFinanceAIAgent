@@ -13,8 +13,15 @@ Two reports, two jobs:
 | Statement filter | `Client Payment Receipt` | `Creditor Payment` |
 | Reconciled when | the receipt number it was handed appears as a `Trans. No` at the same amount | the transaction reference appears as a `Trans. No` |
 
-A run creates its own statement page, so **one report per run**. The page holds
-both, and Start run refuses while both are loaded.
+Load one report or both. **Both run together on ONE statement page** — a freshly
+created page already lists every unpresented transaction on the account, so the
+BPay receipts and the Mint creditor payments are both already on it. The BPay
+rows are filed first, then each report is matched under its own filter, and the
+page is committed once.
+
+They cannot run as two *concurrent* flows: `runTramadaReceipt` closes the shared
+CDP browser in its `finally`, so a second flow would pull the page out from
+under the first with real receipts already filed. One run does both, in order.
 
 ## Running it
 
@@ -39,10 +46,51 @@ receipt per row against a real booking, and nothing rolls back. The card's
 
 ## What it touches, and what it will not
 
-On the reconciliation page it sets the sort and the filter and clicks their two
-buttons. **Nothing else** — no Done, no Export, no ticking transactions, no
-Save. That is the difference between a run that reads a statement and a run that
-commits one.
+On the reconciliation page it sets the sort and the filter, writes the statement
+balances, ticks the transactions it matched, and presses **Done**. Export is
+never clicked.
+
+**Done commits the page.** Until 10-Aug-2026 this run deliberately stopped short
+of it, and the line it would not cross was the difference between a run that
+reads a statement and a run that commits one. It crosses that line now, so two
+rules hold it in place:
+
+- only rows the run positively **matched** are ticked — never `Select All`,
+  which would tick all ~4,200 unpresented transactions sitting on a fresh page;
+- every tick is **verified** before Done is pressed, and Done is skipped
+  entirely when nothing matched. Committing a page whose ticks never registered
+  is worse than not committing at all.
+
+The balances are written on the reconcile screen itself, where all three fields
+ship `readonly` behind an unnamed **Edit** button. Typing into a readonly input
+succeeds silently and changes nothing — which is why the opening balance used to
+go missing.
+
+## Where a run is written down
+
+```
+uploads/20260810-143002-mint.xlsx     the report exactly as it arrived
+runs.json                             every run, its rows and its money
+```
+
+The **Run overview** screen is fed from `runs.json` and nothing else. Before it
+existed that screen showed the design mockup's invented figures behind a "sample
+data" banner, because a finished run had nowhere to go.
+
+Read over HTTP rather than pushed down the socket, so the figures are right on a
+page opened long after the run finished:
+
+| | |
+|---|---|
+| `GET /api/overview` | the dashboard's figures |
+| `GET /api/runs` | every run, in full |
+| `GET /api/runs/:id` | one run |
+
+Rows are written **as they happen**, not at the end: a run that dies on row 7
+has still filed six real receipts, and their numbers have to outlive the process
+that filed them. Writes are atomic, and a `runs.json` that will not parse is
+moved aside rather than overwritten — it is still somebody's record of money
+that moved.
 
 ## The code
 
@@ -52,7 +100,8 @@ commits one.
 | `recon-run.js` | The browser half. Pages and clicks, no judgements. |
 | `xlsx-lite.js` | Reads .xlsx with no dependencies — a workbook is a zip of XML and node ships `zlib`. |
 | `tramada-receipt.js` | The booking receipt form. |
-| `server.js` | One page, one socket. |
+| `server.js` | One page, one socket, and the run history over HTTP. |
+| `run-store.js` | `uploads/` and `runs.json` — where a run is written down. |
 | `recon-wire.html` | The live wiring added to the client's mockup. |
 | `build-recon.js` | `public/index.html` ← `recon-ui-mockup.html` + `recon-wire.html` |
 
@@ -75,7 +124,7 @@ marked *sample data*.
 ## Tests
 
 ```bash
-npm test        # 223 assertions, all offline — no network, no browser
+npm test        # 313 assertions, all offline — no network, no browser
 npm run shots   # screenshots of the page, a BPay run and a Mint run
 ```
 

@@ -262,7 +262,9 @@ header.top { display: none !important }
           '</div></div>';
       }
 
-      const isActive = kindOf() === kind;
+      // 'both' means every loaded card is in the run, so every loaded card
+      // shows the run's state rather than sitting there marked "loaded".
+      const isActive = kindOf() === 'both' || kindOf() === kind;
       const state = !isActive ? '<span class="badge b-mute">loaded</span>'
         : running ? '<span class="badge b-ai">running…</span>'
         : results.some((r) => (r.reconciliation && r.reconciliation !== 'Pending') || (r.allocation && r.allocation !== 'Pending'))
@@ -292,13 +294,17 @@ header.top { display: none !important }
         '</div></div>';
     }).join('');
 
-    // A run makes its own statement page, so it can only ever be one report.
+    /* Two reports run TOGETHER on one page now, so this says what will happen
+       rather than refusing. A fresh statement page already lists every
+       unpresented transaction on the account, so the BPay receipts and the Mint
+       creditor payments are both on it — one page, one Done. */
     if (loaded().length > 1) {
       grid.insertAdjacentHTML('beforeend',
         '<div class="note" style="grid-column:1/-1;padding:10px 14px;border-radius:10px;' +
-        'background:#FFF6D6;border:1px solid #E8D48A;color:#6B5300;font-size:13px">' +
-        '<b>Two reports are loaded.</b> A run creates its own statement page, so it can only ' +
-        'run one of them — remove the one you are not running.</div>');
+        'background:#EAF3FF;border:1px solid #B9D4F5;color:#1B4A7A;font-size:13px">' +
+        '<b>Both reports will run together</b> on one statement page — the BPay rows are ' +
+        'filed as receipts first, then each report is matched under its own filter and ' +
+        'the page is committed once.</div>');
     }
 
     grid.querySelectorAll('[data-choose]').forEach((b) => {
@@ -370,21 +376,34 @@ header.top { display: none !important }
      is nothing to run, and results belong to no one. */
   function syncActive() {
     const on = loaded();
-    active = on.length === 1 ? on[0] : null;
-    const s = active ? source[active] : null;
-    rows = s ? s.rows : [];
-    if (!s) results = [];
+    // 'both' is a real value now, not the absence of a choice. Two reports run
+    // together on ONE statement page — see runCombinedReconciliation.
+    active = on.length === 1 ? on[0] : (on.length > 1 ? 'both' : null);
+    rows = on.reduce((a, k) => a.concat(source[k].rows || []), []);
+    if (!on.length) results = [];
     const run = $('#startRun');
-    if (run) run.disabled = !s || running;
+    if (run) run.disabled = !on.length || running;
+  }
+
+  /* Every loaded report's rows, in the order the run will do them: BPay first,
+     because those are the ones that get FILED, then Mint. Numbered across both
+     — `n` is what the server patches rows by, and two rows called 1 would
+     overwrite each other in the inbox and in runs.json alike. */
+  function allResults() {
+    let n = 0;
+    return ['bpay', 'mint'].reduce((acc, kind) => {
+      if (!source[kind]) return acc;
+      return acc.concat((source[kind].rows || []).map((x) => (kind === 'mint'
+        ? { ...x, n: ++n, src: 'mint', reconciliation: 'Pending' }
+        : { ...x, n: ++n, src: 'bpay', allocation: 'Pending', reconciliation: 'Pending' })));
+    }, []);
   }
 
   function accept(kind, file, parsed, skipped) {
     source[kind] = { file: { name: file.name, size: file.size }, rows: parsed, previewOpen: false };
     active = kind;
     syncActive();
-    results = parsed.map((x, i) => (kind === 'mint'
-      ? { ...x, n: i + 1, reconciliation: 'Pending' }
-      : { ...x, n: i + 1, allocation: 'Pending', reconciliation: 'Pending' }));
+    results = allResults();
     // render() rebuilds the cards, so the hint has to be written after it — the
     // element it goes in does not exist until then.
     render();
@@ -434,6 +453,19 @@ header.top { display: none !important }
     fr.onload = () => {
       const { rows: r, error, bad } = parseCsv(fr.result);
       if (error) { reject(kind, file.name, error); return; }
+      // The CSV also goes to the server, to be KEPT rather than parsed — it is
+      // read here so the cards fill in without a round trip. Until this
+      // existed the BPay file reached nothing but this browser tab: a run
+      // filed real receipts from it and afterwards there was no copy of what
+      // it had actually said.
+      if (ws && ws.readyState === 1) {
+        try {
+          ws.send(JSON.stringify({
+            type: 'recon_upload', source: kind, name: file.name,
+            base64: btoa(unescape(encodeURIComponent(fr.result))),
+          }));
+        } catch (e) { /* keeping a copy is not worth failing the upload over */ }
+      }
       accept(kind, file, r, bad);
     };
     fr.readAsText(file);
@@ -521,12 +553,24 @@ header.top { display: none !important }
         '<td>' + esc(r.toCompany || '') + '</td>' +
         '<td>' + badge(r.reconciliation) + '</td>' +
         '<td class="muted">' + esc(r.why || '') + '</td></tr>'
+      /* On a COMBINED run both kinds of row share this table, and a Mint row has
+         no reference, no date and no booking — rendered as a BPay row it came
+         out as a bare "·" with an empty Booking column and, worse, a "pending"
+         Allocation badge for a report that allocates nothing and never will.
+         So each row is drawn from what it IS, not from what the run is. */
       : '<tr><td><span class="tdot ' + dot(r) + '"></span></td>' +
-        '<td><b class="ref">' + esc(r.reference) + '</b><div class="muted">' + esc(r.date) + ' · ' + esc(r.recPayType) + '</div></td>' +
+        (r.src === 'mint'
+          ? '<td><b class="ref">' + esc(r.transNo) + '</b><div class="muted">' +
+            esc(r.toCompany || '') + ' · Mint settlement</div></td>'
+          : '<td><b class="ref">' + esc(r.reference) + '</b><div class="muted">' +
+            esc(r.date) + ' · ' + esc(r.recPayType) + '</div></td>') +
         '<td class="num">' + esc(r.amount) + '</td>' +
-        '<td class="mono">' + esc(r.bookingNo) + '</td>' +
+        '<td class="mono">' + esc(r.bookingNo || '') + '</td>' +
         '<td class="mono">' + esc(r.receiptNo || '') + '</td>' +
-        '<td>' + badge(r.allocation) + '</td>' +
+        // Nothing is filed for a Mint row, so its Allocation cell is empty
+        // rather than "pending" — "pending" promises something that is never
+        // coming.
+        '<td>' + (r.src === 'mint' ? '<span class="muted">—</span>' : badge(r.allocation)) + '</td>' +
         '<td>' + badge(r.reconciliation) + '</td>' +
         '<td class="muted">' + esc(r.why || '') + '</td></tr>').join('');
 
@@ -534,7 +578,6 @@ header.top { display: none !important }
       (shown.length ? body
         : '<tr><td colspan="' + cols + '" style="padding:26px;text-align:center" class="muted">' +
           (results.length ? 'Nothing matches that filter.'
-            : loaded().length > 1 ? 'Two reports are loaded — remove one on Sources &amp; upload.'
             : 'Load a report on Sources &amp; upload.') + '</td></tr>') +
       '</tbody></table>';
 
@@ -665,10 +708,6 @@ header.top { display: none !important }
     const kind = active;
     const stop = (why) => { hint(kind || 'bpay', '<span style="color:var(--err)">' + why + '</span>'); go('sources'); };
     if (running) return;
-    if (loaded().length > 1) {
-      go('sources');
-      return;                                   // the banner on the cards says why
-    }
     if (!kind || !results.length) return;
 
     const date = ($('#rcDate') || {}).value, op = ($('#rcOpening') || {}).value, cl = ($('#rcClosing') || {}).value;
@@ -686,19 +725,31 @@ header.top { display: none !important }
     statementPage = null;
     activity = [];
     $('#startRun').disabled = true;
-    // A Mint run allocates nothing, so its rows never carry an allocation. An
-    // empty Allocation column is honest; "Pending" forever is not.
-    results = results.map((r) => (kind === 'mint'
+    /* Mint rows allocate NOTHING, so they never carry an allocation — an empty
+       Allocation column is honest where "Pending" forever is not. On a combined
+       run both kinds of row sit in one table, so this is decided per ROW rather
+       than per run. */
+    results = allResults().map((r) => (r.src === 'mint'
       ? { ...r, reconciliation: 'Pending', mismatch: undefined, why: '' }
       : { ...r, allocation: 'Running', reconciliation: 'Pending', receiptNo: '', why: '' }));
-    note('Run started — ' + SOURCES[kind].title + ', ' + results.length +
-      ' row' + (results.length === 1 ? '' : 's') + ', statement date ' + date + '.');
+
+    const titles = loaded().map((k) => SOURCES[k].title).join(' + ');
+    note('Run started — ' + titles + ', ' + results.length +
+      ' row' + (results.length === 1 ? '' : 's') +
+      (kind === 'both' ? ', both on one statement page' : '') +
+      ', statement date ' + date + '.');
     render();
     go('inbox');
-    ws.send(JSON.stringify({
-      type: 'recon_run', source: kind, rows,
-      statementDate: date, openingBalance: op, closingBalance: cl,
-    }));
+
+    const common = { statementDate: date, openingBalance: op, closingBalance: cl };
+    ws.send(JSON.stringify(kind === 'both'
+      ? {
+          type: 'recon_run', source: 'both',
+          bpayRows: (source.bpay || {}).rows || [],
+          mintRows: (source.mint || {}).rows || [],
+          ...common,
+        }
+      : { type: 'recon_run', source: kind, rows, ...common }));
   }
 
   function message(m) {
@@ -736,6 +787,9 @@ header.top { display: none !important }
       needLogin = null;
       $('#startRun').disabled = false;
       stopped = m.error || null;
+      // The run is in runs.json now, whether it worked or not, so the overview
+      // is stale the moment this frame lands.
+      loadOverview();
       if (m.error) {
         // Rows the run never reached must not keep saying "Pending" as though
         // a check were still coming, and must not be called "Not reconciled"
@@ -784,6 +838,289 @@ header.top { display: none !important }
     URL.revokeObjectURL(a.href);
   }
 
+  /* ── the Run overview, from runs.json ──
+
+     Fetched over HTTP, not pushed down the socket. The overview has to be right
+     on a page opened long after the run finished, and a websocket frame only
+     ever reaches a page that was listening at the time.
+
+     This screen carried the mockup's invented figures — $7.2m of balances and a
+     "sample data" banner over the top — until there was somewhere for a
+     finished run to go. */
+  let overview = null;
+
+  function loadOverview() {
+    return fetch('/api/overview')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((o) => { overview = o; renderOverview(); })
+      .catch(() => { /* a dashboard is not worth an error banner over a run */ });
+  }
+
+  function when(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? String(iso)
+      : d.toLocaleString('en-AU', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  }
+
+  /* ── THE OVERVIEW'S MARKUP IS THE CLIENT'S AND IS NOT TOUCHED ──
+
+     Every function below writes VALUES into elements the mockup already has.
+     Not one of them adds, removes or restyles a node, and none of them sets
+     innerHTML on the screen itself.
+
+     This was briefly done the other way — the section replaced with tiles and a
+     table of its own — and it threw away the hero, the balance strip, the four
+     stream cards and the design they came in. The figures were right and it was
+     still wrong: the mockup IS the specification for this screen, and a wiring
+     file that rewrites it stops being wiring. Fill it in; never redraw it. */
+
+  const setText = (el, v) => { if (el) el.textContent = v; };
+
+  /* The stream cards' own shape: `big` is "186 / 194", the bar is three
+     proportional segments and the legend is three counts. Written through the
+     nodes that are already there, so the card keeps its icon, its heading and
+     its colours. */
+  function fillStream(card, o) {
+    if (!card) return;
+    const total = o.total || 0;
+    const pctOf = (n) => (total ? (n / total) * 100 : 0);
+    /* `.big` is a text node followed by an `<em>` — "186" then "<em> / 194</em>".
+       textContent on the parent would take the `<em>` with it and the card
+       would read "6" where it used to read "6 / 6". Write the text node. */
+    const big = card.querySelector('.big');
+    if (big) {
+      const first = big.firstChild;
+      if (first && first.nodeType === 3) first.nodeValue = String(o.done);
+      else big.insertBefore(document.createTextNode(String(o.done)), big.firstChild);
+      setText(big.querySelector('em'), ' / ' + total);
+    }
+    const bar = card.querySelectorAll('.bar i');
+    if (bar.length >= 3) {
+      bar[0].style.width = pctOf(o.done) + '%';
+      bar[1].style.width = pctOf(o.review) + '%';
+      bar[2].style.width = pctOf(o.bad) + '%';
+    }
+    const legend = card.querySelectorAll('.legend span');
+    // The legend's wording belongs to the card ("171 done", "36 receipted") —
+    // only the number in front of it changes.
+    [o.done, o.review, o.bad].forEach((n, i) => {
+      const sp = legend[i];
+      if (!sp) return;
+      const sw = sp.querySelector('.sw');
+      sp.textContent = ' ' + n + ' ' + sp.textContent.trim().replace(/^\d[\d,]*\s*/, '');
+      if (sw) sp.insertBefore(sw, sp.firstChild);
+    });
+  }
+
+  /* The balance note carries a CLAIM about the data ("Balance is currently in
+     agreement"), so its lead sentence is a value like any other. The paragraph
+     after it is the client's copy and is left alone. */
+  function setNoteLead(host, text) {
+    const b = host.querySelector('.note b');
+    if (b) b.textContent = text;
+  }
+
+  /**
+   * No runs yet — and this screen has to SAY so.
+   *
+   * It used to return early here and leave the mockup's figures standing, which
+   * was survivable only while the "sample data" banner was over the top of
+   * them. The banner came off when the last panel was wired, and that turned a
+   * placeholder into a lie: $7.2m of invented balances, 489 statement lines and
+   * a full activity log, presented as this morning's run.
+   *
+   * Zeroes are not a broken dashboard. An invented one is.
+   */
+  function renderEmpty(host) {
+    setText(host.querySelector('.ring b'), '0%');
+    const arc = host.querySelectorAll('.ring svg circle')[1];
+    if (arc) arc.setAttribute('stroke-dashoffset', '226');
+    setText(host.querySelector('.hero .lead h2'), 'No runs yet');
+    setText(host.querySelector('.hero .lead p'),
+      'Nothing has been reconciled yet. Put a report on its card in Sources & upload '
+      + 'and press Start run — every run from then on is recorded here.');
+    host.querySelectorAll('.hero-stats .hs b').forEach((b) => setText(b, '0'));
+
+    host.querySelectorAll('.bal > div').forEach((d, i) => {
+      const b = d.querySelector('b');
+      if (!b) return;
+      b.textContent = '—';
+      b.classList.remove('neg');
+      if (i === 4) d.classList.remove('bal-ok');
+    });
+    setNoteLead(host, 'No statement has been read yet.');
+
+    host.querySelectorAll('.g-4 .stream').forEach((c) =>
+      fillStream(c, { total: 0, done: 0, review: 0, bad: 0 }));
+    fillReaction(host, [], false);
+    fillActivity(host, []);
+  }
+
+  function renderOverview() {
+    const host = document.getElementById('s-overview');
+    if (!host || !overview) return;              // not fetched yet — leave it a beat
+    const o = overview;
+    const last = o.lastRun;
+    if (!last) { renderEmpty(host); return; }
+    const t = last.totals || {};
+    const s = last.summary || {};
+    const done = s.reconciled || 0;
+    const rows = t.rows || 0;
+    const pct = rows ? Math.round((done / rows) * 100) : 0;
+
+    // The ring: its number and its arc, nothing else about it.
+    setText(host.querySelector('.ring b'), pct + '%');
+    const arc = host.querySelectorAll('.ring svg circle')[1];
+    if (arc) arc.setAttribute('stroke-dashoffset', String(Math.round(226 * (1 - pct / 100))));
+
+    setText(host.querySelector('.hero .lead h2'),
+      'Reconciling ' + (last.statementDate || when(last.startedAt)));
+    setText(host.querySelector('.hero .lead p'),
+      done + ' of ' + rows + ' statement lines matched'
+      + (last.pageNumber ? ' · page ' + last.pageNumber : '')
+      + ' · started ' + when(last.startedAt)
+      + (last.finishedAt ? ' · took ' + Math.max(1, Math.round(
+          (new Date(last.finishedAt) - new Date(last.startedAt)) / 1000)) + 's' : '')
+      + ' · ' + o.runs + ' run' + (o.runs === 1 ? '' : 's') + ' recorded');
+
+    // The four hero stats, in the order the mockup lays them out.
+    const hs = host.querySelectorAll('.hero-stats .hs b');
+    const failedRows = (last.rows || []).filter((r) => r.error).length;
+    const ticked = (last.committed && last.committed.ticked) || 0;
+    [
+      done,                          // Auto-completed  — matched on the page
+      s.notReconciled || 0,          // Need reaction   — filed but not found
+      failedRows,                    // With consultants— the row errored; a person has to chase it
+      Math.max(0, done - ticked),    // Awaiting approval — matched, not yet committed
+    ].forEach((v, i) => setText(hs[i], String(v)));
+
+    /* The balance strip, from what the reconcile page itself read back —
+       `setStatementBalances` returns the two figures it typed AND Tramada's own
+       Un-Presented and Calculated Closing, which is the only place a real
+       variance can come from. */
+    /* The newest run that actually READ the balances, which is not always the
+       newest run: one that failed before reaching the reconcile screen has
+       none. Falling back keeps a real strip on screen instead of dropping back
+       to the mockup's invented millions the moment a run cannot reach Chrome. */
+    const b = (o.recentFull || []).map((r) => r.balances).find(Boolean) || last.balances;
+    const bal = host.querySelectorAll('.bal > div');
+    if (b && bal.length >= 5) {
+      const put = (el, text, negative) => {
+        const strong = el && el.querySelector('b');
+        if (!strong) return;
+        strong.textContent = text;
+        strong.classList.toggle('neg', !!negative);
+      };
+      const n = (v) => Number(String(v).replace(/[^0-9.-]/g, '')) || 0;
+      put(bal[0], b.opening || '—', n(b.opening) < 0);
+      put(bal[1], b.closing || '—', n(b.closing) < 0);
+      put(bal[2], b.unpresented || '—', n(b.unpresented) < 0);
+      put(bal[3], b.calculated || '—', n(b.calculated) < 0);
+      const variance = n(b.closing) - n(b.calculated);
+      const vb = bal[4].querySelector('b');
+      if (vb) vb.textContent = (variance === 0 ? '$0.00 ✓' : '$' + variance.toFixed(2));
+      bal[4].classList.toggle('bal-ok', variance === 0);
+      setNoteLead(host, variance === 0
+        ? 'Balance is currently in agreement.'
+        : 'Balance is out by $' + variance.toFixed(2) + '.');
+    } else {
+      // A run that never reached the reconcile screen read no balances. Say
+      // that rather than leaving the last run's — or the mockup's — in place.
+      bal.forEach((d, i) => {
+        const strong = d.querySelector('b');
+        if (!strong) return;
+        strong.textContent = '—';
+        strong.classList.remove('neg');
+        if (i === 4) d.classList.remove('bal-ok');
+      });
+      setNoteLead(host, 'No statement balances were read on this run.');
+    }
+
+    /* The two streams this system actually has. The mockup's other two —
+       Merchant settlements and Passenger refunds — are left exactly as they
+       came: there is no such report here, and inventing one would be worse
+       than leaving the design's own example in place. */
+    const streams = host.querySelectorAll('.g-4 .stream');
+    /* The LATEST run of that report, not every run of it ever. A stream card
+       reads as "how did today's Mint settlement go" — summing six months into
+       it would make the card climb forever and mean nothing. Per source, so
+       both cards hold a real figure even on a day only one report was run. */
+    const forSource = (src) => {
+      // By what the run's ROWS were, not by its label — one run can now carry
+      // both reports, and it should light both cards.
+      const mine = (o.recent || []).find((r) => r.streams && r.streams[src] && r.streams[src].rows > 0);
+      if (!mine) return { total: 0, done: 0, review: 0, bad: 0 };
+      const total = mine.streams[src].rows;
+      const okRows = mine.streams[src].reconciled;
+      return { total, done: okRows, review: 0, bad: Math.max(0, total - okRows) };
+    };
+    /* Looked up by source rather than hard-wired to card 0 and card 1, so the
+       day a merchant or refund report exists its card fills itself. Until then
+       those two read 0 / 0 — this system has no such report, and leaving the
+       design's example figures there would put invented money on a screen whose
+       other four panels are real. */
+    ['mint', 'bpay', 'merchant', 'refunds'].forEach((src, i) => fillStream(streams[i], forSource(src)));
+
+    fillReaction(host, o.needsReaction || [], true);
+    fillActivity(host, o.activity || []);
+  }
+
+  /* ── "Need your reaction" ──
+     The mockup's own row: a dot, the item over its reference, a stream badge,
+     the issue, amount, variance, the proposal, and a Review button. Rows are
+     built to that exact shape — same tags, same classes — because this table
+     is the client's and only its CONTENTS are ours. */
+  function fillReaction(host, items, hasRun) {
+    const tbody = host.querySelector('.g-main table tbody');
+    if (!tbody) return;
+    if (!items.length) {
+      // "Every row reconciled" is a claim, and it is false when there has been
+      // no row to reconcile. Two different nothings.
+      tbody.innerHTML = '<tr><td class="mid"></td><td class="mid muted" colspan="7">' +
+        (hasRun ? 'Nothing needs a person — every row in the last run reconciled.'
+                : 'Nothing to react to yet.') + '</td></tr>';
+      return;
+    }
+    tbody.innerHTML = items.map((r) => {
+      const variance = r.variance
+        ? '<td class="num mid" style="color:var(--warn)">' + esc(r.variance.slice(0, 40)) + '</td>'
+        : '<td class="num muted mid">—</td>';
+      return '<tr>' +
+        '<td class="mid"><span class="tdot ' + (r.kind === 'rev' ? 'rev' : 'need') + '"></span></td>' +
+        '<td class="mid"><b>' + esc(r.item) + '</b>' +
+          (r.ref ? '<div class="muted ref">' + esc(r.ref) + '</div>' : '') + '</td>' +
+        '<td class="mid"><span class="badge b-mute">' + esc(r.stream) + '</span></td>' +
+        '<td class="mid">' + esc(r.issue) + '</td>' +
+        '<td class="num mid">' + esc((r.amountCents / 100).toFixed(2)) + '</td>' +
+        variance +
+        '<td class="muted mid">' + esc((r.proposal || '').slice(0, 90)) + '</td>' +
+        '<td class="rowact mid"><button class="btn sm" data-go="inbox">Review</button></td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  /* ── "Agent activity" ──
+     `<li><time>08:47</time><p>…</p></li>`, as many as the run produced. The
+     count changes because a list holds what it holds; the shape does not. */
+  function fillActivity(host, lines) {
+    const ul = host.querySelector('.g-main .tl');
+    if (!ul) return;
+    if (!lines.length) {
+      ul.innerHTML = '<li><time>—</time><p class="muted">No run has been recorded yet.</p></li>';
+      return;
+    }
+    const clock = (iso) => {
+      const d = new Date(iso);
+      return isNaN(d.getTime()) ? '' : d.toLocaleTimeString('en-AU',
+        { hour: '2-digit', minute: '2-digit', hour12: false });
+    };
+    ul.innerHTML = lines.slice(0, 40).map((l) =>
+      '<li><time>' + esc(clock(l.at)) + '</time><p>' + esc(l.message) +
+      (l.ok === false ? ' <span class="badge b-err">stopped</span>' : '') +
+      '</p></li>').join('');
+  }
+
   function connect() {
     ws = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws');
     ws.onmessage = (e) => { try { const d = JSON.parse(e.data); if (d.type && d.type.indexOf('recon_') === 0) message(d); } catch (_) {} };
@@ -799,7 +1136,10 @@ header.top { display: none !important }
     // Every screen except the two that are wired. Discovered, not listed —
     // the mockup gains and loses screens, and a hard-coded list quietly
     // stops tagging the ones that were added after it was written.
-    const WIRED = ['s-sources', 's-inbox'];
+    // s-overview joined these once its last invented panel was wired. The
+    // banner is not decoration — it is a claim, and it stops being true the
+    // moment every figure on a screen comes from a run.
+    const WIRED = ['s-sources', 's-inbox', 's-overview'];
     for (const sec of document.querySelectorAll('section.screen')) {
       if (WIRED.includes(sec.id)) continue;
       if (sec.querySelector('.sample-tag')) continue;
@@ -924,13 +1264,16 @@ header.top { display: none !important }
   }
 
   document.addEventListener('DOMContentLoaded', () => {
-    mountNav(); mountSources(); markSamples(); hideUnwired(); render(); connect();
+    // renderOverview first: the overview is wired now, and markSamples is only
+    // allowed to be right about screens that still are not.
+    mountNav(); mountSources(); renderOverview(); markSamples(); hideUnwired();
+    render(); connect(); loadOverview();
     /* Open on Sources & upload, not on Run overview.
        The mockup ships with the overview marked `on`, which made sense when it
-       was one screen of a wider app. Here there is one job — put a report in and
-       run it — and the overview is the screen carrying the mockup's invented
-       figures, so landing there means the first thing anyone sees is sample
-       data. It is still in the nav, still marked as sample. */
+       was one screen of a wider app. Here there is one job — put a report in
+       and run it — so that is the screen to land on. The overview is real now
+       (runs.json, not the mockup's invented figures), but it is a record of
+       what has happened, and nothing has happened yet when the page opens. */
     go('sources');
   });
 })();

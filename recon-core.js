@@ -665,8 +665,210 @@ function summarise(results) {
   };
 }
 
+/* ── the run history, and what the dashboard makes of it ─────────────────── */
+
+/**
+ * A filename safe to write into `uploads/`, stamped so two uploads of the same
+ * report on the same day do not overwrite each other.
+ *
+ * The name comes from a browser file picker, so it is whatever the operating
+ * system allowed — slashes, `..`, colons, a leading dot, the lot. It is reduced
+ * to its basename and then to the characters a filename is allowed to be. The
+ * stamp is passed IN rather than read from the clock so this stays pure and the
+ * tests can pin it.
+ */
+function uploadName(original, stamp) {
+  const base = String(original == null ? "" : original).split(/[\\/]/).pop() || "report";
+  const safe = base.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[.-]+/, "").slice(0, 80) || "report";
+  return `${stamp}-${safe}`;
+}
+
+/** An ISO instant as `20260810-143002`, for stamping a filename or a run id. */
+function stampOf(iso) {
+  const s = String(iso == null ? "" : iso);
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+  return m ? `${m[1]}${m[2]}${m[3]}-${m[4]}${m[5]}${m[6]}` : s.replace(/[^0-9]/g, "").slice(0, 14);
+}
+
+/**
+ * What a run moved, in money.
+ *
+ * Reconciled and unreconciled are counted SEPARATELY rather than one being
+ * derived from the other, because a row can be neither: a receipt that failed
+ * outright never reached the statement and is not "unreconciled money sitting
+ * on the page", it is money that was never filed. Three buckets, not two.
+ */
+function runTotals(rows) {
+  const r = rows || [];
+  // The parsed cents if the row carries them, the raw text only as a fallback.
+  // Never round-trip through a float to get back to a number we already had.
+  const of = (x) => (Number.isFinite(x.amountCents) ? x.amountCents : cents(x.amount)) || 0;
+  const sum = (xs) => xs.reduce((a, x) => a + of(x), 0);
+  const failed = r.filter((x) => x.error);
+  const done = r.filter((x) => !x.error);
+  return {
+    rows: r.length,
+    amountCents: sum(r),
+    reconciledCents: sum(done.filter((x) => x.reconciliation === "Reconciled")),
+    unreconciledCents: sum(done.filter((x) => x.reconciliation !== "Reconciled")),
+    failedCents: sum(failed),
+  };
+}
+
+/**
+ * The rows a person still has to do something about, worst first.
+ *
+ * Feeds the overview's "Need your reaction" table, which the design ranks by
+ * dollar impact — so that is what this ranks by, not by row order. A row that
+ * reconciled cleanly is not here; a row nobody looked at because the run died
+ * before reaching it is, because "not checked" needs a person exactly as much
+ * as "not found" does.
+ */
+function needsReaction(runs, limit = 8) {
+  const out = [];
+  for (const run of runs || []) {
+    for (const r of run.rows || []) {
+      const failed = !!r.error;
+      const missing = r.reconciliation && r.reconciliation !== "Reconciled";
+      const odd = !!r.mismatch;
+      if (!failed && !missing && !odd) continue;
+      out.push({
+        runId: run.id,
+        source: run.source,
+        stream: run.source === "mint" ? "Mint" : "BPay",
+        // The booking is what a person acts on for BPay; Mint has no booking,
+        // so its own reference is the handle.
+        item: r.bookingNo || r.transNo || r.receiptNo || r.reference || `row ${r.n}`,
+        ref: r.reference || r.transNo || "",
+        issue: failed ? "Receipt failed"
+          : odd ? "Difference on the page"
+          : r.reconciliation === "Not checked" ? "Never checked — the run stopped"
+          : "Not on the statement page",
+        amountCents: (Number.isFinite(r.amountCents) ? r.amountCents : cents(r.amount)) || 0,
+        variance: r.mismatch || "",
+        proposal: r.why || "",
+        kind: failed || missing ? "need" : "rev",
+      });
+    }
+  }
+  return out.sort((a, b) => b.amountCents - a.amountCents).slice(0, limit);
+}
+
+/**
+ * Every run, as the Run overview screen needs it.
+ *
+ * Pure: a list of stored runs in, the dashboard's figures out. It lives here
+ * with the other decisions so the numbers on the screen are tested offline
+ * rather than eyeballed against a mockup — the overview is the one screen whose
+ * being wrong is invisible, because every figure on it looks like a figure.
+ */
+function overviewFrom(runs) {
+  const all = (runs || []).slice().sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")));
+  const done = all.filter((r) => r.status === "done");
+  const add = (key) => all.reduce((a, r) => a + ((r.totals && r.totals[key]) || 0), 0);
+
+  return {
+    runs: all.length,
+    completed: done.length,
+    failed: all.filter((r) => r.status === "failed").length,
+    running: all.filter((r) => r.status === "running").length,
+    // A combined run counts under BOTH, because it really did run both.
+    bySource: {
+      bpay: all.filter((r) => sourceBreakdown(r).bpay.rows > 0).length,
+      mint: all.filter((r) => sourceBreakdown(r).mint.rows > 0).length,
+    },
+    rows: all.reduce((a, r) => a + ((r.totals && r.totals.rows) || 0), 0),
+    amountCents: add("amountCents"),
+    reconciledCents: add("reconciledCents"),
+    unreconciledCents: add("unreconciledCents"),
+    receiptsFiled: all.reduce(
+      (a, r) => a + ((r.rows || []).filter((x) => x.receiptNo).length), 0),
+    transactionsCommitted: all.reduce(
+      (a, r) => a + ((r.committed && r.committed.ticked) || 0), 0),
+    lastRun: all[0] || null,
+    // Newest first, unabridged. The overview needs the last run that actually
+    // READ the statement balances, and that is not always the last run — one
+    // that failed before reaching the reconcile screen never saw them.
+    recentFull: all.slice(0, 20),
+    // Worst first across the last few runs — yesterday's unmatched receipt is
+    // still unmatched this morning, so it belongs on the list.
+    needsReaction: needsReaction(all.slice(0, 5)),
+    // The newest run's own log, newest line first. Only that run's: a timeline
+    // stitched from several is a timeline nobody can follow.
+    activity: ((all[0] || {}).activity || []).slice().reverse(),
+    recent: all.slice(0, 20).map((r) => ({
+      id: r.id,
+      startedAt: r.startedAt,
+      finishedAt: r.finishedAt || null,
+      source: r.source,
+      file: (r.file && r.file.name) || "",
+      statementDate: r.statementDate || "",
+      pageNumber: r.pageNumber || null,
+      status: r.status,
+      error: r.error || null,
+      rows: (r.totals && r.totals.rows) || 0,
+      // Per report, because one run can now carry both.
+      streams: sourceBreakdown(r),
+      // Cents, so the screen formats this the same way it formats the tiles.
+      // Handing out a pre-formatted string is how one money column ends up with
+      // thousands separators and the one beside it without.
+      amountCents: (r.totals && r.totals.amountCents) || 0,
+      amount: money((r.totals && r.totals.amountCents) || 0),
+      reconciled: (r.summary && r.summary.reconciled) || 0,
+      committed: !!(r.committed && r.committed.done),
+    })),
+  };
+}
+
+/**
+ * Counts for a run that carried BOTH reports.
+ *
+ * The two halves do different things, so a single flat count lies about one of
+ * them: only BPay rows can be allocated, and counting Mint's four settlements
+ * as "not allocated" would put four failures on a screen where nothing failed.
+ * Allocation figures come from the BPay rows only; reconciliation covers both.
+ */
+function summariseCombined(results) {
+  const r = results || [];
+  const bpay = r.filter((x) => x.src !== "mint");
+  const mint = r.filter((x) => x.src === "mint");
+  return {
+    total: r.length,
+    bpay: bpay.length,
+    mint: mint.length,
+    allocated: bpay.filter((x) => x.allocation === "Allocated").length,
+    partAllocated: bpay.filter((x) => x.allocation === "Part allocated").length,
+    notAllocated: bpay.filter((x) => x.allocation === "Not allocated").length,
+    reconciled: r.filter((x) => x.reconciliation === "Reconciled").length,
+    notReconciled: r.filter((x) => x.reconciliation === "Not reconciled").length,
+    mismatched: r.filter((x) => x.mismatch).length,
+    both: bpay.filter((x) => x.allocation === "Allocated" && x.reconciliation === "Reconciled").length,
+    failed: r.filter((x) => x.error).length,
+  };
+}
+
+/**
+ * A run's rows split by which report they came from.
+ *
+ * A combined run is one record with two kinds of row in it, and the overview's
+ * stream cards are per report — so the split is read off the rows' own `src`,
+ * falling back to the run's source for every run recorded before combined runs
+ * existed.
+ */
+function sourceBreakdown(run) {
+  const out = { bpay: { rows: 0, reconciled: 0 }, mint: { rows: 0, reconciled: 0 } };
+  for (const r of (run && run.rows) || []) {
+    const key = r.src === "mint" || (!r.src && run.source === "mint") ? "mint" : "bpay";
+    out[key].rows++;
+    if (r.reconciliation === "Reconciled") out[key].reconciled++;
+  }
+  return out;
+}
+
 module.exports = {
   cents, money, refKey, receiptKey,
+  summariseCombined, sourceBreakdown,
+  uploadName, stampOf, runTotals, needsReaction, overviewFrom,
   splitCsvLine, parseReconCsv,
   totalLeftToAllocate, chooseSegments, decideAllocation,
   matchAgainstStatement,
