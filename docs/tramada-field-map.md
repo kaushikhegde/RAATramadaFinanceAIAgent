@@ -243,6 +243,36 @@ overwrites it.
 
 Footer, live: `Amt Rcvd + Unalloc Rcpts − Seg Total − RO Amt = Unalloc`.
 
+#### Which rows appear — and what Select All really does
+
+Measured 10-Aug-2026, on the bookings `make-fixtures.js travelpay` created.
+
+| What the booking carries | Rows on this form |
+|---|---|
+| Flight segment, no costing | **none** — a flight is not allocatable until costed |
+| Flight segment + ticket costing | one, worth the costing's fare |
+| Hotel segment | one, worth **rate × nights × rooms** — not the rate |
+| Flight + costing + hotel | **two** |
+
+Verified on booking 13127: rate 100.00 over 2 nights showed Due inc GST 200.00.
+
+**Select All ticks every row and fills each with its full due. It does not stop
+at the amount received.** If the total exceeds it, Issue is refused outright:
+
+```
+Allocation cannot be greater than Amount Received
+```
+
+and the message arrives as a banner on a page that no longer shows which row
+was to blame. Three receipts died this way on 10-Aug-2026 — bookings 13196,
+13199 and 13202 — each receipted for its ticket fare while Select All also
+ticked its hotel.
+
+So a caller passing `"ALL"` is promising the receipt covers **every** row on
+the form, not just the ones it was thinking about. `allocateSegments` now adds
+the filled boxes up and refuses before Issue rather than after; see
+CODE-REVIEW.md §4, which is guarded but not yet fixed at the source.
+
 ---
 
 ## 5. Finance → Bank Statements
@@ -707,3 +737,245 @@ reconcile page those rows read `Rec/Pay Type = Creditor Payment`, `Trans Type = 
 Its sort order is undocumented, so `findIssuedPayment()` searches the whole list
 for the reference AND amount it just filed rather than trusting the top row —
 see CODE-REVIEW.md §2 for what trusting it costs.
+
+---
+
+## The IPSI flow — Finance Receipts, mapped live (10-08-2026)
+
+Three screens, and the third one is **a separate browser WINDOW**.
+
+### 1. The mode chooser — `finance/finance-receipts.htm?mode=edit&id=1`
+
+Measured 10-08-2026. Same ids as the bank-statements chooser, which is worth
+knowing because they are on different screens and could easily not have been:
+
+```
+#form_selection_search   radio, name=selection, value="search"  ← CHECKED by default
+#form_selection_issue    radio, name=selection, value="issue"   ← the IPSI path
+#form_continueButton     "Continue"     (also a plain "Cancel" with no id)
+```
+
+Search is checked on load, so the issue radio has to be checked explicitly.
+
+### 2. The search — `finance/finance-receipts-issue.htm`
+
+```
+#receiptType         Receipt Category  ← FINANCE_MERCHANT_PAYMENT_RECEIPT
+#agencyBankAccount   Bank Account      ← 1 = [TRUST] Trust Account
+#debtor              Debtor Code       ← autocomplete, see below
+#fromTransactionDate #toTransactionDate  dd-mm-yyyy
+#sortBy              "" | BOOKING_NUMBER | REFERENCE | DATE_OF_ISSUE | CARD_HOLDER | TRANS_NUMBER
+#sortOrder           ASCENDING | DESCENDING   ← defaults ASCENDING, we want DESCENDING
+#goButton "Go"  #backButton  #form_clearButton  #form_advancedSearch
+```
+
+`#receiptType`'s full vocabulary, read off the dropdown:
+`Finance Client Payment Receipt` · `Debtor Payment Receipt` ·
+`Creditor Refund Receipt` · `Pay Direct Comm. Receipt` · `Override Receipt` ·
+`Finance Merchant Payment Receipt`.
+
+**`#debtor` is an autocomplete, not a select.**
+
+```html
+<input id="debtor" class="autocomplete-text" autocomplete="off"
+       data-field-type="ctrl-type-AutoCompleteAndEditToggleTextF">
+```
+
+It has bound `input`/`change`/`click` handlers, so typing "Master" and taking
+the suggestion is the only way in — the value that ends up there is
+`[MASTER] [] MasterCard/Visa/Debit`. This is the same widget `tramada-segments.js`
+already fights: its suggestions render as plain `li`/`div`/`td`/`a` with no
+stable class, which is why `_findSuggestion` locates them **geometrically**.
+Reuse that, do not invent a selector.
+
+**`#goButton` is disabled after it has been clicked — confirmed 10-08-2026.**
+Reloading `finance-receipts-issue.htm` brings it back enabled with every field
+blank. So it is a submit-once guard: Go cannot be clicked twice on one page
+load, and a retry means reloading the search form and filling it again. The
+`sortOrder` default is `ASCENDING`, so Descending has to be set every time.
+
+### FILL THE DEBTOR LAST — the selects wipe it (measured 10-08-2026)
+
+This is what made the first live attempt fail with **"Debtor Code must be
+entered"**, and it is not obvious from looking at the form.
+
+There is **no hidden companion field**. The form posts the visible `#debtor`
+text verbatim — a failed submit was seen posting `debtor=Mas`. So whatever is
+in that box at submit time is the whole story.
+
+And **changing `#receiptType`, `#agencyBankAccount` or `#sortOrder` clears
+`#debtor`.** Pick the debtor first and then set a dropdown, and the debtor is
+silently empty again while still looking filled a moment earlier. Measured: the
+field read `[MASTER] [] MasterCard/Visa/Debit`, three selects were set, and the
+field read `""`.
+
+The order that works, in full:
+
+```
+1. #receiptType      = FINANCE_MERCHANT_PAYMENT_RECEIPT
+2. #agencyBankAccount= 1                       ([TRUST] Trust Account)
+3. #sortOrder        = DESCENDING              (it defaults to ASCENDING)
+4. #toTransactionDate                          (dd-mm-yyyy)
+5. #debtor           — click, type, pick from the list        ← LAST
+6. verify the form would post debtor=[MASTER] …, THEN click #goButton
+```
+
+Typing can also be **truncated** — one attempt left `Mas` in the box from six
+real keystrokes, because each character fires a DWR lookup that rewrites the
+input. Read the value back before clicking the suggestion, and read the whole
+field back again before pressing Go. Both are cheap; a wrong debtor silently
+searches the wrong ledger.
+
+### The Debtor Code autocomplete DOES have a hook
+
+This corrects the note in §"The dropdown has no hook" above, which is about the
+segment forms' widget. This one is different, and better:
+
+```
+li.selected < ul < div#debtor_auto_complete_div.auto_complete < dt.input < dl.edit
+```
+
+The container id is the field id plus `_auto_complete_div`, so `#creditor`
+gets `#creditor_auto_complete_div`. The highlighted row carries `.selected`.
+No geometry needed — `#debtor_auto_complete_div li` is enough.
+
+**It only appears for REAL keystrokes.** Setting `.value` through the native
+setter and dispatching `input` (the `reactSet` approach) leaves the field
+reading "Master" and no list at all — measured. Click the field, type, then
+click the `li`; the field ends up holding `[MASTER] [] MasterCard/Visa/Debit`.
+
+### 3. Go opens a NEW WINDOW — not a tab, not the same page
+
+The form's `target` is empty and `#goButton` carries no inline `onclick`, so the
+window is opened from JavaScript: `pop-up.js` holds seven `window.open` calls
+and exposes a global `PopUp`.
+
+**The popup cannot be reached by URL either — confirmed 10-08-2026.** Opening
+`finance-merchant-payment-receipt.htm?mode=add&receiptType=…&selectedDebtor=MASTER&agencyBankAccount=1`
+directly in a tab returns Tramada's **Error Page**. The search results live in a
+server-side container (the search form carries `#dataContainerId`), so the popup
+only exists as the answer to a Go submit — it cannot be recreated from a URL.
+
+**The Chrome extension cannot see that window — confirmed 10-08-2026.** After
+clicking Go, the extension's tab list was unchanged: the search page had
+reloaded (its own `action`), no results rendered into it, and the popup was
+nowhere in the tab group. So this screen cannot be mapped through the extension
+the way the reconcile and creditor-payment screens were; what is written below
+comes from the client's screenshots plus the id conventions the rest of Tramada
+follows.
+
+**Playwright is not the extension, and does see it.** A `window.open` popup
+arrives as a `Page` on the browser context, so the run can drive it — it just
+has to be listening when it opens:
+
+```js
+const [popup] = await Promise.all([
+  page.waitForEvent("popup", { timeout: 15000 }),
+  page.click("#goButton"),
+]);
+```
+
+A popup that opens while nothing is listening is lost, and every selector after
+it would run against the search page instead — finding nothing, and looking for
+all the world like an empty result. `enterNewBookingCard` in
+`tramada-receipt.js` already does this for the credit-card form, including
+fallbacks for same-page and iframe; that is the pattern to copy.
+
+### 4. The popup — `finance/finance-merchant-payment-receipt.htm`
+
+```
+?mode=add&isShowUnallocatedReceipts=false
+&receiptType=FINANCE_MERCHANT_PAYMENT_RECEIPT&selectedDebtor=MASTER&agencyBankAccount=…
+```
+
+Measured 10-08-2026. The popup **can** be loaded in an ordinary tab after all —
+but only with the live `dataContainerId` from a real Go submit in the URL
+(`…&dataContainerId=161&…`). Without it, Error Page. So: press Go, take the
+popup's address, and it opens anywhere; there is no way to conjure one.
+
+```
+#receipttransactionTypeCode   ""  CQ=Cheque  ET=EFT     ← same two as the payment form
+#receiptagencyBankAccount     [TRUST] Trust Account
+#debtor                       "MasterCard/Visa/Debit"   READONLY
+#receiptpayerName  #receiptdateReceived (dd-mm-yyyy)
+#receiptreceiptAmount  #receiptreferenceNumber
+#receiptchequeDrawer #receiptchequeBank #receiptchequeBranch   ← Cheque only
+#roundRemaining
+#cancel   #preview   #issue
+#documentTemplate "Finance Merchant Payment Receipt" RO
+#documentType   RECEIPT_PLUS_ALLOCATION | (one other)
+email block: #useEmail #emailSubject #tos #emailFormat …   ← leave alone
+```
+
+### Credit Card Swipe lives on the BOOKING form, not this one
+
+The receipts that appear in *Receipts To Reconcile* are typically raised as
+**Credit Card Swipe** — but that is a property of how they were created, on
+`booking-client-payment-receipt.htm`, whose `#receipttransactionTypeCode`
+offers five types (`Cash | Cheque | Credit Card CCCF | Credit Card Swipe | EFT`).
+
+**This screen's select is a different one with a different vocabulary:** `""`,
+`CQ=Cheque`, `ET=EFT`. There is no swipe option here and there is nothing to
+choose — the merchant payment receipt is EFT.
+
+Nor can a run filter on it: *Receipts To Reconcile* has no transaction-type
+column, so the type of the underlying receipt is invisible on this page. IPSI
+matching therefore ignores it entirely (Merchant Reference, falling back to
+Booking No. + Amount).
+
+One consequence for fixtures: raising a Credit Card Swipe receipt goes through
+`enterNewBookingCard`, which types a real PAN into Tramada's card form. That is
+why `make-fixtures.js` has no `ipsi` subcommand that creates them — the receipts
+are raised by hand and the fixture only writes the CSV that points at them.
+
+### THERE ARE TWO `#selectAll` BUTTONS, one per table
+
+`document.querySelectorAll("#selectAll").length === 2` — a duplicated id, one
+above *Payments To Reconcile* and one above *Receipts To Reconcile*. This is the
+same trap as the booking receipt form, where the segments one is the second.
+Never address it as `#selectAll`; scope it to the table you mean. An IPSI run
+should not press either — it ticks only the rows it matched.
+
+### The row checkbox has NO id and NO name
+
+```html
+<input type="checkbox" data-fn-click="…" value="22409">
+```
+
+Its whole attribute list is `type, data-fn-click, value`. The `value` is the
+receipt's internal record id — **not** the receipt number — and it is the only
+handle on a row. It carries a bound `click` handler, so `.checked = true` will
+not do: real clicks, same rule as everywhere else on this portal.
+
+Because the box has no `name`, it does not post as an ordinary form field; the
+handler gathers the selection, exactly like `#hiddenSelectedStatementRecords` on
+the reconcile screen. So a tick that did not fire its handler is a tick the
+server never hears about — verify each one.
+
+Scope the selector to the Receipts table: `useEmail`, `ccEmails` and `bccEmails`
+are also checkboxes on this page, though their value is `"on"` rather than a
+record id.
+
+### The two tables
+
+```
+Payments To Reconcile   Payment No. | Booking No. | Payment Date | Card Holder | Reference | Paid To | Refund Amount | Due Amount | A
+Receipts To Reconcile   Receipt No. | Booking No. | Date Received | Card Holder | Reference | Received From | Receipt Amount | Due Amount | A
+```
+
+Each has its own "Allocated Total: 0.00" footer. Real rows, read off the live
+screen:
+
+```
+R.0000009412 | 13184 | 10-08-2026 | user demo | abc456 | USER/DEMO MR | 9623.23 | 9623.23
+R.0000009411 | 13181 | 10-08-2026 | user demo | abc123 | USER/DEMO MR |  200.48 |  200.48
+R.0000009410 | 13178 | 10-08-2026 | user demo |        | USER/DEMO MR | 9623.23 | 9623.23
+R.0000009405 | 13160 | 10-08-2026 | user demo |        | USER/DEMO MR |  400.97 |  400.97
+```
+
+**Note the Reference column is blank on two of the four.** That is exactly why
+IPSI matching falls back to Booking No. + Amount — and note the two 9623.23 rows
+share an amount, so amount alone would be ambiguous.
+
+`Amount Received` is the total of the rows actually ticked, not the file's
+headline settlement figure — a receipt has to balance against what it allocates.

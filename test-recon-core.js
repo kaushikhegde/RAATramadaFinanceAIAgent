@@ -250,38 +250,54 @@ console.log("\ndecision 2 — reconciled by RECEIPT NUMBER, or not");
 
 console.log("\nthe shipped bookings.json actually exercises both paths");
 {
-  // The point of this one: with arbitrary amounts every row comes back "Not
-  // allocated" and a run demonstrates nothing. bookings.json's amounts are
-  // chosen against tramada-statement-lines.csv so that a real run produces a
-  // mix — and that pairing is a property of two files that can drift apart,
-  // so it is asserted rather than eyeballed.
   const fs = require("fs"), path = require("path");
   const doc = JSON.parse(fs.readFileSync(path.join(__dirname, "bookings.json"), "utf8"));
-  // Each booking is two segments: hotel (rate x nights) and ticket (fare).
-  // The amounts are chosen so one segment exactly matches one of the two CSV
-  // rows landing on that booking — see bookings.json's own comment.
-  // Whatever the booking actually carries — booking 1 is hotel-only (no
-  // flight, no costing), so a test that assumed two segments per booking would
-  // throw rather than fail, which reads as a broken test instead of a broken
-  // fixture.
+
+  /* ONE SEGMENT, ONE COSTING — asserted, because a live run died of the
+     alternative.
+
+     The fixture used to give each booking a flight AND a hotel. A receipt
+     raised for the costing's fare is allocated with "ALL", which clicks
+     Tramada's Select All, which ticks EVERY row — the hotel included. On
+     10-Aug-2026 all three TravelPay receipts came back
+
+         Allocation cannot be greater than Amount Received
+
+     (200.00 receipted, 200.00 + 60.00 allocated; 250.00 receipted, 250.00 +
+     790.00 allocated). A flight carries no allocatable row of its own — its
+     ticket costing is the row — so one flight plus one costing is exactly one
+     row worth exactly the fare, and Select All cannot exceed the receipt by
+     construction. This is here so that cannot drift back unnoticed. */
+  check("three bookings", doc.bookings.length, 3);
+  ok("every booking has exactly one segment",
+    doc.bookings.every((b) => (b.segments || []).length === 1),
+    JSON.stringify(doc.bookings.map((b) => (b.segments || []).length)));
+  ok("and exactly one costing",
+    doc.bookings.every((b) => (b.costings || []).length === 1),
+    JSON.stringify(doc.bookings.map((b) => (b.costings || []).length)));
+  ok("and no hotel to widen Select All past the fare",
+    doc.bookings.every((b) => !(b.segments || []).some((s) => s.kind === "hotel")),
+    JSON.stringify(doc.bookings.map((b) => (b.segments || []).map((s) => s.kind))));
+
+  // What the receipt form will show: one row per costing, worth the fare.
   const books = doc.bookings.map((b, i) => {
     const out = [];
-    const h = b.segments.find((s) => s.kind === "hotel");
+    const h = (b.segments || []).find((s) => s.kind === "hotel");
     if (h) out.push({ segId: `HTL${i}`, debtorDue: (h.rate * h.nights).toFixed(2) });
     for (const [n, c] of (b.costings || []).entries()) {
       out.push({ segId: `TKT${i}_${n}`, debtorDue: c.fare });
     }
     return out;
   });
-  check("booking 1 is hotel-only", books[0].length, 1);
-  check("and it is worth exactly CSV row 1", C.cents(books[0][0].debtorDue), 15000);
-  check("three bookings", books.length, 3);
-  // rate x NIGHTS, not rate. Verified live on booking 13127: 100.00 over
-  // 2 nights produced Due inc GST 200.00.
-  check("a nightly rate is multiplied out",
-    C.cents(doc.bookings[0].segments.find((x) => x.kind === "hotel").rate) * 2,
-    C.cents(books[0][0].debtorDue));
+  ok("so everything Select All can tick totals exactly the fare",
+    books.every((rows, i) =>
+      rows.reduce((a, r) => a + C.cents(r.debtorDue), 0) === C.cents(doc.bookings[i].costings[0].fare)),
+    JSON.stringify(books));
 
+  /* And the amounts are chosen, not arbitrary: with arbitrary fares every row
+     comes back "Not allocated" and a run demonstrates nothing. The pairing
+     below is a property of two files that can drift apart, so it is asserted
+     rather than eyeballed. */
   // From statement-rows.json, not the CSV: the CSV's Booking No column is empty
   // until run-bookings.js has run, and parseReconCsv correctly refuses a row it
   // cannot act on — reading the CSV here would assert against zero rows.
@@ -304,7 +320,7 @@ console.log("\nthe shipped bookings.json actually exercises both paths");
   });
 
   check("the run comes back mixed, not uniform",
-    got, ["Allocated", "Allocated", "Not allocated", "Not allocated", "Part allocated", "Allocated"]);
+    got, ["Part allocated", "Allocated", "Not allocated", "Not allocated", "Not allocated", "Allocated"]);
   ok("all three outcomes appear", new Set(got).size === 3, JSON.stringify(got));
 }
 

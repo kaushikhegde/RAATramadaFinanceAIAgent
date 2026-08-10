@@ -180,6 +180,26 @@ created.
 whole chain against a single booking, which is worth doing before `mint` —
 that is the one that moves money out.
 
+### Every run signs its own references
+
+Each run rolls a five-character tag and prints it before it starts:
+
+```
+run tag X8KGJ — references look like TP-X8KGJ-13196
+```
+
+Every reference it writes carries it — `BP-X8KGJ-13187`, `TP-X8KGJ-13196`,
+`MP-X8KGJ-13199`, `IP-X8KGJ-0001` — so one search in Tramada finds a whole
+run, and no two runs can be mistaken for each other. They used to be
+`TRAVELPAY-13196` and, for IPSI, `FIXTURE0001` on every run ever made; a
+receipt is found again *by* its reference, so a repeat lets a run read back an
+earlier attempt's transaction and report the wrong number. `--tag X8KGJ` pins
+it when you want a second run findable beside the first.
+
+One booking, one segment, one costing — see `bookings.json`'s own comment.
+A receipt allocated with `"ALL"` clicks Tramada's Select All, which ticks
+*every* row on the form, so a second row is a receipt that gets refused.
+
 ## Where the portal is written down
 
 `docs/tramada-field-map.md` — routes, field ids, the real dropdown

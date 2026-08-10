@@ -9,7 +9,7 @@
     "dev": "CDP_MODE=external DEBUG=true node --watch server.js",
     "start:chrome": "./start-chrome.sh",
     "build": "node build-recon.js",
-    "test": "node test-xlsx-lite.js && node test-statement-csv.js && node test-recon-core.js && node test-travelpay.js && node test-run-store.js",
+    "test": "node test-xlsx-lite.js && node test-statement-csv.js && node test-recon-core.js && node test-travelpay.js && node test-ipsi.js && node test-run-store.js && node test-receipt-guard.js && node test-fixtures.js",
     "test:core": "node test-recon-core.js",
     "test:xlsx": "node test-xlsx-lite.js",
     "shots": "node shot-recon.js && node shot-recon-run.js && node shot-mint-run.js && node shot-overview.js && node shot-both.js",
@@ -19,7 +19,11 @@
     "fixtures:bpay": "node make-fixtures.js bpay",
     "fixtures:travelpay": "node make-fixtures.js travelpay",
     "fixtures:mint": "node make-fixtures.js mint",
-    "fixtures": "node make-fixtures.js all"
+    "fixtures": "node make-fixtures.js all",
+    "test:ipsi": "node test-ipsi.js",
+    "test:guard": "node test-receipt-guard.js",
+    "test:fixtures": "node test-fixtures.js",
+    "fixtures:ipsi": "node make-fixtures.js ipsi"
   },
   "dependencies": {
     "dotenv": "^16.4.0",

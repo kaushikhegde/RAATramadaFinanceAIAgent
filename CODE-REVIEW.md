@@ -143,6 +143,29 @@ shortcut is what forgets them.
 **Fix.** Return `"ALL"` only when `picked.length === segments.length`; otherwise
 return the explicit `[{segId, amount}]` array, which already works.
 
+> **Seen in the wild, 10-Aug-2026 — partly guarded, not yet fixed.**
+>
+> `make-fixtures.js travelpay` raised three receipts for the ticket fare and
+> passed `"ALL"`. Select All ticked the hotel row as well and Tramada refused
+> every one of them: *"Allocation cannot be greater than Amount Received"*
+> (bookings 13196, 13199, 13202). Same shortcut, a different consequence from
+> the two above — over-allocation rather than under.
+>
+> Since fixed **around** the defect, not in it:
+> - `allocateSegments` now adds up what Select All actually filled and refuses
+>   before Issue, naming the rows (`tramada-receipt.js`,
+>   `test-receipt-guard.js`). Nothing is committed when it fires.
+> - `runCreditorPayment` accepts `amount: "AUTO"` and refuses the same
+>   mismatch on the payment form (`tramada-payment.js`).
+> - `bookings.json` is one segment and one costing per booking, so the fixture
+>   cannot produce a second row for Select All to find; asserted in
+>   `test-recon-core.js`.
+>
+> `decideAllocation` itself is unchanged, so the two cases above — a negative
+> segment and a $0 segment — are still live. The guard now turns them into a
+> clear refusal instead of a wrong "settled exactly", which is better but is
+> not the fix written above.
+
 ---
 
 ### 5. A segment that moved between probe and commit is silently dropped

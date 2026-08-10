@@ -1,34 +1,52 @@
 {
   "_comment": [
-    "run-bookings.js input. Booking 1 is the SMALL END-TO-END TEST:",
+    "run-bookings.js / make-fixtures.js input.",
     "",
-    "  node run-bookings.js --limit 1",
-    "  node statement-csv.js --rows statement-rows.json --bookings created-bookings.json --in-order --limit 1",
+    "ONE SEGMENT, ONE COSTING PER BOOKING — and that is the whole point.",
     "",
-    "  Booking 1  hotel only, 150.00 (75.00 x 2 nights). No flight, no costing.",
-    "     CSV row 1 is 150.00 -> settles the one segment exactly -> Allocated",
+    "These bookings used to carry a flight AND a hotel. On 10-Aug-2026 that shape",
+    "killed a real TravelPay run: all three receipts came back",
     "",
-    "  NOTE: with a SINGLE segment, picking 'the only segment' is picking all of",
-    "  them, so this goes down the proven Select All path. The per-segment",
-    "  tick-then-type path only runs when a booking has more than one segment and",
-    "  the receipt covers some of them — bookings 2 and 3 below do that.",
+    "    Allocation cannot be greater than Amount Received",
     "",
-    "Bookings 2 and 3 are the fuller set, run with all six CSV rows:",
+    "because the receipt was raised for the COSTING's fare while `allocation:",
+    "\"ALL\"` clicks Tramada's Select All, which ticks EVERY allocatable row —",
+    "the hotel as well. Booking 13199 was receipted for 200.00 and Select All",
+    "allocated 200.00 + 60.00. Booking 13202 was receipted for 250.00 and Select",
+    "All allocated 250.00 + 790.00. Tramada was right to refuse both.",
     "",
-    "  booking 2  hotel  60.00, ticket 200.00",
-    "     row 2  200.00  -> settles the ticket exactly        Allocated",
-    "     row 5  100.00  -> settles the 60.00 hotel only      Part allocated",
+    "A flight segment produces no allocatable row of its own — its ticket costing",
+    "does. So one flight + one ticket costing = exactly ONE row on the receipt",
+    "form, worth exactly the fare. Select All then cannot exceed the receipt, by",
+    "construction rather than by arithmetic that has to stay in step.",
     "",
-    "  booking 3  hotel 790.00, ticket 250.00",
-    "     row 3  200.00  -> nothing is small enough           Not allocated",
-    "     row 6  790.00  -> settles the hotel exactly         Allocated",
+    "Keep it that way. If a booking ever needs a hotel as well, the receipt has",
+    "to be raised for the SUM of every allocatable row, or allocate explicitly",
+    "instead of \"ALL\" — see make-fixtures.js `costedCents`.",
     "",
-    "THE HOTEL `rate` IS PER NIGHT — verified live on booking 13127, where rate",
-    "100.00 over 2 nights produced Due inc GST 200.00. A segment's Debtor Due is",
-    "rate x nights for the hotel, and the fare for the ticket.",
+    "  THE SMALL END-TO-END TEST",
     "",
-    "A receipt settles WHOLE segments only, picking the combination whose total is",
-    "the largest that does not exceed it.",
+    "    node make-fixtures.js travelpay --limit 1",
+    "",
+    "  THE AMOUNTS ARE CHOSEN, NOT ARBITRARY.",
+    "",
+    "  With arbitrary fares every row of a run comes back \"Not allocated\" and",
+    "  the run demonstrates nothing. Against statement-rows.json's six rows —",
+    "  150.00, 200.00, 200.00, 145.54, 100.00, 790.00, dealt round-robin — these",
+    "  three fares produce all three outcomes:",
+    "",
+    "    booking 1  fare 145.54",
+    "       row 1  150.00  -> settles the fare, 4.46 left over   Part allocated",
+    "       row 4  145.54  -> nothing left outstanding           Not allocated",
+    "    booking 2  fare 200.00",
+    "       row 2  200.00  -> settles the fare exactly           Allocated",
+    "       row 5  100.00  -> nothing left outstanding           Not allocated",
+    "    booking 3  fare 790.00",
+    "       row 3  200.00  -> nothing is small enough            Not allocated",
+    "       row 6  790.00  -> settles the fare exactly           Allocated",
+    "",
+    "  test-recon-core.js asserts that pairing, because it is a property of two",
+    "  files that can quietly drift apart.",
     "",
     "clientCode must already exist in Tramada (SURNAME/FIRSTNAME), and creditor",
     "must be a real Tramada creditor — an unmatched one stops the run and asks."
@@ -36,7 +54,7 @@
   "dryRun": false,
   "bookings": [
     {
-      "label": "SYD hotel only, 2 nights",
+      "label": "MEL → SYD",
       "clientCode": "GRAY/SPIDER",
       "booking": {
         "originCode": "MEL",
@@ -55,24 +73,33 @@
       },
       "segments": [
         {
-          "kind": "hotel",
-          "hotelName": "Test Hotel Sydney",
-          "cityCode": "SYD",
-          "roomType": "Standard King",
-          "checkInDate": "2026-09-14",
-          "checkOutDate": "2026-09-16",
-          "creditor": "READY ROOMS",
-          "rate": "75.00",
-          "rooms": 1,
-          "nights": 2,
+          "kind": "flight",
+          "airline": "QF",
+          "flightNumber": "400",
+          "class": "Economy",
+          "fromCity": "MEL",
+          "toCity": "SYD",
+          "departureDate": "2026-09-14",
+          "departureTime": "08:00",
+          "arrivalDate": "2026-09-14",
+          "arrivalTime": "09:25",
           "status": "HK"
         }
       ],
-      "costings": [],
-      "_segments": "hotel 150.00 (=75.00 x 2 nights) — the only segment"
+      "costings": [
+        {
+          "creditor": "READY ROOMS",
+          "airline": "QF",
+          "class": "Economy",
+          "fare": "145.54",
+          "passengerType": "Adult",
+          "fareType": "Published"
+        }
+      ],
+      "_segments": "ticket 145.54 — the only allocatable row"
     },
     {
-      "label": "ADL → BNE, 3 nights",
+      "label": "ADL → BNE",
       "clientCode": "GRAY/SPIDER",
       "booking": {
         "originCode": "ADL",
@@ -102,19 +129,6 @@
           "arrivalDate": "2026-09-21",
           "arrivalTime": "10:05",
           "status": "HK"
-        },
-        {
-          "kind": "hotel",
-          "hotelName": "Test Hotel Brisbane",
-          "cityCode": "BNE",
-          "roomType": "Standard Queen",
-          "checkInDate": "2026-09-21",
-          "checkOutDate": "2026-09-24",
-          "creditor": "READY ROOMS",
-          "rate": "20.00",
-          "rooms": 1,
-          "nights": 3,
-          "status": "HK"
         }
       ],
       "costings": [
@@ -127,10 +141,10 @@
           "fareType": "Published"
         }
       ],
-      "_segments": "hotel 60.00 (=20.00 x 3 nights), ticket 200.00"
+      "_segments": "ticket 200.00 — the only allocatable row"
     },
     {
-      "label": "SYD → OOL, 4 nights",
+      "label": "SYD → OOL",
       "clientCode": "GRAY/SPIDER",
       "booking": {
         "originCode": "SYD",
@@ -160,19 +174,6 @@
           "arrivalDate": "2026-10-05",
           "arrivalTime": "12:40",
           "status": "HK"
-        },
-        {
-          "kind": "hotel",
-          "hotelName": "Test Hotel Gold Coast",
-          "cityCode": "OOL",
-          "roomType": "Ocean View",
-          "checkInDate": "2026-10-05",
-          "checkOutDate": "2026-10-09",
-          "creditor": "READY ROOMS",
-          "rate": "197.50",
-          "rooms": 1,
-          "nights": 4,
-          "status": "HK"
         }
       ],
       "costings": [
@@ -180,12 +181,12 @@
           "creditor": "READY ROOMS",
           "airline": "QF",
           "class": "Economy",
-          "fare": "250.00",
+          "fare": "790.00",
           "passengerType": "Adult",
           "fareType": "Published"
         }
       ],
-      "_segments": "hotel 790.00 (=197.50 x 4 nights), ticket 250.00"
+      "_segments": "ticket 790.00 — the only allocatable row"
     }
   ]
 }

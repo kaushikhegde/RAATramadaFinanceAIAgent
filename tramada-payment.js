@@ -288,6 +288,9 @@ async function findIssuedPayment(page, { reference, amountCents }) {
  *   creditor    the creditor's name as the form spells it, e.g. "READY ROOMS"
  *   payment     { transactionType?, amount, reference, paymentDate?, payeeName?,
  *                 allocation? }  allocation defaults to "ALL"
+ *                 amount may be "AUTO" — pay whatever the form's Creditor
+ *                 Payable rows add up to, rather than a figure worked out
+ *                 beforehand that has to stay in step with them
  *   dryRun      fill and Preview, never Issue
  * @returns {Promise<{segments, staged, payment?, committed}>}
  */
@@ -302,8 +305,18 @@ async function runCreditorPayment({
   if (!bookingNo) throw new Error("bookingNo is required.");
   if (!creditor) throw new Error("creditor is required — the form only offers ones this booking owes.");
   if (!payment.reference) throw new Error("payment.reference is required.");
-  const amountCents = core.cents(payment.amount);
-  if (amountCents == null) throw new Error(`payment.amount "${payment.amount}" could not be read as an amount.`);
+  /* "AUTO" = pay what the form says is payable.
+     The receipt side of this project lost three live receipts to a figure
+     worked out from a JSON fixture rather than from Tramada — Select All
+     allocated more than the amount and every receipt was refused. A payment
+     allocated with "ALL" has exactly the same failure mode, so the caller is
+     allowed to stop guessing: the amount is read off the form, below, once the
+     payable rows are known. */
+  const AUTO = /^auto$/i.test(String(payment.amount || "").trim());
+  let amountCents = AUTO ? null : core.cents(payment.amount);
+  if (!AUTO && amountCents == null) {
+    throw new Error(`payment.amount "${payment.amount}" could not be read as an amount.`);
+  }
 
   const browser = await openBrowser();
   let page;
@@ -334,11 +347,47 @@ async function runCreditorPayment({
       throw new Error(`Booking ${bookingNo} has nothing payable to ${creditor}.`);
     }
 
+    const payableCents = segments.reduce((a, s) => a + (s.payableCents || 0), 0);
+    if (AUTO) {
+      if (!payableCents) {
+        throw new Error(
+          `Booking ${bookingNo} owes ${creditor} nothing — every Creditor Payable row reads 0.00.`
+        );
+      }
+      amountCents = payableCents;
+      onProgress(55, `The form says $${core.money(payableCents)} is payable — paying that.`);
+    } else if ((payment.allocation || "ALL") === "ALL" && payableCents > amountCents) {
+      // Refused here, not by Tramada after Issue. "ALL" allocates every payable
+      // row in full, so a payment smaller than their total cannot be filed —
+      // and the server's answer to that is a banner on a page that no longer
+      // shows the rows.
+      throw new Error(
+        `Allocation cannot be greater than the payment: this payment is for ` +
+        `$${core.money(amountCents)} but ${segments.length} payable row(s) total ` +
+        `$${core.money(payableCents)}. Pay the full $${core.money(payableCents)} (or pass ` +
+        `amount:"AUTO"), or allocate explicitly instead of "ALL". Nothing was issued.`
+      );
+    }
+
     onProgress(60, "Filling the payment…");
     await typeInto(page, "#paymentpayeeName", payment.payeeName || chosen.label.replace(/\s*\([^)]*\)\s*$/, ""));
     await typeInto(page, "#paymentpaymentDate", core.toTramadaDate(payment.paymentDate || ""));
     await typeInto(page, "#paymentpaymentAmount", core.money(amountCents));
     await typeInto(page, "#paymentreferenceNumber", payment.reference);
+    /* Read it back, before Issue.
+       `findIssuedPayment` looks the payment up by reference AND amount. A field
+       that truncates or rewrites what was typed still lets the payment go out —
+       real money leaves the trust account — and only the confirmation fails,
+       reporting the payment as missing rather than as renamed. */
+    const backRef = await page.inputValue("#paymentreferenceNumber").catch(() => null);
+    if (backRef != null && backRef !== String(payment.reference)) {
+      throw new Error(
+        `The payment reference did not stick: typed "${payment.reference}", the form reads ` +
+        `"${backRef}"` +
+        (backRef.length < String(payment.reference).length ? " (truncated — use a shorter reference)" : "") +
+        ". Nothing was issued."
+      );
+    }
 
     onProgress(70, "Allocating…");
     const allocated = await allocate(page, payment.allocation || "ALL", segments);

@@ -7,7 +7,8 @@
  *   node make-fixtures.js bpay
  *   node make-fixtures.js travelpay
  *   node make-fixtures.js mint
- *   node make-fixtures.js all            # all three, in order — never in parallel
+ *   node make-fixtures.js ipsi
+ *   node make-fixtures.js all            # all four, in order — never in parallel
  *
  * Each subcommand creates real bookings through the same `runFullBooking` path
  * the rest of the project uses, then writes the report file whose references
@@ -27,7 +28,7 @@
  *
  * The CSVs are written to csv_uploads/ — the folder to open when you go to
  * upload them. The bookings each run created are listed beside this file as
- * created-bookings-{bpay,travelpay,mint}.json.
+ * created-bookings-{bpay,travelpay,mint}.json. `ipsi` creates no bookings.
  *
  *   bpay       bookings + costings            → csv_uploads/tramada-statement-lines.csv
  *              NO RECEIPTS, on purpose. Raising the receipt is the BPay run's
@@ -45,7 +46,21 @@
  *              Real creditor payments to READY ROOMS. Each row's Transaction
  *              Reference is the `P.` number Tramada issued.
  *
- *   all        the three above, in order. Never in parallel — see makeAll().
+ *   ipsi       bookings + costings, then WAITS while you raise the Credit
+ *              Card Swipe receipts, then writes the IPSI file pointing at
+ *              them → csv_uploads/ipsi-payments.csv
+ *              `--read-only` skips the bookings and takes what is waiting.
+ *
+ *   all        the four above, in order. Never in parallel — see makeAll().
+ *
+ * ── Why `ipsi` creates nothing ───────────────────────────────────────────────
+ *
+ * The bookings ARE created, like the other three. The RECEIPTS are not: an IPSI
+ * settlement covers **Credit Card Swipe** receipts, and Tramada's swipe path
+ * types a real card number into its card form. So the script makes the
+ * bookings, names them, and waits while you raise the receipts — then reads
+ * what is waiting and writes the file. Only receipts against the bookings that
+ * run created are used, so a stray receipt cannot wander into the fixture.
  *
  * ── Mint pays money OUT ─────────────────────────────────────────────────────
  *
@@ -65,6 +80,8 @@ const core = require("./recon-core");
 const { runFullBooking } = require("./tramada-segments");
 const { runTramadaReceipt } = require("./tramada-receipt");
 const { runCreditorPayment } = require("./tramada-payment");
+const { searchIssueReceipts, readReceiptsToReconcile } = require("./tramada-ipsi");
+const { chromium } = require("playwright");
 
 const args = process.argv.slice(2);
 const has = (f) => args.includes(f);
@@ -97,6 +114,43 @@ const shortPath = (p) => path.relative(__dirname, p) || path.basename(p);
 // on the booking are offered by the form, so this has to match what the
 // bookings are costed to.
 const CREDITOR = valueOf("--creditor", "READY ROOMS");
+// The debtor whose card receipts an IPSI settlement covers.
+const IPSI_DEBTOR = valueOf("--debtor", "MASTER");
+
+/**
+ * A tag that is different every run, and the references built from it.
+ *
+ * References used to be `TRAVELPAY-13196` / `MINT-13196` / `FIXTURE0001` —
+ * worked out from the booking number, or in IPSI's case from nothing at all.
+ * That is wrong in three ways:
+ *
+ *   - `FIXTURE0001` is the SAME on every IPSI run ever. Two runs produce two
+ *     settlements carrying identical transaction references.
+ *   - Retry a booking whose receipt failed and the reference repeats. Both
+ *     `readLatestReceipt` and `findIssuedPayment` find a receipt BY reference,
+ *     so a repeat lets the run read back the wrong transaction and report a
+ *     number that belongs to an earlier attempt.
+ *   - Nothing in the real world works this way. RAA's references come from a
+ *     payment provider and are never reused, so a fixture that reuses them
+ *     tests a case that cannot happen and skips the one that does.
+ *
+ * Random, not a counter or a timestamp: a counter needs state that survives the
+ * process, and two runs started in the same second share a timestamp.
+ *
+ * `--tag ABC12` pins it, for when you want a second run to be findable
+ * alongside the first.
+ */
+const RUN = String(valueOf("--tag", "")).trim().toUpperCase() ||
+  require("crypto").randomBytes(4).readUInt32BE(0).toString(36).toUpperCase().padStart(5, "0").slice(-5);
+
+/**
+ * Short on purpose. Nothing reads Tramada's reference field back, so if it has
+ * a maxlength a longer reference is silently truncated and the lookup after
+ * Issue then fails to find money that was really taken. `TP-K3F9Q-13196` is 14
+ * characters — shorter than "Deposit - Jill Shields", which the live statement
+ * carries — and the drivers now read the field back either way.
+ */
+const ref = (kind, bookingNo) => `${kind}-${RUN}-${bookingNo}`;
 
 const die = (m) => { console.error(`\n  ${m}\n`); process.exit(1); };
 const say = (m) => console.log(`  ${m}`);
@@ -111,20 +165,44 @@ function loadBookings() {
 }
 
 /**
- * What a booking is costed at, in cents — its own figure, not an invented one.
+ * What a booking is costed at, in cents — EVERY allocatable row, not just some.
  *
- * The costings' fares are what the booking actually owes, so they are what a
- * receipt against it should be for. A booking with no costing (the hotel-only
- * one in `bookings.json`) owes nothing, and that is left alone rather than
- * papered over: "the booking has nothing outstanding to allocate against" is a
- * real outcome the BPay run has to handle, and a fixture that never produces it
- * never tests it.
+ * This figure becomes the receipt amount, and the receipt is allocated with
+ * `allocation: "ALL"` — which clicks Tramada's Select All and ticks every row
+ * on the form. So it has to be the total of every row that form will show, or
+ * Tramada refuses the receipt outright:
+ *
+ *     Allocation cannot be greater than Amount Received
+ *
+ * It did, on three real bookings, because this used to `return` the costings
+ * and never look at the segments:
+ *
+ *     const fares = ...; if (fares.length) return fares.reduce(...)
+ *
+ * A booking with a 200.00 ticket and a 60.00 hotel was receipted for 200.00
+ * while Select All allocated 260.00. Both halves are counted now.
+ *
+ * A hotel's Debtor Due is rate x nights x rooms, NOT the rate — verified live
+ * on booking 13127, where 100.00 over 2 nights produced Due inc GST 200.00.
+ * Reading the rate alone is what made booking 13196 ask for 75.00 against a
+ * 150.00 row.
+ *
+ * A flight contributes nothing on its own; its ticket costing is the row. A
+ * booking with neither owes nothing, and that is a real outcome the BPay run
+ * has to handle rather than something to paper over.
  */
 function costedCents(b) {
-  const fares = (b.costings || []).map((c) => core.cents(c.fare)).filter((n) => n != null);
-  if (fares.length) return fares.reduce((a, n) => a + n, 0);
-  const rates = (b.segments || []).map((s) => core.cents(s.rate)).filter((n) => n != null);
-  return rates.reduce((a, n) => a + n, 0);
+  const fares = (b.costings || [])
+    .map((c) => core.cents(c.fare) || 0)
+    .reduce((a, n) => a + n, 0);
+  const stays = (b.segments || []).reduce((a, s) => {
+    const rate = core.cents(s.rate);
+    if (rate == null) return a;                       // flights carry no rate
+    const nights = Number(s.nights) > 0 ? Number(s.nights) : 1;
+    const rooms = Number(s.rooms) > 0 ? Number(s.rooms) : 1;
+    return a + rate * nights * rooms;
+  }, 0);
+  return fares + stays;
 }
 
 /**
@@ -232,7 +310,7 @@ async function makeBpay() {
     const cents = bpayCents(list[b.index] || {}, i);
     return {
       Date: new Date().toISOString().slice(0, 10),
-      Reference: `FIXTURE-${b.bookingNo}-${i + 1}`,
+      Reference: ref("BP", b.bookingNo),
       "Rec/Pay Type": "Debtor Payment Receipt",
       Amount: core.money(cents),
       "Booking No": b.bookingNo,
@@ -292,7 +370,7 @@ async function makeTravelPay() {
         receipt: {
           transactionType: "EFT",
           amount,
-          reference: `TRAVELPAY-${b.bookingNo}`,
+          reference: ref("TP", b.bookingNo),
           dateReceived: new Date().toISOString().slice(0, 10),
           allocation: "ALL",
         },
@@ -362,16 +440,21 @@ async function makeMint() {
       say(`     – booking ${b.bookingNo} owes ${CREDITOR} nothing — no payment raised.`);
       continue;
     }
-    const amount = core.money(b.dueCents);
-    say(`Paying ${CREDITOR} $${amount} from booking ${b.bookingNo}…`);
+    say(`Paying ${CREDITOR} from booking ${b.bookingNo} (about $${core.money(b.dueCents)})…`);
     try {
       const out = await runCreditorPayment({
         bookingNo: b.bookingNo,
         creditor: CREDITOR,
         payment: {
           transactionType: "EFT",              // the statement shows these as ET
-          amount,
-          reference: `MINT-${b.bookingNo}`,
+          /* "AUTO", not the figure worked out from bookings.json.
+             The payment is allocated with "ALL", which fills every payable row
+             in full, so the amount has to BE that total. Deriving it here
+             instead is what sank three live receipts on the TravelPay side —
+             the fixture's arithmetic and Tramada's disagreed and every one was
+             refused. What is payable is a fact the form already knows. */
+          amount: "AUTO",
+          reference: ref("MP", b.bookingNo),
           paymentDate: new Date().toISOString().slice(0, 10),
           allocation: "ALL",
         },
@@ -382,7 +465,11 @@ async function makeMint() {
       });
       const paymentNo = out.payment && out.payment.paymentNo;
       if (!paymentNo) throw new Error("no payment number came back");
-      say(`     ✓ ${paymentNo}`);
+      // The amount Tramada actually filed, not the one asked for — with "AUTO"
+      // they are the same by construction, and a CSV row that disagrees with
+      // the payment it names would reconcile as a difference that isn't real.
+      const amount = (out.staged && out.staged.amount) || core.money(b.dueCents);
+      say(`     ✓ ${paymentNo} for $${amount}`);
       /* Mint's Transaction Reference IS the payment number Tramada issued —
          `P.0000004123` in the client's own export, and `P.0000000161` on
          statement page 9. Writing anything else here would produce a file that
@@ -396,8 +483,8 @@ async function makeMint() {
         Amount: amount,
         Currency: "AUD",
         Status: "Pending at Bank",
-        "Recipient Reference": `MINT-${b.bookingNo}`,
-        "Sender Reference": `MINT-${b.bookingNo}`,
+        "Recipient Reference": ref("MP", b.bookingNo),
+        "Sender Reference": ref("MP", b.bookingNo),
         "Settlement Amt": "",
         "Statement Date": new Date().toISOString().slice(0, 10),
       });
@@ -433,6 +520,136 @@ function csvField(v) {
   return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
 }
 
+/* ── ipsi: bookings, then YOUR receipts, then the file ───────────────────── */
+
+/** Drive the Finance Receipts search once and read what is waiting. */
+async function readWaitingReceipts(quiet) {
+  const browser = await chromium.connectOverCDP(
+    `http://${process.env.CDP_HOST || "127.0.0.1"}:${process.env.CDP_PORT || 9222}`);
+  let page;
+  try {
+    const ctx = browser.contexts()[0] || (await browser.newContext());
+    page = await ctx.newPage();
+    const popup = await searchIssueReceipts(page, {
+      debtorCode: IPSI_DEBTOR,
+      toDate: new Date().toISOString().slice(0, 10),
+    }, quiet ? () => {} : (m) => say("  " + m));
+    return await readReceiptsToReconcile(popup);
+  } finally {
+    try { if (page) await page.close(); } catch { /* already gone */ }
+    try { await browser.close(); } catch { /* CDP: drops the connection */ }
+  }
+}
+
+/**
+ * Bookings, then a pause for a human, then the settlement file.
+ *
+ * The bookings ARE created here, exactly like the other three. What cannot be
+ * automated is the receipt: an IPSI settlement covers **Credit Card Swipe**
+ * receipts, and Tramada's swipe path types a real card number into its card
+ * form. So the script makes the bookings, tells you which ones, and waits while
+ * you raise the receipts against them — the same "the human does this bit and
+ * we wait" shape `ensureLoggedIn` already uses for signing in.
+ *
+ * Then it reads what is waiting and writes a file pointing at it. Only receipts
+ * against the bookings THIS run created are included, so an unrelated receipt
+ * sitting on the screen does not wander into the fixture.
+ *
+ * `--read-only` skips the bookings and takes whatever is already waiting.
+ */
+async function makeIpsi() {
+  const readOnly = has("--read-only");
+  let mine = null;
+
+  if (!readOnly) {
+    const list = loadBookings();
+    say(`${list.length} booking${list.length === 1 ? "" : "s"} → bookings + costings.`);
+    say("The receipts are yours to raise: an IPSI settlement covers Credit Card Swipe");
+    say("receipts, and that form wants a real card number.\n");
+    if (DRY) return say("Dry run — Tramada was never opened.\n");
+    const made = await createBookings(list);
+    mine = new Set(made.map((b) => String(b.bookingNo)));
+
+    console.log("");
+    say("──────────────────────────────────────────────────────────────");
+    say("NOW, IN TRAMADA, raise a Credit Card Swipe receipt against each of:");
+    for (const b of made) say(`     booking ${b.bookingNo}   ($${core.money(b.dueCents || 0)} outstanding)`);
+    say(`Receipt category: Client Payment Receipt · Debtor ${IPSI_DEBTOR}`);
+    say("──────────────────────────────────────────────────────────────\n");
+  } else if (DRY) {
+    return say("Dry run — would read whatever is already waiting.\n");
+  }
+
+  // Poll rather than demand the receipts already exist. Ten minutes is the same
+  // patience `ensureLoggedIn` shows a person signing in.
+  const deadline = Date.now() + 10 * 60 * 1000;
+  let waiting = [];
+  let first = true;
+  for (;;) {
+    let all = [];
+    try { all = await readWaitingReceipts(!first); }
+    catch (err) { die(`Could not read the Finance Receipts screen: ${core.tidyError(err.message)}`); }
+    waiting = mine ? all.filter((r) => mine.has(String(r.bookingNo))) : all;
+    if (waiting.length) break;
+    if (Date.now() > deadline) {
+      die(readOnly
+        ? `Nothing is waiting to be reconciled for ${IPSI_DEBTOR}.`
+        : "No receipts appeared against those bookings in ten minutes.\n\n" +
+          "  The bookings are made and listed in created-bookings-ipsi.json. Raise the\n" +
+          "  receipts whenever you like, then: node make-fixtures.js ipsi --read-only");
+    }
+    if (first) say(`Waiting for receipts against ${mine ? "those bookings" : IPSI_DEBTOR}… (checking every 20s)`);
+    first = false;
+    await new Promise((r) => setTimeout(r, 20000));
+  }
+
+  say(`\n  ${waiting.length} receipt${waiting.length === 1 ? "" : "s"} waiting.`);
+
+  const today = new Date().toISOString().slice(0, 10);
+  const rows = waiting.map((r, i) => ({
+    "Transaction Reference": ref("IP", String(i + 1).padStart(4, "0")),
+    "Transaction Time stamp": today,
+    "Transaction Type": "1",
+    "Transaction Status": "APPROVED",
+    Channel: "terminal",
+    "Card Holder Name": r.cardHolder || "Cardholder name",
+    "Transaction Amount": core.money(core.cents(r.receiptAmount)),
+    "Settlement Date": today,
+    /* The receipt's OWN reference when it has one — that is what the run
+       matches on. Without one (two of four on the live screen) a synthesised
+       value that cannot match, so the row exercises the Booking No. + Amount
+       fallback on purpose. One file, both paths. */
+    "Merchant Reference": r.reference || ref(r.bookingNo, String(i + 1).padStart(4, "0")),
+    "Card Type": "VISA",
+    "Custom 5": "Purchase (1)",
+    "Booking Number": r.bookingNo,
+    "Settlement Amount": "",
+    "Tramada Payment Number": "",
+  }));
+  const total = rows.reduce((a, x) => a + (core.cents(x["Transaction Amount"]) || 0), 0);
+  // The file states its own settlement total on ONE row, as the client's does.
+  rows[rows.length - 1]["Settlement Amount"] = core.money(total);
+
+  const cols = Object.keys(rows[0]);
+  const out = csvOut("ipsi-payments.csv");
+  fs.writeFileSync(out, [cols.map(csvField).join(","),
+    ...rows.map((r) => cols.map((c) => csvField(r[c])).join(","))].join("\n") + "\n");
+
+  // Prove it against the parser AND the matcher the run will use.
+  const grid = core.csvGrid(fs.readFileSync(out, "utf8"));
+  const parsed = core.parseIpsiRows(grid.headers, grid.rows);
+  const matched = parsed.rows.map((row) => core.matchIpsiAgainstReceipts(row, waiting));
+  const onRef = matched.filter((m) => m.matched && m.on === "reference").length;
+  const onBkg = matched.filter((m) => m.matched && m.on === "booking").length;
+
+  say(`\n  ${shortPath(out)} — ${rows.length} row${rows.length === 1 ? "" : "s"}, $${core.money(total)}.`);
+  say(`     ${parsed.rows.length} readable, ${matched.filter((m) => m.matched).length} match what is on screen ` +
+      `(${onRef} on reference, ${onBkg} on booking).`);
+  if (!parsed.settlement.agrees) die("The file it just wrote does not add up to its own settlement figure.");
+  if (matched.some((m) => !m.matched)) say("     ⚠ some rows do not match — that is a bug here, not in the run.");
+  say("\n  Load it on the IPSI card and press Start run.\n");
+}
+
 /* ── the command ─────────────────────────────────────────────────────────── */
 
 /**
@@ -450,7 +667,7 @@ function csvField(v) {
  * of three files is better than none.
  */
 async function makeAll() {
-  const order = ["bpay", "travelpay", "mint"];
+  const order = ["bpay", "travelpay", "mint", "ipsi"];
   const outcome = [];
   for (const what of order) {
     console.log(`\n  ── ${what} ${"─".repeat(Math.max(0, 60 - what.length))}\n`);
@@ -469,23 +686,35 @@ async function makeAll() {
   if (outcome.some(([, how]) => how !== "done")) process.exitCode = 1;
 }
 
-const JOBS = { bpay: makeBpay, travelpay: makeTravelPay, mint: makeMint, all: makeAll };
+const JOBS = { bpay: makeBpay, travelpay: makeTravelPay, mint: makeMint, ipsi: makeIpsi, all: makeAll };
 
-(async () => {
+/* Exported so the reference scheme can be tested without opening Tramada. The
+   run below is behind `require.main`, so requiring this file creates nothing. */
+module.exports = { RUN, ref, costedCents, bpayCents };
+
+if (require.main === module) (async () => {
   if (!JOBS[WHAT]) {
     die(
       "Which fixture?\n\n" +
       "    node make-fixtures.js bpay        bookings + costings, then the BPay CSV\n" +
       "    node make-fixtures.js travelpay   bookings + costings + receipts, then the TravelPay CSV\n" +
       "    node make-fixtures.js mint        bookings + costings + creditor payments, then the Mint CSV\n" +
-      "    node make-fixtures.js all         all three, one after the other\n\n" +
+      "    node make-fixtures.js ipsi        bookings, then waits for your swipe receipts, then the IPSI CSV\n" +
+      "    node make-fixtures.js all         all four, one after the other\n\n" +
       "  --dry-run   say what it would create, touch nothing\n" +
       "  --limit N   only the first N bookings in the file\n" +
       "  --file      a bookings JSON other than bookings.json\n" +
       "  --creditor  who the Mint payments go to (default READY ROOMS)\n" +
-      "  --out-dir   where the CSVs land (default csv_uploads/)"
+      "  --out-dir   where the CSVs land (default csv_uploads/)\n" +
+      "  --debtor    whose card receipts the IPSI file covers (default MASTER)\n" +
+      "  --read-only for `ipsi`: skip the bookings, use what is already waiting\n" +
+      "  --tag XXXXX pin this run's reference tag instead of a random one"
     );
   }
   console.log("");
+  // Said out loud, once: every reference this run writes carries this tag, so
+  // one search in Tramada finds the whole run — and a later run cannot be
+  // mistaken for it.
+  say(`run tag ${RUN} — references look like ${ref("TP", "13196")}\n`);
   await JOBS[WHAT]();
 })().catch((e) => { console.error("\n  Failed:", e.message, "\n"); process.exit(1); });

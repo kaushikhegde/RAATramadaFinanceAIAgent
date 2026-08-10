@@ -767,6 +767,184 @@ function parseTravelPayRows(headers, gridRows) {
   return { rows, problems };
 }
 
+/* ── the IPSI merchant settlement ────────────────────────────────────────── */
+
+/**
+ * IPSI's columns, by header name. Thirty-four of them; six matter.
+ *
+ * `Merchant Reference` is the match key, and it does NOT have one shape:
+ *
+ *   Purchase (37 rows)  128388-171850          booking, then a time
+ *   Capture  (10 rows)  R82EQ6F8-JoanneMChapma-raa-2911
+ *   Refund   (2 rows)   2dfa06e7-6454-445a-...   a bare GUID
+ *
+ * So the reference is tried first and `Booking Number` is the fallback — see
+ * `matchIpsiAgainstReceipts`. `Transaction Reference` is IPSI's own id and is
+ * unique across the file, but it is not what Tramada holds.
+ */
+const IPSI_COLUMNS = {
+  transNo: ["transaction reference"],
+  reference: ["merchant reference"],
+  bookingNo: ["booking number"],
+  amount: ["transaction amount"],
+  kind: ["custom 5"],
+  typeCode: ["transaction type"],
+  status: ["transaction status"],
+  settlementDate: ["settlement date"],
+  settlementAmount: ["settlement amount"],
+  tramadaPaymentNo: ["tramada payment number"],
+  cardHolder: ["card holder name"],
+  linked: ["linked transaction"],
+};
+
+/** Refunds are `Transaction Type` 20 — `Custom 5` spells it "Refund (20)". */
+const isRefund = (row) => String(row.typeCode).trim() === "20" || /refund/i.test(row.kind || "");
+
+/**
+ * An IPSI export → rows the run can act on, plus the day's own settlement.
+ *
+ * REFUNDS ARE NOT PART OF AN IPSI RUN. They are money going back out to a
+ * cardholder — each one links to a purchase from an EARLIER settlement, and the
+ * screen this run drives ticks *Receipts* To Reconcile, which is money coming
+ * in. There is nothing there to tick against a refund. They are held back and
+ * reported so a person can see them, never silently dropped.
+ *
+ * The file states its own `Settlement Amount` on one row, and the sum of every
+ * row (refunds included, they carry their sign) should equal it. That is a free
+ * cross-check on a file about to produce a receipt for real money, so it is
+ * returned as `settlement` and the caller can refuse when it disagrees.
+ */
+function parseIpsiRows(headers, gridRows) {
+  const cols = mapColumns(headers, IPSI_COLUMNS);
+  const missing = ["reference", "amount"].filter((k) => cols[k] < 0);
+  if (missing.length) {
+    const want = missing.map((k) => IPSI_COLUMNS[k][0]).join(", ");
+    return { rows: [], problems: [{ line: 1, why: `the sheet has no column for: ${want}` }], settlement: null };
+  }
+
+  const at = (cells, key) =>
+    (cols[key] >= 0 && cells[cols[key]] != null ? String(cells[cols[key]]).trim() : "");
+  const rows = [];
+  const problems = [];
+  let statedCents = null;
+  let statedBy = "";
+  let everyRowCents = 0;
+
+  (gridRows || []).forEach((cells, i) => {
+    const row = {
+      line: i + 2,
+      transNo: at(cells, "transNo"),
+      reference: at(cells, "reference"),
+      bookingNo: at(cells, "bookingNo"),
+      amount: at(cells, "amount"),
+      kind: at(cells, "kind"),
+      typeCode: at(cells, "typeCode"),
+      status: at(cells, "status"),
+      cardHolder: at(cells, "cardHolder"),
+      linked: at(cells, "linked"),
+      settlementDate: serialDate(at(cells, "settlementDate")),
+    };
+    row.rawAmount = row.amount;
+    row.amountCents = cents(row.amount);
+    if (row.amountCents != null) {
+      row.amount = money(row.amountCents);
+      everyRowCents += row.amountCents;
+    }
+
+    // The settlement total and the payment number sit on ONE row of the file,
+    // not on every one. Whichever row carries them, they describe the day.
+    const stated = cents(at(cells, "settlementAmount"));
+    if (stated != null) { statedCents = stated; statedBy = row.transNo; }
+    const paid = at(cells, "tramadaPaymentNo");
+    if (paid) row.tramadaPaymentNo = paid;
+
+    const why = [];
+    if (!row.reference) why.push("no merchant reference");
+    if (row.amountCents == null) why.push(`unreadable amount "${row.rawAmount}"`);
+    if (row.status && !/^approved$/i.test(row.status)) {
+      why.push(`the transaction is "${row.status}", not approved`);
+    }
+    if (isRefund(row)) {
+      why.push(
+        `this is a refund of $${money(Math.abs(row.amountCents || 0))}` +
+        (row.linked ? ` against ${row.linked}` : "") +
+        " — refunds are money going back out and are not part of an IPSI run"
+      );
+    }
+    if (why.length) problems.push({ line: row.line, why: why.join("; "), row });
+    else rows.push(row);
+  });
+
+  return {
+    rows,
+    problems,
+    settlement: {
+      // Every row, refunds included — they carry their own sign, which is why
+      // the two together are what the bank actually settled.
+      everyRowCents,
+      statedCents,
+      statedBy,
+      agrees: statedCents == null ? null : statedCents === everyRowCents,
+      paymentNo: (gridRows || []).length ? (rows.find((r) => r.tramadaPaymentNo) || {}).tramadaPaymentNo || "" : "",
+    },
+  };
+}
+
+/**
+ * One IPSI row against Tramada's "Receipts To Reconcile" list.
+ *
+ * Merchant Reference first, Booking No. second. The fallback is not politeness:
+ * ten of the forty-nine rows in the client's own file are Captures, whose
+ * merchant reference is a different shape entirely, and matching those on
+ * reference alone would leave a fifth of the settlement unticked with no
+ * explanation. Amount has to agree either way — four bookings appear twice in
+ * one file, so the booking on its own does not identify a row.
+ */
+function matchIpsiAgainstReceipts(row, receipts) {
+  const list = receipts || [];
+  const sameMoney = (r) => cents(r.receiptAmount) === row.amountCents;
+
+  const byRef = list.filter((r) => r.reference && refKey(r.reference) === refKey(row.reference));
+  const refHit = byRef.find(sameMoney);
+  if (refHit) {
+    return { matched: true, on: "reference", receipt: refHit,
+      reason: `matched on reference ${row.reference} at $${money(row.amountCents)}` };
+  }
+  if (byRef.length) {
+    return { matched: false, on: "reference", candidates: byRef,
+      reason: `reference ${row.reference} is on the list at $${byRef.map((r) => money(cents(r.receiptAmount))).join(", $")}, not $${money(row.amountCents)}` };
+  }
+
+  const byBooking = list.filter((r) => r.bookingNo && refKey(r.bookingNo) === refKey(row.bookingNo));
+  const bookHit = byBooking.find(sameMoney);
+  if (bookHit) {
+    return { matched: true, on: "booking", receipt: bookHit,
+      reason: `no receipt carries reference ${row.reference}, matched on booking ${row.bookingNo} at $${money(row.amountCents)}` };
+  }
+  if (byBooking.length) {
+    return { matched: false, on: "booking", candidates: byBooking,
+      reason: `booking ${row.bookingNo} is on the list at $${byBooking.map((r) => money(cents(r.receiptAmount))).join(", $")}, not $${money(row.amountCents)}` };
+  }
+  return { matched: false, on: null,
+    reason: `nothing on the list carries reference ${row.reference} or booking ${row.bookingNo}` };
+}
+
+/** What an IPSI run made of its file. */
+function summariseIpsi(results) {
+  const r = results || [];
+  const ticked = r.filter((x) => x.ticked);
+  return {
+    total: r.length,
+    ticked: ticked.length,
+    unmatched: r.filter((x) => !x.ticked).length,
+    onReference: r.filter((x) => x.matchedOn === "reference").length,
+    onBooking: r.filter((x) => x.matchedOn === "booking").length,
+    // The receipt is for what it ALLOCATES, which is the rows that were ticked
+    // — not the file's headline settlement figure.
+    allocatedCents: ticked.reduce((a, x) => a + (x.amountCents || 0), 0),
+  };
+}
+
 /* ── the reports this system knows ───────────────────────────────────────── */
 
 /**
@@ -789,6 +967,17 @@ const REPORTS = {
     title: "Mint daily settlement",
     recPayType: "Creditor Payment",
     files: false,
+  },
+  ipsi: {
+    key: "ipsi",
+    title: "IPSI merchant settlement",
+    /* IPSI does NOT reconcile against a bank statement page. It ticks receipts
+       that already exist on Tramada's Finance Merchant Payment Receipt screen
+       and issues ONE receipt covering them, so it has no recPayType and cannot
+       join a combined run — there is no shared page for it to share. */
+    recPayType: null,
+    files: false,
+    issuesReceipt: true,
   },
   travelpay: {
     key: "travelpay",
@@ -1042,6 +1231,7 @@ module.exports = {
   STATEMENT_COLUMNS, TRANSACTION_COLUMNS, TRANSACTION_FALLBACK,
   MINT_COLUMNS, csvGrid, parseMintRows, matchMintAgainstStatement, summariseMint,
   TRAVELPAY_COLUMNS, parseTravelPayRows, serialDate, bookingFromReference, REPORTS,
+  IPSI_COLUMNS, parseIpsiRows, matchIpsiAgainstReceipts, summariseIpsi,
   tidyError,
   summarise,
 };

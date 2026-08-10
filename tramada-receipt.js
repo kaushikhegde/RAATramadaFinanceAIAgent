@@ -32,6 +32,25 @@ const HEADLESS = process.env.HEADLESS === "true";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * "1,234.50" -> 123450, and "" -> null.
+ *
+ * Money is compared in whole cents here for the same reason it is everywhere
+ * else in this project: 0.1 + 0.2 is not 0.3, and an allocation that is one
+ * float-hair over the receipt is rejected by Tramada exactly as hard as one
+ * that is a hundred dollars over. Kept local so this module still depends on
+ * nothing but Playwright.
+ */
+const centsOf = (v) => {
+  const s = String(v == null ? "" : v).replace(/[^0-9.-]/g, "");
+  if (!/\d/.test(s)) return null;
+  const neg = s.trim().startsWith("-");
+  const [whole, frac = ""] = s.replace(/-/g, "").split(".");
+  const n = Number(whole || "0") * 100 + Number(`${frac}00`.slice(0, 2));
+  if (!Number.isFinite(n)) return null;
+  return neg ? -n : n;
+};
+
 // Tramada Transaction Type dropdown values (receipt.transactionTypeCode).
 const TXN_TYPE = {
   CASH: "CA",
@@ -411,6 +430,21 @@ async function openReceiptForm(page, bookingNo, receipt) {
     throw new Error("Receipt reference is required.");
   }
   await setFieldWithEvents(page, "#receiptreferenceNumber", String(receipt.reference));
+  /* Read it back.
+     This is the one field the receipt is found by afterwards — `readLatestReceipt`
+     and the reconciliation both look the transaction up by its reference. If the
+     input carries a maxlength, or a handler rewrites what was typed, the receipt
+     is still filed and takes real money; only the lookup fails, and it fails
+     saying the receipt is missing rather than saying the reference was cut short.
+     Checked while nothing has been committed. */
+  const back = await page.inputValue("#receiptreferenceNumber").catch(() => null);
+  if (back != null && back !== String(receipt.reference)) {
+    throw new Error(
+      `The receipt reference did not stick: typed "${receipt.reference}", the form reads "${back}"` +
+      (back.length < String(receipt.reference).length ? " (truncated — use a shorter reference)" : "") +
+      ". Nothing was issued."
+    );
+  }
 
   return { txn, segments: await readAllocatableSegments(page) };
 }
@@ -619,14 +653,62 @@ async function enterNewBookingCard(page, card) {
 }
 
 /**
+ * Stop before Issue when the form is about to allocate more than the receipt.
+ *
+ * Tramada refuses this outright — "Allocation cannot be greater than Amount
+ * Received" — and it refuses it AFTER the form is submitted, as a one-line
+ * banner on a page that no longer shows which row was the problem. Three live
+ * TravelPay receipts died that way on 10-Aug-2026 and the run reported only
+ * the banner.
+ *
+ * It is reachable because "ALL" clicks Tramada's own Select All, which ticks
+ * EVERY allocatable row and fills each with its full due — including rows the
+ * caller's amount was never chosen to cover. A booking with a 200.00 ticket
+ * and a 60.00 hotel receipted for 200.00 allocates 260.00 and is rejected.
+ *
+ * So the same figures are read back off the form and added up here, while
+ * nothing has been committed and every row is still on screen to name.
+ *
+ * This only ever refuses what Tramada was going to refuse anyway: an
+ * allocation at or under the amount is left completely alone.
+ */
+async function refuseOverAllocation(page, amountReceived) {
+  const cap = centsOf(amountReceived);
+  if (cap == null) return;                       // caller didn't say — nothing to check against
+  const rows = await page.$$eval('input[id^="allocationAmount_"]', (ns) =>
+    ns.map((n) => {
+      const tr = n.closest("tr");
+      const cells = tr ? Array.from(tr.querySelectorAll("td")).map((td) => td.textContent.trim()) : [];
+      return { segId: n.id.replace("allocationAmount_", ""), value: n.value || "", segType: cells[1] || "" };
+    })).catch(() => []);
+  const total = rows.reduce((a, r) => a + (centsOf(r.value) || 0), 0);
+  if (total <= cap) return;
+
+  const money = (c) => `$${(c / 100).toFixed(2)}`;
+  const named = rows
+    .filter((r) => (centsOf(r.value) || 0) > 0)
+    .map((r) => `${r.segType || `segment ${r.segId}`} ${money(centsOf(r.value))}`)
+    .join(" + ");
+  throw new Error(
+    `Allocation cannot be greater than Amount Received: this receipt is for ` +
+    `${money(cap)} but Select All ticked ${named || "every row"}, totalling ${money(total)}. ` +
+    `Receipt the full ${money(total)}, or pass an explicit allocation instead of "ALL". ` +
+    `Nothing was issued.`
+  );
+}
+
+/**
  * Allocate the receipt across segments (req 3).
  *
  * @param {"ALL"|Array} allocation
  *   "ALL"                    -> tick every segment, use each segment's due
  *   [{ segId, amount }]      -> allocate specific amounts to specific segments
  *   [{ index, amount }]      -> same, by row index (0-based)
+ * @param {string|number} [amountReceived]  The receipt's own amount. Given, it
+ *   is checked against what is actually about to be allocated — see
+ *   `refuseOverAllocation` below for why that is worth doing before Issue.
  */
-async function allocateSegments(page, allocation, segments) {
+async function allocateSegments(page, allocation, segments, amountReceived) {
   // An EXPLICITLY empty allocation means "raise this receipt and allocate it to
   // nothing" — a real, wanted outcome rather than a mistake. The reconciliation
   // run passes it whenever the statement amount doesn't equal what is
@@ -679,10 +761,26 @@ async function allocateSegments(page, allocation, segments) {
         }
       });
     });
+    await refuseOverAllocation(page, amountReceived);
     return;
   }
 
   // Specific allocations.
+  //
+  // Checked as arithmetic before a single key is pressed. The per-row verify
+  // further down catches a box that didn't take the value; it cannot catch a
+  // caller whose rows add up to more than the receipt, and that is the failure
+  // Tramada answers with a banner after the form is gone.
+  const asked = allocation.reduce((a, x) => a + (centsOf(x.amount) || 0), 0);
+  const cap = centsOf(amountReceived);
+  if (cap != null && asked > cap) {
+    throw new Error(
+      `Allocation cannot be greater than Amount Received: this receipt is for ` +
+      `$${(cap / 100).toFixed(2)} but the ${allocation.length} allocation(s) asked for ` +
+      `total $${(asked / 100).toFixed(2)}.`
+    );
+  }
+
   for (const a of allocation) {
     const seg =
       a.segId != null
@@ -883,7 +981,7 @@ async function runTramadaReceipt({
     }
 
     onProgress(70, "Allocating to segment(s)...");
-    await allocateSegments(page, receipt.allocation || "ALL", segments);
+    await allocateSegments(page, receipt.allocation || "ALL", segments, receipt.amount);
     await sleep(400);
 
     const staged = {
@@ -994,5 +1092,7 @@ module.exports = {
   // exported for reuse/testing
   toTramadaDate,
   resolveTxnType,
+  allocateSegments,
+  centsOf,
   TXN_TYPE,
 };

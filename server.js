@@ -33,6 +33,7 @@ const reconCore = require("./recon-core");
 const xlsxLite = require("./xlsx-lite");
 const store = require("./run-store");
 const { runReconciliation, runMintReconciliation, runCombinedReconciliation } = require("./recon-run");
+const { runIpsiReconciliation } = require("./tramada-ipsi");
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const PUBLIC = path.join(__dirname, "public");
@@ -96,7 +97,7 @@ function send(session, m) {
 function handleReconParse(session, msg) {
   const name = String(msg.name || "the file");
   // Mint and TravelPay are both read here, by the parser the run itself uses.
-  const source = msg.source === "travelpay" ? "travelpay" : "mint";
+  const source = reconCore.REPORTS[msg.source] && msg.source !== "bpay" ? msg.source : "mint";
   const reply = (extra) => send(session, { type: "recon_parsed", source, name, ...extra });
 
   // ~8 MB of base64 is ~6 MB of file. A daily settlement is tens of kilobytes.
@@ -115,10 +116,12 @@ function handleReconParse(session, msg) {
     // not a guess from its name or its contents.
     const isZip = buf.length > 1 && buf[0] === 0x50 && buf[1] === 0x4b;
     const sheet = isZip ? xlsxLite.readSheet(buf) : reconCore.csvGrid(buf.toString("utf8"));
-    const { rows, problems } = source === "travelpay"
-      ? reconCore.parseTravelPayRows(sheet.headers, sheet.rows)
-      : reconCore.parseMintRows(sheet.headers, sheet.rows);
-    reply({ rows, problems, headers: sheet.headers, sheetRows: sheet.rows.length });
+    const parse = {
+      travelpay: reconCore.parseTravelPayRows,
+      ipsi: reconCore.parseIpsiRows,
+    }[source] || reconCore.parseMintRows;
+    const { rows, problems, settlement } = parse(sheet.headers, sheet.rows);
+    reply({ rows, problems, settlement, headers: sheet.headers, sheetRows: sheet.rows.length });
   } catch (err) {
     reply({ error: reconCore.tidyError(err.message) });
   }
@@ -154,7 +157,7 @@ function keep(session, source, name, buf) {
  * arrives whole for parsing and is kept there.
  */
 function handleReconUpload(session, msg) {
-  const source = msg.source === "mint" ? "mint" : "bpay";
+  const source = reconCore.REPORTS[msg.source] ? msg.source : "bpay";
   const name = String(msg.name || "report");
   if (!msg.base64 || String(msg.base64).length > 8 * 1024 * 1024) {
     send(session, { type: "recon_uploaded", source, name, error: "that file is empty or too large to store" });
@@ -213,7 +216,15 @@ const callbacks = (session, run) => ({
 
 async function handleReconRun(session, msg) {
   if (msg.source === "both") return handleCombinedRun(session, msg);
-  if (msg.source === "mint" || msg.source === "travelpay") return handleMintRun(session, msg);
+
+  /* A report that ISSUES a receipt has its own flow and must never fall
+     through to the BPay path — that path files a real receipt per row
+     against a real booking, which for an IPSI file would be dozens of
+     receipts nobody asked for. Until `tramada-ipsi.js` exists this refuses
+     rather than doing the most dangerous available thing. */
+  const report = reconCore.REPORTS[msg.source];
+  if (report && report.issuesReceipt) return handleIpsiRun(session, msg);
+  if (report && !report.files) return handleMintRun(session, msg);
 
   const { rows, problems } = reconCore.parseReconCsv(csvOf(msg.rows));
 
@@ -320,6 +331,51 @@ async function handleCombinedRun(session, msg) {
   }
 }
 
+/**
+ * IPSI: tick receipts that already exist, then issue ONE receipt for them.
+ *
+ * No statement page, no page number, no Done — this report drives the Finance
+ * Receipts screens instead, so it shares nothing with the other three beyond
+ * the card it is uploaded on.
+ */
+async function handleIpsiRun(session, msg) {
+  const rows = Array.isArray(msg.rows) ? msg.rows : [];
+  if (!rows.length) {
+    send(session, { type: "recon_done", error: "nothing in that IPSI file could be checked" });
+    return;
+  }
+  if (session.reconRunning) {
+    send(session, { type: "recon_progress", message: "A run is already going — this one was not started.", ok: false });
+    return;
+  }
+  session.reconRunning = true;
+
+  const run = openRun(session, "ipsi", msg, rows.map((r) => ({ ...r, src: "ipsi" })));
+  try {
+    const out = await runIpsiReconciliation({
+      rows,
+      payerName: msg.payerName || "RAA",
+      toDate: msg.statementDate,
+      callbacks: callbacks(session, run),
+    });
+    const s = out.summary;
+    closeRun(run, out);
+    send(session, {
+      type: "recon_progress",
+      message: `${s.ticked} of ${s.total} matched and ticked` +
+        (s.onBooking ? ` (${s.onReference} on reference, ${s.onBooking} on booking)` : "") +
+        (out.issued && out.issued.issued ? `, receipt issued for $${out.issued.amount}` : ", nothing issued"),
+    });
+    send(session, { type: "recon_done", summary: s, runId: run && run.id });
+  } catch (err) {
+    const why = reconCore.tidyError(err.message);
+    closeRun(run, null, why);
+    send(session, { type: "recon_done", error: why, runId: run && run.id });
+  } finally {
+    session.reconRunning = false;
+  }
+}
+
 /* ── opening and closing the record of a run ─────────────────────────────── */
 
 /**
@@ -371,7 +427,7 @@ function closeRun(run, out, error) {
  * Rec/Pay Type the page is filtered to, and that comes from `REPORTS`.
  */
 async function handleMintRun(session, msg) {
-  const source = msg.source === "travelpay" ? "travelpay" : "mint";
+  const source = reconCore.REPORTS[msg.source] && msg.source !== "bpay" ? msg.source : "mint";
   const report = reconCore.REPORTS[source];
   const rows = Array.isArray(msg.rows) ? msg.rows : [];
   if (!rows.length) {

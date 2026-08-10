@@ -95,8 +95,8 @@ const ok = (name, cond, detail) => {
   ok("and the TravelPay rows", (br.travelpay || []).length > 0, JSON.stringify(Object.keys(br)));
   ok("a slot for every report it knows",
     ["bpay", "mint", "travelpay"].every((k) => Array.isArray(br[k])), JSON.stringify(Object.keys(br)));
-  ok("three cards on the Sources screen",
-    state.cards === 3, String(state.cards));
+  ok("a card for every report the server knows",
+    state.cards === 4, String(state.cards));
   ok("with the statement date and balances",
     sent[0] && sent[0].statementDate === "10-08-2026" && sent[0].openingBalance === "111753.97",
     JSON.stringify(sent[0] && { d: sent[0].statementDate, o: sent[0].openingBalance }));
