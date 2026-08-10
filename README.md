@@ -157,16 +157,36 @@ node make-fixtures.js all   # or: bpay | travelpay | mint
 ```
 
 Creates REAL bookings, and then whatever that report needs to exist before its
-run can find anything — receipts for TravelPay, creditor payments to Ready
-Rooms for Mint. **BPay gets no receipts, on purpose**: raising them is the BPay
-run's whole job, and pre-receipting would leave every row with nothing
-outstanding and a fixture that comes back green while testing the opposite.
+run can find anything — receipts for TravelPay, receipts *and* creditor
+payments to Ready Rooms for Mint. **BPay gets no receipts, on purpose**:
+raising them is the BPay run's whole job, and pre-receipting would leave every
+row with nothing outstanding and a fixture that comes back green while testing
+the opposite.
+
+Mint takes the client's receipt **before** it pays the creditor, and it has to:
+a costed segment is not payable to a creditor until the client's money has been
+received and allocated against it. Skip that and the payment form's Segments To
+Allocate table is simply empty.
 
 | | creates in Tramada | writes |
 |---|---|---|
 | `bpay` | bookings + costings | `csv_uploads/tramada-statement-lines.csv` |
 | `travelpay` | + receipts | `csv_uploads/travelpay-payments.csv` |
-| `mint` | + creditor payments | `csv_uploads/mint-payments.csv` |
+| `mint` | + receipts, then creditor payments | `csv_uploads/mint-payments.csv` |
+| `ipsi` | bookings + costings only | `csv_uploads/ipsi-payments.csv` |
+
+**The CSV is written as the work happens**, not at the end — a row goes down
+the moment its booking exists. A column that can only come from a later step
+(a receipt number, a `P.` number) is left blank and filled in when that step
+succeeds; if it never does, the row still names a real booking and a real
+amount and the run tells you which rows need a value pasted in. Nothing that
+was really created in Tramada ends up in no file.
+
+`ipsi` doesn't go looking for your receipts. It creates the bookings, writes
+the file, and leaves **Merchant Reference blank for you** to paste in once
+you've raised the Credit Card Swipe receipts — that form wants a real card
+number, so it's yours to do. A blank one falls back to matching on Booking
+Number and amount.
 
 The bookings each run created are listed in
 `created-bookings-{bpay,travelpay,mint}.json`.

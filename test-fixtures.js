@@ -22,9 +22,17 @@
  * Requiring this file creates nothing — make-fixtures.js only runs when it is
  * the process's entry point.
  */
-const F = require("./make-fixtures");
-const { execFileSync } = require("child_process");
+const os = require("os");
+const fs = require("fs");
 const path = require("path");
+const { execFileSync } = require("child_process");
+
+// Point the CSVs at a scratch folder BEFORE the module reads argv, so a test
+// run can never overwrite the real csv_uploads/.
+const DIR = fs.mkdtempSync(path.join(os.tmpdir(), "recon-fixtures-"));
+process.argv = [process.argv[0], "test-fixtures", "bpay", "--out-dir", DIR];
+
+const F = require("./make-fixtures");
 
 let pass = 0, fail = 0;
 const ok = (name, cond, detail) => {
@@ -104,5 +112,49 @@ console.log("\nthe BPay amounts still aim at three different outcomes");
     F.bpayCents({ segments: [] }, 0) > 0, String(F.bpayCents({ segments: [] }, 0)));
 }
 
+console.log("\nthe report file exists from the first row, not the last");
+{
+  /* A Mint run created two REAL bookings in Tramada, failed at the payment
+     form, and wrote no file at all — every row was built in memory behind
+     `if (!rows.length) die("nothing to write")`. The bookings existed and
+     nothing named them. So the file is on disk from the first row now, and
+     a later step fills its own column in. */
+  const read = (w) => fs.readFileSync(w.path, "utf8");
+  const lines = (w) => read(w).trim().split("\n");
+
+  const w = F.csvWriter("probe-a.csv", ["Booking No", "Reference", "Amount"], ["Reference"]);
+  const r1 = w.add({ "Booking No": "13229", Reference: "", Amount: "145.54" });
+  ok("the file exists as soon as one row does", fs.existsSync(w.path));
+  check("header, then the row", lines(w), ["Booking No,Reference,Amount", "13229,,145.54"]);
+
+  w.add({ "Booking No": "13232", Reference: "", Amount: "200.00" });
+  check("a second row lands without waiting for the end", lines(w).length, 3);
+
+  // The whole point: the payment number arrives later and finds its own row.
+  r1.Reference = "P.0000004123";
+  w.update();
+  check("a later step fills its column in", lines(w)[1], "13229,P.0000004123,145.54");
+
+  check("rows still waiting on a human are named", w.unfilled().map((u) => u.i), [1]);
+  r1.Reference = "";
+  w.update();
+  check("and both, when both are blank", w.unfilled().map((u) => u.i), [0, 1]);
+
+  // Extra keys are working notes, not columns — the file must not grow one.
+  const w2 = F.csvWriter("probe-b.csv", ["A"], []);
+  w2.add({ A: "1", _note: "not a column", "Booking No": "13229" });
+  check("keys that are not columns stay out of the file", lines(w2), ["A", "1"]);
+
+  const w3 = F.csvWriter("probe-c.csv", ["A", "B"], []);
+  w3.add({ A: 'say "hi", loudly', B: "plain" });
+  check("commas and quotes survive", lines(w3)[1], '"say ""hi"", loudly",plain');
+  check("and read back as one field",
+    require("./recon-core").csvGrid(read(w3)).rows[0][0], 'say "hi", loudly');
+
+  const w4 = F.csvWriter("probe-d.csv", ["A"], []);
+  ok("a writer with no rows leaves no half-written file", !fs.existsSync(w4.path));
+}
+
+fs.rmSync(DIR, { recursive: true, force: true });
 console.log(`\n${fail ? "❌" : "✅"} ${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

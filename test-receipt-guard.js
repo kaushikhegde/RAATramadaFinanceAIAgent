@@ -1,7 +1,11 @@
 /**
- * The over-allocation guard, offline.
+ * What the two money-moving forms refuse to do, offline.
  *
  *   node test-receipt-guard.js
+ *
+ * The receipt form's over-allocation guard, and the payment form's reading of
+ * what is actually payable — both of them checks that happen BEFORE Issue, so
+ * a wrong answer costs nothing.
  *
  * WHY THIS FILE EXISTS
  *
@@ -25,6 +29,7 @@
  * message — the parts that decide whether real money gets filed.
  */
 const R = require("./tramada-receipt");
+const P = require("./tramada-payment");
 
 let pass = 0, fail = 0;
 const ok = (name, cond, detail) => {
@@ -127,6 +132,45 @@ const thrown = async (fn) => {
     // still has to exist, unallocated.
     ok("allocating nothing is left completely alone",
       (await thrown(() => R.allocateSegments(null, [], segs(rows), "200.00"))) === null);
+  }
+
+  console.log("\nthe payment form says WHICH thing is wrong with it");
+  {
+    /* An empty Segments To Allocate table used to come out as
+         The payment form's segment table has no "Creditor Payable" column (headers: )
+       because the header list was only ever built inside the loop over the
+       rows. Nothing is payable to a creditor until the client's receipt has
+       been taken and allocated, so an empty table is the NORMAL state of a
+       booking that has only been costed — and that sentence sent a debugging
+       session after a column that was never missing. The two cases have to
+       stay tellable apart. */
+    const HEADERS = ["D", "Seg. Type", "Reference", "Creditor ID",
+      "Creditor Nett", "Creditor Paid", "Creditor Payable", "Allocate", "A"];
+    const gridPage = (grid) => ({ evaluate: async () => grid });
+
+    const empty = await thrown(() => P.readPayableSegments(gridPage({ headers: [], rows: [] }), "READY ROOMS"));
+    ok("an empty table is reported as nothing payable", /nothing is payable/i.test(empty || ""), empty);
+    ok("naming the creditor asked for", /READY ROOMS/.test(empty || ""), empty);
+    ok("and saying what to do about it", /receipt/i.test(empty || ""), empty);
+    ok("it does NOT blame a missing column",
+      !/Creditor Payable" column/.test(empty || ""), empty);
+
+    const rows = [{ segId: "1", cells: ["", "Ticket", "REF", "READY", "200.00", "0.00", "200.00", "", ""] }];
+    const noHead = await thrown(() => P.readPayableSegments(gridPage({ headers: [], rows }), "READY ROOMS"));
+    ok("rows it cannot read DO blame the column",
+      /Creditor Payable" column/.test(noHead || ""), noHead);
+    ok("and admit no header row was found at all",
+      /no header row found/.test(noHead || ""), noHead);
+    // Without this the next person is where I was: a complaint about a column,
+    // and no way to see what the row actually held.
+    ok("and show what a row looks like, so the next person can see it",
+      /Ticket/.test(noHead || ""), noHead);
+
+    const good = await P.readPayableSegments(gridPage({ headers: HEADERS, rows }), "READY ROOMS");
+    check("a readable grid comes back parsed", good.length, 1);
+    check("payable read by header name, not by position", good[0].payable, "200.00");
+    check("and turned into cents", good[0].payableCents, 20000);
+    check("with the segment type", good[0].segType, "Ticket");
   }
 
   console.log(`\n${fail ? "❌" : "✅"} ${pass} passed, ${fail} failed\n`);

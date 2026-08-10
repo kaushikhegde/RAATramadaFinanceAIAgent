@@ -5,10 +5,19 @@
  * this pays money OUT to a creditor:
  *
  *   Booking Payments  →  Add / Issue Payment
- *     -> pick the creditor (only ones with a payable segment are offered)
+ *     -> pick the creditor
  *       -> fill EFT / date / amount / reference
  *         -> tick the segments to allocate against
  *           -> Issue -> read the new Payment No. back and CHECK it is ours
+ *
+ * ── The client pays first ────────────────────────────────────────────────────
+ *
+ * A costed segment is NOT payable to the creditor until the client's receipt
+ * has been taken and allocated against it. Money in before money out — an
+ * agency cannot pay a supplier out of money it has not received. On a booking
+ * that has only been costed, Segments To Allocate comes back completely empty
+ * while `#creditor` still offers the creditor, which reads as a broken selector
+ * and is not one. `readPayableSegments` says so in those words now.
  *
  * Mapped live 10-08-2026 against booking 13175 on raatravelsandbox; the field
  * map's "The creditor payment form" section is what came off that page.
@@ -107,32 +116,53 @@ const SEGMENT_COLUMNS = {
   payable: ["creditor payable"],
 };
 
-async function readPayableSegments(page) {
+async function readPayableSegments(page, creditor) {
   const grid = await page.evaluate(() => {
+    const txt = (n) => (n.textContent || "").replace(/\s+/g, " ").trim();
     const rows = [];
     let headers = [];
     document.querySelectorAll('input[id^="allocationAmount_"]').forEach((inp) => {
       const tr = inp.closest("tr");
       if (!tr) return;
       if (!headers.length) {
-        const table = tr.closest("table");
-        const head = table && [...table.querySelectorAll("tr")]
-          .find((r) => /creditor\s*payable/i.test(r.textContent));
-        headers = head ? [...head.children].map((c) => c.textContent.replace(/\s+/g, " ").trim()) : [];
+        /* The header row, looked for in the row's own table FIRST and then
+           anywhere on the page. Tramada grids sometimes put the header in a
+           separate table from the body, and the old version only ever looked
+           in `tr.closest("table")` — where it finds nothing it reported "no
+           Creditor Payable column", which is a different and much more
+           alarming statement than "I looked in the wrong table". */
+        const scopes = [tr.closest("table"), document].filter(Boolean);
+        for (const scope of scopes) {
+          const head = [...scope.querySelectorAll("tr")]
+            .find((r) => /creditor\s*payable/i.test(r.textContent));
+          if (head) { headers = [...head.children].map(txt); break; }
+        }
       }
-      rows.push({
-        segId: inp.id.replace("allocationAmount_", ""),
-        cells: [...tr.children].map((td) => td.textContent.replace(/\s+/g, " ").trim()),
-      });
+      rows.push({ segId: inp.id.replace("allocationAmount_", ""), cells: [...tr.children].map(txt) });
     });
     return { headers, rows };
   });
+
+  /* NO ROWS is not a missing column, and saying so cost a real debugging
+     session. A costed segment only becomes payable to the creditor once the
+     client's receipt has been taken and allocated against it — money in before
+     money out. Until then this table is empty, and the creditor dropdown still
+     lists the creditor, which is what makes it look like a selector fault. */
+  if (!grid.rows.length) {
+    throw new Error(
+      `The payment form has no segments to allocate${creditor ? ` for ${creditor}` : ""}. ` +
+      `Nothing is payable yet — a segment becomes payable only after the client's ` +
+      `receipt has been taken and allocated against it. Raise the receipt first.`
+    );
+  }
 
   const cols = core.mapColumns(grid.headers, SEGMENT_COLUMNS);
   if (cols.payable < 0) {
     throw new Error(
       `The payment form's segment table has no "Creditor Payable" column ` +
-      `(headers: ${grid.headers.join(" | ")}). Refusing to guess which one holds the money.`
+      `(headers: ${grid.headers.join(" | ") || "(no header row found anywhere on the page)"}). ` +
+      `It has ${grid.rows.length} row(s) that look like: ${JSON.stringify(grid.rows[0].cells)}. ` +
+      `Refusing to guess which one holds the money.`
     );
   }
   return grid.rows.map((r) => ({
@@ -342,9 +372,12 @@ async function runCreditorPayment({
     await sleep(500);
     const chosen = await chooseCreditor(page, creditor);
 
-    const segments = await readPayableSegments(page);
+    const segments = await readPayableSegments(page, `${creditor} on booking ${bookingNo}`);
     if (!segments.length) {
-      throw new Error(`Booking ${bookingNo} has nothing payable to ${creditor}.`);
+      throw new Error(
+        `Booking ${bookingNo} has nothing payable to ${creditor} — take the client's ` +
+        `receipt first, then pay the creditor.`
+      );
     }
 
     const payableCents = segments.reduce((a, s) => a + (s.payableCents || 0), 0);
@@ -453,4 +486,10 @@ async function runCreditorPayment({
   }
 }
 
-module.exports = { runCreditorPayment, readPayableSegments, resolveTxnType, SEGMENT_COLUMNS, TXN_TYPE };
+module.exports = {
+  runCreditorPayment, readPayableSegments, resolveTxnType, SEGMENT_COLUMNS, TXN_TYPE,
+  // For probe-payment-form.js, so the probe drives the REAL code rather than a
+  // copy of it. A probe that reimplements the thing it is probing can succeed
+  // exactly where the real path fails, which is worse than no probe.
+  openBrowser, ensureLoggedIn, chooseCreditor, TRAMADA_BASE_URL,
+};

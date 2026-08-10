@@ -692,9 +692,39 @@ hidden: #parentId #mode #hiddenRecordType=CREDITOR_PAYMENT
         #hiddenAllocatedAmount #hiddenRoundingAmount
 ```
 
-`#creditor` offers **only creditors this booking actually owes**, so a creditor
-missing from the list is a fact about the booking, not a broken selector.
-Choosing one posts the segment table back — wait for it.
+`#creditor` offers the creditors this booking is **costed to**. Choosing one
+posts the segment table back — wait for it.
+
+> **Corrected 10-Aug-2026.** This used to read "only creditors this booking
+> actually owes, so a creditor missing from the list is a fact about the
+> booking". That was an assumption from a booking that happened to be
+> receipted, and it is wrong in the way that matters: READY ROOMS is offered on
+> a booking with **nothing payable at all**, and the segment table then comes
+> back empty. See below.
+
+### Nothing is payable until the client has paid
+
+**Money in before money out.** A costed segment does not become payable to the
+creditor until the client's receipt has been taken **and allocated against
+it**. Cost a booking and go straight to this form and Segments To Allocate is
+empty — no rows, no header, nothing to tick — even though `#creditor` happily
+offers the creditor.
+
+That is trust accounting, not a Tramada quirk: an agency cannot pay a supplier
+out of money it has not received.
+
+The first real `make-fixtures.js mint` run walked into this on bookings 13229
+and 13232, and because `readPayableSegments` built its header list inside the
+loop over the rows, an empty table surfaced as
+
+```
+The payment form's segment table has no "Creditor Payable" column (headers: )
+```
+
+which points at the wrong thing entirely. The reader now says "nothing is
+payable yet — raise the receipt first" when there are no rows, and only talks
+about columns when there are rows it cannot read. **So the order is: create the
+booking, cost it, receipt the client, THEN pay the creditor.**
 
 ### The segment columns are NOT the receipt form's
 
