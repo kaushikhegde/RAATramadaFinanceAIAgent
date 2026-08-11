@@ -51,6 +51,10 @@ require("dotenv").config();
 const { chromium } = require("playwright");
 const core = require("./recon-core");
 const { runTramadaReceipt } = require("./tramada-receipt");
+/* IPSI never touches a bank statement page — it walks Finance Receipts. A
+   combined run has to be able to drive it too, or a loaded IPSI file gets
+   matched against a page its transactions can never be on. */
+const { runIpsiReconciliation } = require("./tramada-ipsi");
 
 const TRAMADA_BASE_URL =
   process.env.TRAMADA_URL || "https://asp.tramada.com.au/ttms/raatravelsandbox";
@@ -1194,6 +1198,15 @@ async function runMintReconciliation(o = {}) {
  * already sitting on the same page. Reconciling them together is not a
  * convenience, it is what the page was always showing.
  *
+ * NOT EVERY REPORT USES THAT PAGE. IPSI reconciles on Tramada's Finance
+ * Receipts screens and never opens a statement page at all — `recPayType: null`
+ * is what says so. Loaded alongside the other three it used to be swept into
+ * the page phase with them and reported as "not among the transactions on this
+ * page", which is a run that did the wrong thing and then blamed the file. It
+ * gets its own flow now, in the same run, before the shared page is opened —
+ * `runIpsiReconciliation` closes its own CDP browser, so nothing may be holding
+ * a page while it runs.
+ *
  * The order is forced by the portal, not chosen:
  *
  *   1. RECEIPTS FIRST, and not concurrently with anything. `runTramadaReceipt`
@@ -1237,8 +1250,22 @@ async function runCombinedReconciliation(o = {}) {
 
   const rowsOf = (k) => results.filter((r) => r.src === k);
   const writes = order.filter((k) => core.REPORTS[k].files);
-  say(order.map((k) => `${rowsOf(k).length} ${core.REPORTS[k].title}`).join(" and ") +
-    ", on one statement page. " +
+  /* IPSI IS NOT A STATEMENT-PAGE REPORT, and a combined run has to know that.
+     It reconciles on Tramada's Finance Receipts screens — ticking receipts that
+     already exist and issuing one merchant receipt covering them — and never
+     looks at a bank statement page at all (`recPayType: null`).
+     Loaded alongside the other three it used to be swept into the page phase
+     with them, matched against a page its transactions can never be on, and
+     reported as "CCTEST02 is not among the transactions on this page" — a
+     report that ran the wrong automation and then blamed the data. It gets its
+     own flow now, in the same run. */
+  const onThePage = order.filter((k) => core.REPORTS[k].recPayType);
+  const ownFlow = order.filter((k) => !core.REPORTS[k].recPayType);
+
+  say(order.map((k) => `${rowsOf(k).length} ${core.REPORTS[k].title}`).join(" and ") + ". " +
+    (onThePage.length ? `${onThePage.map((k) => core.REPORTS[k].title).join(", ")} on one statement page` : "") +
+    (ownFlow.length ? `${onThePage.length ? "; " : ""}${ownFlow.map((k) => core.REPORTS[k].title).join(", ")} on its own screens` : "") +
+    ". " +
     (writes.length ? `${writes.map((k) => core.REPORTS[k].title).join(" and ")} are filed as receipts; ` : "") +
     "the rest are only looked for.");
 
@@ -1247,6 +1274,56 @@ async function runCombinedReconciliation(o = {}) {
       auth: { username: process.env.TRAMADA_USERNAME, password: process.env.TRAMADA_PASSWORD },
       cb, say, row,
     });
+  }
+
+  /* IPSI, before the shared page is opened — `runIpsiReconciliation` opens and
+     closes its OWN CDP connection, and over CDP `browser.close()` takes down
+     the shared Chrome. A page held open across it would be dead by the time it
+     returned, which is the same rule the receipts follow and for the same
+     reason. */
+  const ipsiRuns = [];
+  for (const k of ownFlow) {
+    const mine = rowsOf(k);
+    say(`${core.REPORTS[k].title}: not a statement-page report — running its own flow for ${mine.length} row${mine.length === 1 ? "" : "s"}.`);
+    try {
+      const out = await runIpsiReconciliation({
+        rows: mine,
+        dryRun,
+        payerName: o.payerName,
+        reference: o.ipsiReference,
+        dateReceived: o.statementDate,
+        toDate: o.statementDate,
+        callbacks: cb,
+      });
+      // Its results are copies, so the verdicts are merged back by `n` — the
+      // numbering is shared across every report in this run and the inbox and
+      // the store both key on it.
+      for (const done of out.results || []) {
+        const mineRow = results.find((r) => r.n === done.n);
+        if (mineRow) Object.assign(mineRow, done);
+      }
+      ipsiRuns.push({ report: k, ...out });
+    } catch (err) {
+      const why = core.tidyError(err.message);
+      say(`${core.REPORTS[k].title} stopped: ${why}`, false);
+      for (const r of mine) {
+        r.error = why;
+        r.reconciliation = r.reconciliation || "Not reconciled";
+        r.why = why;
+        row(r.n, { reconciliation: r.reconciliation, why });
+      }
+    }
+  }
+
+  // Nothing left for a statement page is a complete run, not an empty one.
+  if (!onThePage.length) {
+    return {
+      results, pageNumber: null, statementRows: 0,
+      summary: core.summariseCombined(results),
+      balances: null, selection: { ticked: [], missing: [], futureDated: [] },
+      finished: { done: false, reason: "no statement-page report was loaded" },
+      ipsi: ipsiRuns,
+    };
   }
 
   const browser = await openBrowser();
@@ -1283,7 +1360,9 @@ async function runCombinedReconciliation(o = {}) {
      * hidden by the NEXT filter cannot be clicked, and Playwright will not
      * click what it cannot see. */
     const passes = [];
-    for (const k of order) {
+    // `onThePage`, not `order` — a report with no recPayType has already had its
+    // own flow and must not be matched against this page as well.
+    for (const k of onThePage) {
       const type = k === "mint" && o.recPayType ? o.recPayType : core.REPORTS[k].recPayType;
       const existing = passes.find((p) => p.type === type);
       if (existing) existing.reports.push(k);
@@ -1352,6 +1431,8 @@ async function runCombinedReconciliation(o = {}) {
       results, pageNumber, statementRows: seen,
       summary: core.summariseCombined(results),
       balances, selection, finished,
+      // What the reports that do not use this page did, kept beside what it did.
+      ipsi: ipsiRuns,
     };
   } finally {
     if (ok && page) await page.close().catch(() => {});

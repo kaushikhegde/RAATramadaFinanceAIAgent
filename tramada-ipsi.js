@@ -550,7 +550,11 @@ async function runIpsiReconciliation(o = {}) {
   const rows = o.rows || [];
   if (!rows.length) throw new Error("No rows to run.");
 
-  const results = rows.map((r, i) => ({ ...r, n: i + 1 }));
+  /* A row that ALREADY has a number keeps it. On its own card these rows are
+     1..n; inside a combined run they are numbered across every report, and
+     renumbering them here would send `row(1, …)` for the first IPSI row and
+     overwrite the first BPay row in the inbox and in runs.json. */
+  const results = rows.map((r, i) => ({ ...r, n: r.n || i + 1 }));
   const browser = await openBrowser();
   let page;
   let form;

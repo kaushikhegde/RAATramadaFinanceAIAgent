@@ -209,5 +209,40 @@ console.log("\nwhich window Go opened, and how long it is given to open it");
   ok("Go is given minutes, not seconds", POPUP_TIMEOUT_MS >= 120000, String(POPUP_TIMEOUT_MS));
 }
 
+console.log("\nIPSI is not a statement-page report, and a combined run has to know");
+{
+  /* Loaded alongside the other three, IPSI was swept into the statement-page
+     phase with them and reported as
+       CCTEST02 is not among the transactions on this page
+     — the wrong automation, then blaming the data. What separates it is
+     `recPayType: null`: there is no filter for it because there is no page.
+     The combined run splits on exactly that. */
+  const onThePage = Object.keys(C.REPORTS).filter((k) => C.REPORTS[k].recPayType);
+  const ownFlow = Object.keys(C.REPORTS).filter((k) => !C.REPORTS[k].recPayType);
+  check("IPSI is the one with its own flow", ownFlow, ["ipsi"]);
+  check("the other three share the page", onThePage, ["bpay", "mint", "travelpay"]);
+  ok("and IPSI is the one that issues a receipt", C.REPORTS.ipsi.issuesReceipt === true);
+  ok("while none of the page reports do",
+    onThePage.every((k) => !C.REPORTS[k].issuesReceipt), JSON.stringify(onThePage));
+  // It has no statement matcher either — asking for one must not hand back
+  // Mint's and quietly match it against a page.
+  ok("IPSI has no statement-page matcher of its own", !C.MATCHERS.ipsi);
+}
+
+console.log("\nrow numbers survive a combined run");
+{
+  /* On its own card these rows are 1..n. Inside a combined run they are
+     numbered across every report, and renumbering them would send row 1 for
+     the first IPSI row and overwrite the first BPay row in the inbox and in
+     runs.json. */
+  const keep = (rows) => rows.map((r, i) => ({ ...r, n: r.n || i + 1 }));
+  check("a row that already has a number keeps it",
+    keep([{ reference: "CCTEST02", n: 4 }]).map((r) => r.n), [4]);
+  check("and one that does not is numbered from 1",
+    keep([{ reference: "A" }, { reference: "B" }]).map((r) => r.n), [1, 2]);
+  check("mixed, each keeps its own",
+    keep([{ n: 7 }, {}, { n: 9 }]).map((r) => r.n), [7, 2, 9]);
+}
+
 console.log(`\n${fail ? "❌" : "✅"} ${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);
