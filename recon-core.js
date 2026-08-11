@@ -389,6 +389,36 @@ function toTramadaDate(v) {
   return s;
 }
 
+/**
+ * The same date, `days` earlier, as `yyyy-mm-dd`.
+ *
+ * Reads either shape this project passes around — `2026-08-12` from a form, or
+ * `12-08-2026` as Tramada writes it — because the caller genuinely may have
+ * either, and reading one as the other would search a range months away.
+ *
+ * UTC arithmetic, so it cannot slide an hour across a daylight-saving boundary
+ * and land on the wrong day. Month and year ends fall out of that for free:
+ * 2 days before 2026-03-01 is 2026-02-27.
+ *
+ * A date it cannot read comes back EMPTY, never a guess. Empty means "no From
+ * date" — a wide search and a slow one, but an honest one. A wrong From is a
+ * search that quietly misses receipts.
+ */
+function daysBefore(value, days) {
+  const s = String(value == null ? "" : value).trim();
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const dmy = s.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  let y, m, d;
+  if (iso) [, y, m, d] = iso;
+  else if (dmy) [, d, m, y] = dmy;
+  else return "";
+  const n = Number(days);
+  if (!Number.isFinite(n)) return "";
+  const t = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d)) - n * 86400000);
+  const p = (x) => String(x).padStart(2, "0");
+  return `${t.getUTCFullYear()}-${p(t.getUTCMonth() + 1)}-${p(t.getUTCDate())}`;
+}
+
 /* ── reading a Tramada grid ──────────────────────────────────────────────── */
 
 /**
@@ -915,7 +945,14 @@ function parseTravelPayRows(headers, gridRows) {
  */
 const IPSI_COLUMNS = {
   transNo: ["transaction reference"],
-  reference: ["merchant reference"],
+  /* THE MATCH KEY IS Transaction Reference — the same column as `transNo`, and
+     deliberately so. It used to be `Merchant Reference`, and two of the four
+     rows on the live screen had none, so those rows were held back before
+     anything looked at them. Transaction Reference is IPSI's own id for the
+     transaction, it is on every row, and it is what gets typed into the
+     receipt's Reference field when the Credit Card Swipe receipt is raised.
+     Merchant Reference is not read at all now. */
+  reference: ["transaction reference"],
   bookingNo: ["booking number"],
   amount: ["transaction amount"],
   kind: ["custom 5"],
@@ -990,7 +1027,13 @@ function parseIpsiRows(headers, gridRows) {
     if (paid) row.tramadaPaymentNo = paid;
 
     const why = [];
-    if (!row.reference) why.push("no merchant reference");
+    /* A row is only unusable when there is NOTHING to match it by. It used to
+       be held back for a missing Merchant Reference — a column this no longer
+       reads — which threw away rows that would have matched perfectly well on
+       their booking number. */
+    if (!row.reference && !row.bookingNo) {
+      why.push("no transaction reference and no booking number — nothing to match it by");
+    }
     if (row.amountCents == null) why.push(`unreadable amount "${row.rawAmount}"`);
     if (row.status && !/^approved$/i.test(row.status)) {
       why.push(`the transaction is "${row.status}", not approved`);
@@ -1388,6 +1431,7 @@ module.exports = {
   totalLeftToAllocate, chooseSegments, decideAllocation,
   matchAgainstStatement,
   nextPageNumber, toTramadaDate,
+  daysBefore,
   mapColumns, rowsByHeader,
   STATEMENT_COLUMNS, TRANSACTION_COLUMNS, TRANSACTION_FALLBACK,
   MINT_COLUMNS, csvGrid, parseMintRows, matchMintAgainstStatement, summariseMint,

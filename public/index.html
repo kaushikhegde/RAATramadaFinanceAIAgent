@@ -4034,14 +4034,6 @@ function askMarkStale(){
     });
   }
 
-  /* The balance note carries a CLAIM about the data ("Balance is currently in
-     agreement"), so its lead sentence is a value like any other. The paragraph
-     after it is the client's copy and is left alone. */
-  function setNoteLead(host, text) {
-    const b = host.querySelector('.note b');
-    if (b) b.textContent = text;
-  }
-
   /**
    * No runs yet — and this screen has to SAY so.
    *
@@ -4062,15 +4054,6 @@ function askMarkStale(){
       'Nothing has been reconciled yet. Put a report on its card in Sources & upload '
       + 'and press Start run — every run from then on is recorded here.');
     host.querySelectorAll('.hero-stats .hs b').forEach((b) => setText(b, '0'));
-
-    host.querySelectorAll('.bal > div').forEach((d, i) => {
-      const b = d.querySelector('b');
-      if (!b) return;
-      b.textContent = '—';
-      b.classList.remove('neg');
-      if (i === 4) d.classList.remove('bal-ok');
-    });
-    setNoteLead(host, 'No statement has been read yet.');
 
     host.querySelectorAll('.g-4 .stream').forEach((c) =>
       fillStream(c, { total: 0, done: 0, review: 0, bad: 0 }));
@@ -4124,39 +4107,6 @@ function askMarkStale(){
        newest run: one that failed before reaching the reconcile screen has
        none. Falling back keeps a real strip on screen instead of dropping back
        to the mockup's invented millions the moment a run cannot reach Chrome. */
-    const b = (o.recentFull || []).map((r) => r.balances).find(Boolean) || last.balances;
-    const bal = host.querySelectorAll('.bal > div');
-    if (b && bal.length >= 5) {
-      const put = (el, text, negative) => {
-        const strong = el && el.querySelector('b');
-        if (!strong) return;
-        strong.textContent = text;
-        strong.classList.toggle('neg', !!negative);
-      };
-      const n = (v) => Number(String(v).replace(/[^0-9.-]/g, '')) || 0;
-      put(bal[0], b.opening || '—', n(b.opening) < 0);
-      put(bal[1], b.closing || '—', n(b.closing) < 0);
-      put(bal[2], b.unpresented || '—', n(b.unpresented) < 0);
-      put(bal[3], b.calculated || '—', n(b.calculated) < 0);
-      const variance = n(b.closing) - n(b.calculated);
-      const vb = bal[4].querySelector('b');
-      if (vb) vb.textContent = (variance === 0 ? '$0.00 ✓' : '$' + variance.toFixed(2));
-      bal[4].classList.toggle('bal-ok', variance === 0);
-      setNoteLead(host, variance === 0
-        ? 'Balance is currently in agreement.'
-        : 'Balance is out by $' + variance.toFixed(2) + '.');
-    } else {
-      // A run that never reached the reconcile screen read no balances. Say
-      // that rather than leaving the last run's — or the mockup's — in place.
-      bal.forEach((d, i) => {
-        const strong = d.querySelector('b');
-        if (!strong) return;
-        strong.textContent = '—';
-        strong.classList.remove('neg');
-        if (i === 4) d.classList.remove('bal-ok');
-      });
-      setNoteLead(host, 'No statement balances were read on this run.');
-    }
 
     /* FOUR streams, and all four are real now.
        The mockup's third and fourth cards were headed "Merchant settlements"
@@ -4300,20 +4250,33 @@ function askMarkStale(){
       sec.insertBefore(bar, sec.firstChild);
     }
 
-    /* The sidebar's "Agent brain" card is on EVERY screen, including the two
-       real ones — "87% of lines coded without a human this week" and a
-       similarity search over 24 months, neither of which exists. Left plain it
-       is an invented statistic sitting beside real receipts, which is the whole
-       thing markSamples is for. The card stays, because it is the client's
-       design; it just stops presenting itself as measured. */
+    /* The sidebar's "Agent brain" card is GONE.
+       It sat on every screen, including the two real ones — "87% of lines coded
+       without a human this week" and a similarity search over 24 months,
+       neither of which exists here. It used to be tagged "sample" and left in
+       place out of respect for the client's design; a made-up statistic beside
+       real receipts is not worth a label, so it is removed instead.
+
+       Removed from the WIRING, not the mockup: the mockup is replaced whole
+       when the client sends a new one, and a deletion typed into it would be
+       lost on the next build. */
     const brain = document.querySelector('.side .brain');
-    if (brain && !brain.querySelector('.sample-tag')) {
-      const tag = document.createElement('span');
-      tag.className = 'badge b-mute sample-tag';
-      tag.style.cssText = 'margin-top:8px;align-self:flex-start';
-      tag.textContent = 'sample';
-      brain.appendChild(tag);
-    }
+    if (brain) brain.remove();
+
+    /* The statement balance strip and its note, likewise gone.
+       Five figures — opening, closing, un-presented, calculated closing,
+       variance — over a note reading "the agent re-checks the variance after
+       every write-back". The run does not do that, and now that the closing
+       balance is COPIED from the opening one, the variance is $0.00 by
+       construction: a tile that can only ever agree with itself, above a
+       sentence describing a thing that does not happen. */
+    document.querySelectorAll('#s-inbox .bal, #s-overview .bal').forEach((b) => {
+      const card = b.closest('.card');
+      (card || b).remove();
+    });
+    document.querySelectorAll('#s-inbox .note, #s-overview .note').forEach((n) => {
+      if (/balance is currently in agreement/i.test(n.textContent || '')) n.remove();
+    });
   }
 
 

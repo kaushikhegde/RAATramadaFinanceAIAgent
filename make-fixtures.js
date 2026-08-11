@@ -61,8 +61,8 @@
  *
  *   ipsi       bookings + costings, then the file → csv_uploads/ipsi-payments.csv
  *              It does NOT go looking for your receipts. The Merchant
- *              Reference column is left blank for you to paste in once you
- *              have raised the Credit Card Swipe receipts.
+ *              Transaction Reference column is left blank for you to paste
+ *              in once you have raised the Credit Card Swipe receipts.
  *
  *   all        the four above, in order. Never in parallel — see makeAll().
  *
@@ -732,10 +732,12 @@ async function makeMint() {
  * all, having created real bookings.
  *
  * So now the file is written from the bookings, the moment each one exists.
- * Every column the fixture can know is filled in; **Merchant Reference is left
- * blank for you** to paste in once you have raised the receipt. That column is
- * what the run matches on, and inventing a value would produce a file that
- * reconciles nothing and looks like a broken matcher.
+ * Every column the fixture can know is filled in; **Transaction Reference is
+ * left blank for you** to paste in once you have raised the receipt. That
+ * column is what the run matches on, and inventing a value would produce a file
+ * that reconciles nothing and looks like a broken matcher. (Merchant Reference
+ * is not read at all — two of the four rows on the live screen had none, and
+ * requiring it threw those rows away before anything looked at them.)
  */
 async function makeIpsi() {
   const list = loadBookings();
@@ -748,12 +750,15 @@ async function makeIpsi() {
     "Transaction Status", "Channel", "Card Holder Name", "Transaction Amount", "Settlement Date",
     "Merchant Reference", "Card Type", "Custom 5", "Booking Number", "Settlement Amount",
     "Tramada Payment Number"];
-  const csv = csvWriter("ipsi-payments.csv", IPSI_COLS, ["Merchant Reference"]);
+  // Transaction Reference is what the run matches on now, so THAT is the one
+  // left blank for you. Merchant Reference is not read at all.
+  const csv = csvWriter("ipsi-payments.csv", IPSI_COLS, ["Transaction Reference"]);
   const today = new Date().toISOString().slice(0, 10);
 
   const made = await createBookings(list, (b, src) => {
     csv.add({
-      "Transaction Reference": ref("IP", String(csv.rows.length + 1).padStart(4, "0")),
+      // YOURS to fill in — the reference the swipe receipt was raised under.
+      "Transaction Reference": "",
       "Transaction Time stamp": today,
       "Transaction Type": "1",
       "Transaction Status": "APPROVED",
@@ -762,7 +767,7 @@ async function makeIpsi() {
         .filter(Boolean).map((p) => `${p.firstName} ${p.lastName}`)[0] || "Cardholder name",
       "Transaction Amount": core.money(b.dueCents || 0),
       "Settlement Date": today,
-      // YOURS to fill in — see the note at the top of this function.
+      // Not read by the run. Left blank rather than invented.
       "Merchant Reference": "",
       "Card Type": "VISA",
       "Custom 5": "Purchase (1)",
@@ -796,7 +801,7 @@ async function makeIpsi() {
   }
   say(`Receipt category: Client Payment Receipt · Debtor ${IPSI_DEBTOR}`);
   say("");
-  say(`Then put each receipt's reference in the Merchant Reference column of`);
+  say(`Then put each receipt's reference in the Transaction Reference column of`);
   say(`${shortPath(out)} — that column is what the run matches on. A row left`);
   say("blank falls back to matching on Booking Number and amount.");
   say("──────────────────────────────────────────────────────────────");

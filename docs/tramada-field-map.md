@@ -670,6 +670,37 @@ number read from the grid, never remembered.
 
 ---
 
+## The IPSI search reaches two days back
+
+`From Transaction Date` was left empty, and on that screen empty means
+**everything up to the To date** — every swipe receipt ever raised for the
+debtor, fetched and rendered before a single row could be ticked. That is most
+of why Go took long enough to time out the window it opens.
+
+It is now `To` **minus two days** (`IPSI_FROM_DAYS`). Two rather than one
+because a receipt raised late in the evening settles the next day, and a Monday
+run has a weekend behind it. An unreadable To date leaves From empty rather than
+inventing a range — a wide search is slow, a wrong one quietly misses receipts.
+
+---
+
+## IPSI matches on Transaction Reference
+
+`Transaction Reference` is IPSI's own id for the transaction and is on every
+row of the client's 49-row export. It is what gets typed into the Reference
+field when the Credit Card Swipe receipt is raised, so it is what the run looks
+for on Receipts To Reconcile — falling back to Booking Number + amount, because
+ten of those forty-nine rows are Captures whose reference is a different shape
+entirely.
+
+**`Merchant Reference` is not read at all.** It used to be the match key, and
+two of the four rows on the live screen had none — so those rows were held back
+before anything looked at them, for want of a column the run does not need. A
+row is only held back now when it has neither a transaction reference nor a
+booking number, because then there is genuinely nothing to match it by.
+
+---
+
 ## TravelPay's Payment Reference is TravelPay's number
 
 The client's own export:

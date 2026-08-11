@@ -168,8 +168,25 @@ const { chromium } = require("playwright");
   const st = seen.structure;
   ok("the hero ring is still the mockup's", st.hero);
   ok("four hero stats", st.heroStats === 4, String(st.heroStats));
-  ok("five balance figures", st.balance === 5, String(st.balance));
-  ok("the balance note is untouched", st.note);
+  /* THE BALANCE STRIP IS GONE, by request. Five figures over a note reading
+     "the agent re-checks the variance after every write-back" — which it does
+     not do — and, since the closing balance is now copied from the opening
+     one, a Variance tile that could only ever read $0.00. Asserted absent
+     rather than deleted from the assertions, so it cannot creep back with the
+     next mockup. */
+  ok("the balance strip is gone", st.balance === 0, String(st.balance));
+  // The sidebar's "Agent brain" card — "87% of lines coded without a human this
+  // week", a similarity search over 24 months — measured nothing. It used to be
+  // tagged "sample" and left in place; an invented statistic beside real
+  // receipts is not worth a label.
+  ok("the Agent brain card is gone",
+    !(await page.evaluate(() => !!document.querySelector('.side .brain'))));
+  // Not `document.body.textContent` — the mockup's own script is disabled by
+  // being left inert in the DOM, so its SOURCE is in body text and matches
+  // every string in it. The element is the thing to ask about.
+  ok("no Agent brain card on any screen",
+    (await page.evaluate(() => document.querySelectorAll('.brain').length)) === 0);
+  ok("and so is its note", !st.note);
   ok("all four stream cards survive", st.streams === 4, String(st.streams));
   ok("the reaction table is still a table with rows", st.reactionTable > 0, String(st.reactionTable));
   ok("a row still has the mockup's eight cells", st.reactionCells === 8, String(st.reactionCells));
@@ -180,10 +197,7 @@ const { chromium } = require("playwright");
   ok("the heading names the real statement date", seen.h2.includes("10-08-2026"), seen.h2);
   ok("the lede counts real rows", /5 of 6 statement lines/.test(seen.p), seen.p);
   ok("the ring is the real percentage", seen.ring === "83%", seen.ring);
-  ok("the balance strip is the run's own read-back",
-    seen.bal.some((b) => b.includes("111753.97")), seen.bal.join(" ~ "));
-  ok("variance is computed, not asserted",
-    seen.bal.some((b) => b.includes("$0.00")), seen.bal.join(" ~ "));
+  ok("no balance figures anywhere on the screen", seen.bal.length === 0, seen.bal.join(" ~ "));
   ok("the BPay stream shows real counts",
     seen.streams[1].big.replace(/\s/g, "") === "5/6", seen.streams[1].big);
   // This system has only BPay and Mint. The design's other two cards read
@@ -305,7 +319,9 @@ const { chromium } = require("playwright");
       ring: host.querySelector(".ring b").textContent.trim(),
       stats: [...host.querySelectorAll(".hero-stats .hs b")].map((b) => b.textContent.trim()),
       bal: [...host.querySelectorAll(".bal > div b")].map((b) => b.textContent.trim()),
-      note: host.querySelector(".note b").textContent.trim(),
+      // The balance note is removed with the strip, so this is "" now rather
+      // than a sentence — kept in the shape so the log line below still reads.
+      note: ((host.querySelector(".note b") || {}).textContent || "").trim(),
       streams: [...host.querySelectorAll(".g-4 .stream .big")].map((b) => b.textContent.replace(/\s/g, "")),
       body: host.querySelector(".g-main table tbody").textContent.replace(/\s+/g, " ").trim(),
       tl: host.querySelector(".g-main .tl").textContent.replace(/\s+/g, " ").trim(),
@@ -313,17 +329,15 @@ const { chromium } = require("playwright");
         host.querySelectorAll(".bal > div").length + "/" + host.querySelectorAll(".g-4 .stream").length,
     };
   });
-  console.log("    " + blank.h2 + " · ring " + blank.ring + " · " + blank.note);
+  console.log("    " + blank.h2 + " · ring " + blank.ring + (blank.note ? " · " + blank.note : ""));
   ok("a fresh install says it has no runs", blank.h2 === "No runs yet", blank.h2);
   ok("the ring is zero, not the mockup's 84%", blank.ring === "0%", blank.ring);
   ok("no invented hero stats", blank.stats.every((s) => s === "0"), blank.stats.join(","));
-  ok("no invented balances", blank.bal.every((b) => b === "—"), blank.bal.join(" ~ "));
-  ok("the balance note does not claim agreement",
-    !/in agreement/.test(blank.note), blank.note);
+  ok("no balance strip to invent balances in", blank.bal.length === 0, blank.bal.join(" ~ "));
   ok("every stream reads 0 / 0", blank.streams.every((s) => s === "0/0"), blank.streams.join(" ~ "));
   ok("nothing invented in the reaction table", !/118299|MT BARKER/.test(blank.body), blank.body.slice(0, 120));
   ok("nothing invented in the timeline", !/Princess Cruises|Jill S/.test(blank.tl), blank.tl.slice(0, 120));
-  ok("and the markup is still all there", blank.structure === "4/5/4", blank.structure);
+  ok("and the rest of the markup is still all there", blank.structure === "4/0/4", blank.structure);
   await fresh.screenshot({ path: path.join(__dirname, "overview-empty.png"), fullPage: false });
   await fresh.close();
 

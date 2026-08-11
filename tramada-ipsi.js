@@ -256,6 +256,20 @@ function popupTarget(url) {
  * `#goButton` disables itself once clicked, so there is no retrying it in
  * place: a second attempt means reloading the search form and filling it again.
  */
+/**
+ * How far back the receipt search reaches, in days before the To date.
+ *
+ * The From date was left EMPTY, which on this screen means "everything up to
+ * the To date" — every swipe receipt ever raised for that debtor, fetched and
+ * rendered before anything could be ticked. That is most of why Go took long
+ * enough to time out the window it opens.
+ *
+ * Two days rather than one: a receipt raised late in the evening settles the
+ * next day, and a Monday run has a weekend behind it. `IPSI_FROM_DAYS` widens
+ * or narrows it without touching this file.
+ */
+const IPSI_FROM_DAYS = parseInt(process.env.IPSI_FROM_DAYS || "2", 10);
+
 async function searchIssueReceipts(page, {
   debtorCode = "MASTER",
   debtorLabel = "MasterCard/Visa/Debit",
@@ -264,6 +278,9 @@ async function searchIssueReceipts(page, {
   fromDate = "",
   toDate = "",
 } = {}, say = () => {}) {
+  /* From = To minus two days, unless the caller named one. An unreadable To
+     date leaves From empty rather than inventing a range — see core.daysBefore. */
+  const from = fromDate || core.daysBefore(toDate, IPSI_FROM_DAYS);
   say("Opening Finance → Receipts…");
   await page.goto(`${TRAMADA_BASE_URL}/finance/finance-receipts.htm?mode=edit&id=1`,
     { waitUntil: "domcontentloaded" });
@@ -284,8 +301,12 @@ async function searchIssueReceipts(page, {
     await el.click({ clickCount: 3 });
     await el.pressSequentially(core.toTramadaDate(v), { delay: 40 });
   };
-  await typeDate("#fromTransactionDate", fromDate);
+  await typeDate("#fromTransactionDate", from);
   await typeDate("#toTransactionDate", toDate);
+  if (from || toDate) {
+    say(`Receipts from ${from ? core.toTramadaDate(from) : "the beginning"} to ` +
+      `${toDate ? core.toTramadaDate(toDate) : "today"}.`);
+  }
 
   // 5: the debtor, LAST.
   say(`Choosing the debtor ${debtorCode}…`);

@@ -62,7 +62,11 @@ check("the Tramada payment number is picked up", real.settlement.paymentNo, "R27
 const withoutRefunds = real.rows.reduce((a, r) => a + r.amountCents, 0);
 check("actionable rows alone do NOT equal the settlement", C.money(withoutRefunds), "105939.71");
 
-const HEAD = ["Merchant Reference", "Transaction Amount", "Booking Number", "Transaction Status", "Custom 5", "Transaction Type"];
+/* The match key is TRANSACTION Reference now. It used to be Merchant
+   Reference, and two of the four rows on the live screen had none — so those
+   rows were held back before anything looked at them, for want of a column the
+   run does not need. Merchant Reference is not read at all. */
+const HEAD = ["Transaction Reference", "Transaction Amount", "Booking Number", "Transaction Status", "Custom 5", "Transaction Type"];
 const one = (ref, amt, bkg, status = "APPROVED", kind = "Purchase (1)", code = "1") =>
   [ref, amt, bkg, status, kind, code];
 
@@ -74,14 +78,23 @@ const odd = C.parseIpsiRows(HEAD, [
   one("128222-2", "50.00", "128222", "DECLINED"),
   one("guid-here", "-25.00", "115932", "APPROVED", "Refund (20)", "20"),
 ]);
-check("only the good row runs", odd.rows.map((r) => r.bookingNo), ["128388"]);
-check("no merchant reference is held back", odd.problems[0].why, "no merchant reference");
-check("an unreadable amount too", odd.problems[1].why, 'unreadable amount "n/a"');
-check("and one that was not approved", odd.problems[2].why, 'the transaction is "DECLINED", not approved');
-ok("and the refund", /refund/i.test(odd.problems[3].why), odd.problems[3].why);
-check("a sheet with no merchant reference column is refused",
+/* A row with no reference but a booking number is now USABLE — it matches on
+   the booking, which is the fallback that has always been there. Only a row
+   with neither is held back. */
+check("a row with no reference still runs on its booking",
+  odd.rows.map((r) => r.bookingNo), ["128388", "128000"]);
+check("a row with neither is the one held back",
+  C.parseIpsiRows(HEAD, [one("", "100.00", "")]).problems[0].why,
+  "no transaction reference and no booking number — nothing to match it by");
+// One fewer problem than there used to be: the row with no reference is
+// usable now, so the indices below all moved down by one.
+check("three rows are held back, not four", odd.problems.length, 3);
+check("an unreadable amount", odd.problems[0].why, 'unreadable amount "n/a"');
+check("and one that was not approved", odd.problems[1].why, 'the transaction is "DECLINED", not approved');
+ok("and the refund", /refund/i.test(odd.problems[2].why), odd.problems[2].why);
+check("a sheet with no transaction reference column is refused",
   C.parseIpsiRows(["Transaction Amount"], [["1.00"]]).problems[0].why,
-  "the sheet has no column for: merchant reference");
+  "the sheet has no column for: transaction reference");
 check("an empty sheet is empty, not a crash", C.parseIpsiRows(HEAD, []).rows, []);
 
 console.log("\nmatching against Receipts To Reconcile");
@@ -94,10 +107,10 @@ const receipts = [
 ];
 const purchase = { reference: "128388-171850", bookingNo: "128388", amountCents: 94235 };
 const hit = C.matchIpsiAgainstReceipts(purchase, receipts);
-ok("a purchase matches on its merchant reference", hit.matched && hit.on === "reference", JSON.stringify(hit));
+ok("a purchase matches on its transaction reference", hit.matched && hit.on === "reference", JSON.stringify(hit));
 check("and reports which receipt", hit.receipt.receiptNo, "R.0000009405");
 
-/* Ten of the forty-nine rows are Captures, whose merchant reference is a
+/* Ten of the forty-nine rows are Captures, whose reference is a
    different shape entirely (R82EQ6F8-JoanneMChapma-raa-2911). Matching on
    reference alone would leave a fifth of the settlement unticked with no
    explanation, so booking + amount is the fallback. */
@@ -207,6 +220,32 @@ console.log("\nwhich window Go opened, and how long it is given to open it");
 
   // 30s was the old value and it is what failed.
   ok("Go is given minutes, not seconds", POPUP_TIMEOUT_MS >= 120000, String(POPUP_TIMEOUT_MS));
+}
+
+console.log("\nthe receipt search reaches two days back, not to the beginning of time");
+{
+  /* The From date was left EMPTY, which on that screen means "everything up to
+     the To date" — every swipe receipt ever raised for the debtor, fetched and
+     rendered before anything could be ticked, and most of why Go took long
+     enough to time out the window it opens.
+
+     Two days rather than one: a receipt raised late settles the next day, and a
+     Monday run has a weekend behind it. */
+  check("from the To date, as Tramada writes it", C.daysBefore("12-08-2026", 2), "2026-08-10");
+  check("and as a form gives it", C.daysBefore("2026-08-12", 2), "2026-08-10");
+  // Month and year ends fall out of the arithmetic rather than being special-cased.
+  check("across a month end", C.daysBefore("2026-03-01", 2), "2026-02-27");
+  check("across a year end", C.daysBefore("2026-01-01", 2), "2025-12-30");
+  check("a leap day is a real day", C.daysBefore("2028-03-01", 1), "2028-02-29");
+  check("zero days is the same day", C.daysBefore("2026-08-12", 0), "2026-08-12");
+
+  /* A date it cannot read comes back EMPTY, never a guess. Empty means "no From
+     date" — wide and slow, but honest. A wrong From is a search that quietly
+     misses receipts, which on a settlement is much the worse failure. */
+  check("an unreadable date is empty, not guessed", C.daysBefore("n/a", 2), "");
+  check("nothing at all is empty too", C.daysBefore("", 2), "");
+  check("and so is undefined", C.daysBefore(undefined, 2), "");
+  check("a nonsense day count is empty as well", C.daysBefore("2026-08-12", "two"), "");
 }
 
 console.log("\nIPSI is not a statement-page report, and a combined run has to know");
