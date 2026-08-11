@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="RAA Travel">
+  <!--
+    The sidebar's own RAA mark, at tab size.
+
+    Taken from the mockup rather than invented: .rail .rmark is a 30px square,
+    border-radius 8px, background var(yellow) #ffe600, letters var(indigo)
+    #130064, font-weight 800, letter-spacing -.03em. This is that mark on a 64
+    unit box, so the corner radius is 8/30 of the side.
+
+    THE LETTERS ARE TEXT, and deliberately.
+
+    They were drawn as strokes first, on the reasoning that an SVG favicon has
+    no page font stack to fall back on. That reasoning was wrong twice over.
+    The sidebar mark is ALREADY rendering in a system fallback, because
+    National 2 Web is licensed and not loaded here, so hand-cut letterforms
+    would match a font nobody sees. And three hand-cut glyphs at 16 pixels came
+    out with filled-in counters and notched apexes. Real text in the same stack
+    is simpler AND closer to what is on the screen beside it.
+
+    textLength with lengthAdjust="spacingAndGlyphs" pins the word to 46 units
+    wide whatever font the machine actually has, so the mark is the same size
+    on a Mac, a PC and a phone rather than whatever Helvetica or Segoe or
+    DejaVu happened to measure.
+
+    NOTE, because it cost a render: a double hyphen cannot appear inside an XML
+    comment, which is why the CSS variables above are written without their
+    leading hyphens. Get that wrong and the whole file is unparseable, and the
+    browser shows a broken-image glyph while the request looks perfectly
+    healthy, 200 and all.
+  -->
+  <rect width="64" height="64" rx="17" ry="17" fill="#ffe600"/>
+  <text x="32" y="41.5"
+        text-anchor="middle"
+        textLength="46" lengthAdjust="spacingAndGlyphs"
+        font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
+        font-size="26" font-weight="800"
+        fill="#130064">RAA</text>
+</svg>
