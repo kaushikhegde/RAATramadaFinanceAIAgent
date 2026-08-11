@@ -36,8 +36,9 @@ npm run start:chrome                 # opens Chrome with CDP on 9222
 npm start                            # http://localhost:3000
 ```
 
-Then: drop a report on its card, fill in the statement date and the opening and
-closing balances, and press **Start run**.
+Then: drop a report on its card, fill in the statement date, and press
+**Start run**. (The balance boxes are still on the screen but no longer reach
+Tramada — see below.)
 
 **Start run writes to Tramada immediately.** For a BPay report it files a real
 receipt per row against a real booking, and nothing rolls back. The card's
@@ -49,13 +50,20 @@ On the reconciliation page it sets the sort, writes the statement balances,
 ticks the transactions it matched, and presses **Done**. Export is never
 clicked.
 
-**The Rec/Pay Type filter is off.** The run sorts the page and reads all of it.
-`applyFilter` is still there, whole and working, behind `RECON_APPLY_FILTER=true`
-— switched off rather than deleted, because commented-out code is not compiled,
-not tested, and rots against the file around it. Matching is unaffected: a row
-is found by its receipt number or its reference, and both are as unique across
-the whole page as within one type. A combined run now reads one grid instead of
-one per filter.
+**The Rec/Pay Type filter depends on how many reports you ran.** One report on
+its own is filtered to its own type — there is one type to show and showing it
+is what the screen is for. Several at once are not: swapping the filter per pass
+meant re-reading the grid each time, where one unfiltered read serves them all.
+Matching is unaffected either way — a row is found by its receipt number or its
+reference, and both are as unique across the whole page as within one type.
+`RECON_APPLY_FILTER=true|false` forces it.
+
+**The statement balances come from Tramada, not from you.** Choosing the bank
+account fills the new-statement form's Opening Balance with the account's own
+figure; the run leaves it alone and copies it into Closing Balance. The Opening
+and Closing boxes on the Sources screen no longer reach either form — they used
+to be typed over the top of Tramada's own number, which meant a statement could
+be created against a balance somebody had guessed at.
 
 **Done commits the page.** Until 10-Aug-2026 this run deliberately stopped short
 of it, and the line it would not cross was the difference between a run that
@@ -68,10 +76,11 @@ rules hold it in place:
   entirely when nothing matched. Committing a page whose ticks never registered
   is worse than not committing at all.
 
-The balances are written on the reconcile screen itself, where all three fields
-ship `readonly` behind an unnamed **Edit** button. Typing into a readonly input
-succeeds silently and changes nothing — which is why the opening balance used to
-go missing.
+On the reconcile screen the balance fields ship `readonly` behind an unnamed
+**Edit** button, and typing into a readonly input succeeds silently and changes
+nothing — which is why the opening balance used to go missing. The run only
+clicks Edit when the page does **not** already show the figures it wants; since
+the statement is created with opening and closing equal, that is usually never.
 
 ### Dry run
 
@@ -161,7 +170,7 @@ marked *sample data*.
 ## Tests
 
 ```bash
-npm test        # 503 assertions, all offline — no network, no browser
+npm test        # 513 assertions, all offline — no network, no browser
 npm run shots   # screenshots of the page, a BPay run and a Mint run
 ```
 
