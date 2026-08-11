@@ -8,7 +8,23 @@
  *   finance-receipts.htm        → "Issue Receipt" → Continue
  *     -> finance-receipts-issue.htm   fill the search, Go
  *       -> A NEW WINDOW opens: finance-merchant-payment-receipt.htm
- *         -> tick the matched rows -> Amount Received -> Issue
+ *         -> its URL is taken, loaded in THIS tab, and the window closed
+ *           -> tick the matched rows -> Amount Received -> Issue
+ *
+ * ── Why the window is left behind ────────────────────────────────────────────
+ *
+ * Go really does open a window — `pop-up.js` calls window.open — and it is slow:
+ * a fresh window painting from nothing, with every later step waiting on it.
+ * The only thing it has that cannot be got any other way is its URL, which
+ * carries the `dataContainerId` the server made for this search. That id is
+ * why navigating straight to the form used to end at an Error Page. With it,
+ * the form loads in an ordinary tab.
+ *
+ * So the URL is taken as soon as the navigation COMMITS — not when the window
+ * has finished painting, which is where the time goes — loaded here, and the
+ * window closed. The form is confirmed in this tab BEFORE the window is closed,
+ * and if it does not appear the window is kept and used exactly as before.
+ * `IPSI_KEEP_POPUP=true` switches the whole thing off.
  *
  * Every selector below was measured live on 10-08-2026; see the field map's
  * "The IPSI flow" section. Three of them would have been got wrong by guessing,
@@ -111,8 +127,125 @@ async function fillAutocomplete(page, fieldId, text, expect) {
 
 /* ── the search, and the window it opens ─────────────────────────────────── */
 
+/** The merchant receipt form's own route, wherever it is opened. */
+const RECEIPT_FORM_URL = /finance-merchant-payment-receipt/i;
+
 /**
- * Fill the Issue Receipts search and press Go. Returns the POPUP.
+ * How long Go is given to open its window.
+ *
+ * It used to be 30s, and 30s is not enough: the run stopped with
+ *
+ *     page.waitForEvent: Timeout 30000ms exceeded while waiting for event "popup"
+ *
+ * and the window then opened a moment later, orphaned — the wait had already
+ * given up. The time is not the window painting, it is the SEARCH: Tramada
+ * posts the form, works through the ledger, and only then calls window.open.
+ * A wide date range on a busy debtor takes as long as it takes.
+ *
+ * So the default is three minutes, and it is tunable. Waiting longer costs
+ * nothing; giving up early throws away a search that was going to succeed and
+ * leaves a window nobody is holding.
+ */
+const POPUP_TIMEOUT_MS = parseInt(process.env.IPSI_POPUP_TIMEOUT_MS || "180000", 10);
+
+/**
+ * Which of the newly-opened windows is the one we want.
+ *
+ * Pure, and separate, because this runs against the human's OWN Chrome. A tab
+ * they open while the search is running is a new page too, and adopting it
+ * would drive the rest of the run against whatever they happened to be
+ * reading. So: a window already showing the receipt form always wins; failing
+ * that, exactly ONE new window is taken (it may still be blank and about to
+ * navigate); two or more unidentifiable ones are not guessed between.
+ *
+ * @param {{url:string, closed?:boolean}[]} fresh  windows that were not there before
+ * @returns {number} index into `fresh`, or -1
+ */
+function chooseWindow(fresh) {
+  const live = (fresh || []).map((p, i) => ({ ...p, i })).filter((p) => !p.closed);
+  const onForm = live.filter((p) => RECEIPT_FORM_URL.test(String(p.url || "")));
+  if (onForm.length) return onForm[0].i;
+  return live.length === 1 ? live[0].i : -1;
+}
+
+/**
+ * Click Go and hand back the window it opens — however long that takes.
+ *
+ * The listeners go on BEFORE the click, and the poll runs alongside them, so a
+ * window that opens between the two is still caught. `page.waitForEvent` alone
+ * was both too short and too narrow: it only hears popups attributed to this
+ * page, and it throws rather than returning, so the window that arrived one
+ * second late was lost rather than used.
+ */
+async function waitForReceiptWindow(page, act, say = () => {}) {
+  const ctx = page.context();
+  const before = new Set(ctx.pages());
+  const opened = [];
+  const note = (p) => { if (!before.has(p) && !opened.includes(p)) opened.push(p); };
+  ctx.on("page", note);
+  page.on("popup", note);
+
+  try {
+    await act();
+    const started = Date.now();
+    let told = 0;
+    for (;;) {
+      for (const p of ctx.pages()) note(p);
+      const pick = chooseWindow(opened.map((p) => ({ url: p.url(), closed: p.isClosed() })));
+      if (pick >= 0) return opened[pick];
+
+      const waited = Math.round((Date.now() - started) / 1000);
+      if (waited >= POPUP_TIMEOUT_MS / 1000) return null;
+      // Said out loud, because a silent wait of minutes reads as a hang and
+      // this one is expected to be long.
+      if (waited >= told + 15) {
+        told = waited;
+        say(`Still waiting for the receipt window — ${waited}s so far. The search is what takes the time.`);
+      }
+      await sleep(500);
+    }
+  } finally {
+    ctx.off("page", note);
+    page.off("popup", note);
+  }
+}
+
+/**
+ * Is the window's URL worth loading in this tab instead?
+ *
+ * Pure, so the branch that decides whether to leave the popup can be tested
+ * without opening one. The rules, and why each is here:
+ *
+ *   - it has to BE the merchant receipt form. A popup still showing
+ *     `about:blank`, or one that landed somewhere else, is not something to
+ *     navigate to — that is a fallback, not a failure.
+ *   - `dataContainerId` is the whole reason this works. The server makes a
+ *     container for the search and the URL names it; without one, going
+ *     straight to the form is the navigation that ends at an Error Page. A URL
+ *     missing it is still tried — the fallback is right there — but it is said
+ *     out loud first, because that is the thing to look at when it fails.
+ */
+function popupTarget(url) {
+  const u = String(url || "");
+  if (!RECEIPT_FORM_URL.test(u)) {
+    return {
+      relocate: false, url: u,
+      warn: u && !/^about:/.test(u)
+        ? `The window went to ${u.split("?")[0]}, not the merchant receipt form — using the window itself.`
+        : "The window has not reached the merchant receipt form — using the window itself.",
+    };
+  }
+  return {
+    relocate: true, url: u,
+    warn: /dataContainerId=/i.test(u) ? null
+      : "The window's URL carries no dataContainerId — trying it in this tab anyway.",
+  };
+}
+
+/**
+ * Fill the Issue Receipts search, press Go, and hand back THE PAGE THE FORM IS
+ * ON — this tab when the popup could be left behind, the popup itself when it
+ * could not. Every step after this takes whichever it is.
  *
  * **THE DEBTOR IS FILLED LAST, AND THAT IS THE WHOLE TRICK.** Changing
  * `#receiptType`, `#agencyBankAccount` or `#sortOrder` CLEARS `#debtor` —
@@ -179,14 +312,66 @@ async function searchIssueReceipts(page, {
   }
 
   /* Go opens A NEW WINDOW — not a tab, not this page. `pop-up.js` calls
-     window.open, and a popup that opens with nothing listening is simply lost:
+     window.open, and a window that opens with nothing listening is simply lost:
      every selector after it would run against the search page, find nothing,
      and look exactly like an empty result set. Catch it AS it opens. */
-  say("Searching…");
-  const [popup] = await Promise.all([
-    page.waitForEvent("popup", { timeout: 30000 }),
-    page.click("#goButton"),
-  ]);
+  say("Searching… Go can take a while to open the receipt window.");
+  const popup = await waitForReceiptWindow(page, () => page.click("#goButton"), say);
+  if (!popup) {
+    throw new Error(
+      `Go was clicked but no window opened within ${Math.round(POPUP_TIMEOUT_MS / 1000)}s. ` +
+      "The search itself is what takes the time — Tramada posts the form, works, and only then " +
+      "calls window.open — so this is a search that ran long, not a broken selector. " +
+      "Raise IPSI_POPUP_TIMEOUT_MS, or narrow the date range so there is less to fetch."
+    );
+  }
+
+  /* ── OUT OF THE POPUP, INTO THIS TAB ─────────────────────────────────────
+   *
+   * The popup is slow — a fresh window painting from nothing — and every step
+   * after this waits on it. But the only thing it has that cannot be got any
+   * other way is its URL, which carries the `dataContainerId` the server just
+   * made for this search:
+   *
+   *   finance/finance-merchant-payment-receipt.htm?…&dataContainerId=161&…
+   *
+   * That id is why navigating straight to the form used to end at an Error
+   * Page — there was no container to show. With it, the form loads anywhere in
+   * the same session. So take the URL, load it HERE, and drop the window.
+   *
+   * The URL is waited for, not the load: `waitForURL` resolves when the
+   * navigation COMMITS, long before the window has finished painting, and that
+   * is where the time goes.
+   *
+   * ORDER MATTERS. The form is confirmed in this tab BEFORE the popup is
+   * closed, and if it never appears the popup is kept and used exactly as it
+   * always was. Closing first would leave nothing to fall back to.
+   *
+   * IPSI_KEEP_POPUP=true switches this off and works in the window. */
+  const keepPopup = process.env.IPSI_KEEP_POPUP === "true";
+  if (!keepPopup) {
+    // Same budget as opening it. A window that took two minutes to appear is
+    // not going to settle its URL in one.
+    await popup.waitForURL(RECEIPT_FORM_URL, { timeout: POPUP_TIMEOUT_MS }).catch(() => {});
+    const target = popupTarget(popup.url());
+    if (target.warn) say(target.warn, false);
+    if (target.relocate) {
+      try {
+        await page.goto(target.url, { waitUntil: "domcontentloaded" });
+        await page.waitForSelector("#issue", { timeout: 20000 });
+        if (!/error page/i.test((await page.title().catch(() => "")) || "")) {
+          await popup.close().catch(() => {});
+          say("Merchant receipt form opened in this tab — the popup window is closed.");
+          return page;
+        }
+        say("That URL came back as an Error Page here — using the popup window.", false);
+      } catch (err) {
+        say(`The form would not open in this tab (${core.tidyError(err.message)}) — using the popup window.`, false);
+      }
+    }
+  }
+
+  // The popup, exactly as it has always worked.
   await popup.waitForLoadState("domcontentloaded").catch(() => {});
   await sleep(1200);
 
@@ -368,20 +553,21 @@ async function runIpsiReconciliation(o = {}) {
   const results = rows.map((r, i) => ({ ...r, n: i + 1 }));
   const browser = await openBrowser();
   let page;
+  let form;
   let ok = false;
   try {
     const ctx = browser.contexts()[0] || (await browser.newContext());
     page = await ctx.newPage();
     await ensureLoggedIn(page, cb.onNeedLogin);
 
-    const popup = await searchIssueReceipts(page, {
+    form = await searchIssueReceipts(page, {
       debtorCode: o.debtorCode || "MASTER",
       debtorLabel: o.debtorLabel || "MasterCard/Visa/Debit",
       fromDate: o.fromDate,
       toDate: o.toDate,
     }, say);
 
-    const waiting = await readReceiptsToReconcile(popup);
+    const waiting = await readReceiptsToReconcile(form);
     say(`${waiting.length} receipt${waiting.length === 1 ? "" : "s"} waiting to be reconciled.`);
 
     const toTick = [];
@@ -399,7 +585,7 @@ async function runIpsiReconciliation(o = {}) {
       say(`Row ${r.n}: ${m.reason}`, m.matched);
     }
 
-    const sel = await tickReceipts(popup, toTick, say);
+    const sel = await tickReceipts(form, toTick, say);
     for (const r of results) if (r.selectId && sel.ticked.includes(r.selectId)) r.ticked = true;
 
     const summary = core.summariseIpsi(results);
@@ -409,7 +595,7 @@ async function runIpsiReconciliation(o = {}) {
       return { results, summary, issued: null };
     }
 
-    const issued = await issueMerchantReceipt(popup, {
+    const issued = await issueMerchantReceipt(form, {
       payerName: o.payerName || "RAA",
       amountCents: summary.allocatedCents,
       reference: o.reference || "",
@@ -419,6 +605,9 @@ async function runIpsiReconciliation(o = {}) {
     ok = true;
     return { results, summary, issued };
   } finally {
+    // `form` is this tab when the popup was relocated out of, and the popup
+    // itself when it was not. Either way the window does not outlive the run.
+    if (ok && form && form !== page) await form.close().catch(() => {});
     if (ok && page) await page.close().catch(() => {});
     await browser.close().catch(() => {});
   }
@@ -428,4 +617,5 @@ module.exports = {
   runIpsiReconciliation,
   searchIssueReceipts, readReceiptsToReconcile, tickReceipts, issueMerchantReceipt,
   fillAutocomplete, RECEIPT_COLUMNS,
+  popupTarget, RECEIPT_FORM_URL, chooseWindow, POPUP_TIMEOUT_MS,
 };

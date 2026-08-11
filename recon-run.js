@@ -7,8 +7,20 @@
  *                      allocated only when the amount equals what the receipt
  *                      form says is still outstanding
  *   then             → create a NEW reconciliation page (last page + 1)
- *   then             → SORT it, then filter it to Client Payment Receipt
+ *   then             → SORT it (the Rec/Pay Type filter is OFF — see below)
  *   then             → look for each RECEIPT NUMBER in the Trans. No column
+ *
+ * ── The filter is switched off ───────────────────────────────────────────────
+ *
+ * The run sorts the page and reads ALL of it. `applyFilter` is still here,
+ * whole and working, behind `RECON_APPLY_FILTER=true` — switched off rather
+ * than deleted, because commented-out code is not compiled, not tested, and
+ * rots against the file around it.
+ *
+ * Matching does not change: a row is found by its receipt number or its
+ * reference, and both are as unique across the whole page as within one
+ * Rec/Pay Type. What changes is size — the grid is everything on the page —
+ * and that a combined run now reads ONE grid instead of one per filter.
  *
  * Sorting clears the filter, so it goes first. And the match is on the receipt
  * number Tramada handed back — `R.0000009403` — against `Trans. No`, not on the
@@ -429,6 +441,28 @@ async function sortPage(page) {
   await page.waitForSelector("#filterColumn", { timeout: 20000 });
 }
 
+/**
+ * FILTERING IS OFF. Sorting still happens; the Rec/Pay Type filter does not.
+ *
+ * The code below is kept, whole and working — it is switched off, not deleted,
+ * because "we tried filtering and stopped" is worth being able to undo in one
+ * step rather than rewriting from the field map. Turn it back on with:
+ *
+ *     RECON_APPLY_FILTER=true npm start
+ *
+ * A switch rather than a comment block on purpose: commented-out code is not
+ * compiled, not tested and quietly rots against the file around it. This stays
+ * live, stays covered, and flips back with an env var.
+ *
+ * What changes with it off: the grid holds every transaction on the page
+ * instead of one Rec/Pay Type. Nothing about matching changes — a row is found
+ * by its receipt number or its reference, and both are as unique across the
+ * whole page as within one type — but the page is bigger, so reading it is
+ * slower, and on a combined run every report now reads ONE grid rather than one
+ * per filter.
+ */
+const APPLY_FILTER = process.env.RECON_APPLY_FILTER === "true";
+
 /** Show one Rec/Pay Type. Client-side; ticks already made are not disturbed. */
 async function applyFilter(page, recPayType) {
   await page.selectOption("#filterColumn", { label: "Rec/Pay Type" });
@@ -450,9 +484,16 @@ async function applyFilter(page, recPayType) {
   }
 }
 
-async function filterAndRead(page, recPayType = "Client Payment Receipt") {
+async function filterAndRead(page, recPayType = "Client Payment Receipt", say = () => {}) {
   await sortPage(page);
-  await applyFilter(page, recPayType);
+  if (APPLY_FILTER) {
+    await applyFilter(page, recPayType);
+  } else {
+    // Said out loud every run, because "186 transactions showing" means a very
+    // different thing unfiltered and the log should not imply a filter that
+    // was never applied.
+    say(`Filter off — reading every transaction on the page, not just ${recPayType}.`);
+  }
   return readVisibleTransactions(page);
 }
 
@@ -1003,7 +1044,7 @@ async function runReconciliation(o = {}) {
 
     /* 3 — sort, filter, read, match. Nothing else is clicked here. */
     say("Sorting by date descending, then filtering to Client Payment Receipt…");
-    const statement = await filterAndRead(page);
+    const statement = await filterAndRead(page, undefined, say);
     say(`${statement.length} transaction${statement.length === 1 ? "" : "s"} showing after the filter.`);
 
     const matched = [];
@@ -1107,8 +1148,8 @@ async function runMintReconciliation(o = {}) {
       say,
     });
 
-    say(`Sorting by date descending, then filtering to ${recPayType}…`);
-    const statement = await filterAndRead(page, recPayType);
+    say("Sorting by date descending…");
+    const statement = await filterAndRead(page, recPayType, say);
     say(`${statement.length} transaction${statement.length === 1 ? "" : "s"} showing after the filter.`);
 
     const matched = [];
@@ -1249,13 +1290,30 @@ async function runCombinedReconciliation(o = {}) {
       else passes.push({ type, reports: [k] });
     }
 
+    /* Unfiltered, every pass would look at the SAME grid, so it is read once
+       and the passes share it. Reading it per pass would be the same rows two
+       or three times over — slow, and `seen` would report a page two or three
+       times its real size. Filtered, each pass has to re-read, because the
+       filter is what changed. */
+    const wholePage = APPLY_FILTER ? null : await readVisibleTransactions(page);
+    if (wholePage) {
+      seen = wholePage.length;
+      say(`Filter off — ${wholePage.length} transaction${wholePage.length === 1 ? "" : "s"} on the page, ` +
+        "every type, read once for all reports.");
+    }
+
     for (const p of passes) {
-      say(`Filtering to ${p.type}…`);
-      await applyFilter(page, p.type);
-      const statement = await readVisibleTransactions(page);
-      seen += statement.length;
-      say(`${statement.length} ${p.type} transaction${statement.length === 1 ? "" : "s"} showing` +
-        ` — checking ${p.reports.map((k) => core.REPORTS[k].title).join(" and ")}.`);
+      let statement = wholePage;
+      if (APPLY_FILTER) {
+        say(`Filtering to ${p.type}…`);
+        await applyFilter(page, p.type);
+        statement = await readVisibleTransactions(page);
+        seen += statement.length;
+        say(`${statement.length} ${p.type} transaction${statement.length === 1 ? "" : "s"} showing` +
+          ` — checking ${p.reports.map((k) => core.REPORTS[k].title).join(" and ")}.`);
+      } else {
+        say(`Checking ${p.reports.map((k) => core.REPORTS[k].title).join(" and ")}.`);
+      }
 
       const matched = [];
       for (const k of p.reports) {
@@ -1303,7 +1361,7 @@ async function runCombinedReconciliation(o = {}) {
 
 module.exports = {
   runReconciliation, runMintReconciliation, runCombinedReconciliation,
-  sortPage, applyFilter, readVisibleTransactions, fileReceipts,
+  sortPage, applyFilter, APPLY_FILTER, readVisibleTransactions, fileReceipts,
   readExistingPages, createStatement, openFreshStatementPage, filterAndRead,
   setStatementBalances, selectMatchedTransactions, finishStatementPage,
 };

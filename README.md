@@ -10,13 +10,12 @@ Two reports, two jobs:
 | File | `.csv` | `.xlsx` or `.csv` |
 | Columns | Date, Reference, Rec/Pay Type, Amount, Booking No | Transaction Reference, Amount, To Company |
 | Writes to Tramada | **yes** — one receipt per row | **no** — nothing is filed |
-| Statement filter | `Client Payment Receipt` | `Creditor Payment` |
 | Reconciled when | the receipt number it was handed appears as a `Trans. No` at the same amount | the transaction reference appears as a `Trans. No` |
 
 Load one report or both. **Both run together on ONE statement page** — a freshly
 created page already lists every unpresented transaction on the account, so the
 BPay receipts and the Mint creditor payments are both already on it. The BPay
-rows are filed first, then each report is matched under its own filter, and the
+rows are filed first, then each report is matched against the page, and the
 page is committed once.
 
 They cannot run as two *concurrent* flows: `runTramadaReceipt` closes the shared
@@ -46,9 +45,17 @@ receipt per row against a real booking, and nothing rolls back. The card's
 
 ## What it touches, and what it will not
 
-On the reconciliation page it sets the sort and the filter, writes the statement
-balances, ticks the transactions it matched, and presses **Done**. Export is
-never clicked.
+On the reconciliation page it sets the sort, writes the statement balances,
+ticks the transactions it matched, and presses **Done**. Export is never
+clicked.
+
+**The Rec/Pay Type filter is off.** The run sorts the page and reads all of it.
+`applyFilter` is still there, whole and working, behind `RECON_APPLY_FILTER=true`
+— switched off rather than deleted, because commented-out code is not compiled,
+not tested, and rots against the file around it. Matching is unaffected: a row
+is found by its receipt number or its reference, and both are as unique across
+the whole page as within one type. A combined run now reads one grid instead of
+one per filter.
 
 **Done commits the page.** Until 10-Aug-2026 this run deliberately stopped short
 of it, and the line it would not cross was the difference between a run that
@@ -154,7 +161,7 @@ marked *sample data*.
 ## Tests
 
 ```bash
-npm test        # 459 assertions, all offline — no network, no browser
+npm test        # 503 assertions, all offline — no network, no browser
 npm run shots   # screenshots of the page, a BPay run and a Mint run
 ```
 

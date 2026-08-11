@@ -137,5 +137,77 @@ check("how each was found", [s.onReference, s.onBooking], [1, 1]);
 check("the amount is the ticked rows only", C.money(s.allocatedCents), "1074.81");
 check("nothing ticked is zero, not the file's headline figure", C.money(C.summariseIpsi([]).allocatedCents), "0.00");
 
+console.log("\nleaving the popup behind");
+{
+  /* Go opens a real window, and it is slow — every step after it waits on that
+     window painting. The one thing only the window has is its URL, which
+     carries the `dataContainerId` the server made for this search. With that id
+     the form loads in an ordinary tab; without it, going straight to the form
+     is the navigation that ends at an Error Page.
+
+     The decision is pure so it can be checked here. The navigation itself needs
+     Tramada, and the popup is kept until the form is confirmed in the tab. */
+  const { popupTarget } = require("./tramada-ipsi");
+  const real = "https://asp.tramada.com.au/ttms/raatravelsandbox/finance/" +
+    "finance-merchant-payment-receipt.htm?mode=add&dataContainerId=161&isPxIssue=false";
+
+  const go = popupTarget(real);
+  ok("the real popup URL is worth taking", go.relocate, JSON.stringify(go));
+  check("with nothing to warn about", go.warn, null);
+  check("and it is the URL that gets loaded", go.url, real);
+
+  // Still tried — the fallback is right there — but said out loud, because a
+  // missing container is the first thing to look at when it fails.
+  const noContainer = popupTarget(
+    "https://asp.tramada.com.au/ttms/x/finance/finance-merchant-payment-receipt.htm?mode=add");
+  ok("no dataContainerId is still tried", noContainer.relocate);
+  ok("but it says so first", /dataContainerId/.test(noContainer.warn || ""), noContainer.warn);
+
+  // A window that has not navigated yet is not a failure — it is why the popup
+  // is kept as a fallback rather than closed on faith.
+  const blank = popupTarget("about:blank");
+  ok("a blank window is left alone", !blank.relocate);
+  ok("and does not read as an error", !/went to/.test(blank.warn || ""), blank.warn);
+  check("nothing at all is left alone too", popupTarget("").relocate, false);
+  check("and so is undefined", popupTarget(undefined).relocate, false);
+
+  const elsewhere = popupTarget("https://asp.tramada.com.au/ttms/x/error.htm");
+  ok("a window that landed somewhere else is left alone", !elsewhere.relocate);
+  ok("and says where it went", /error\.htm/.test(elsewhere.warn || ""), elsewhere.warn);
+  ok("without dragging the query string into the message",
+    !/\?/.test(elsewhere.warn || ""), elsewhere.warn);
+}
+
+console.log("\nwhich window Go opened, and how long it is given to open it");
+{
+  /* The run stopped with
+       page.waitForEvent: Timeout 30000ms exceeded while waiting for event "popup"
+     and the window opened a moment afterwards, orphaned. The time is the
+     SEARCH — Tramada posts the form, works, and only then calls window.open —
+     so the answer is to wait properly, and to pick the right window when more
+     than one has appeared. This runs against the human's own Chrome, so a tab
+     they opened while waiting is a new window too. */
+  const { chooseWindow, POPUP_TIMEOUT_MS } = require("./tramada-ipsi");
+  const FORM = "https://asp.tramada.com.au/ttms/x/finance/finance-merchant-payment-receipt.htm?dataContainerId=161";
+
+  check("nothing opened yet", chooseWindow([]), -1);
+  check("one blank window is taken — it is about to navigate",
+    chooseWindow([{ url: "about:blank" }]), 0);
+  check("the one showing the form always wins",
+    chooseWindow([{ url: "https://news.example.com" }, { url: FORM }]), 1);
+  // Two anonymous windows and no way to tell them apart: driving the run
+  // against whatever they were reading is worse than waiting longer.
+  check("two unidentifiable windows are not guessed between",
+    chooseWindow([{ url: "about:blank" }, { url: "https://news.example.com" }]), -1);
+  check("a closed window does not count",
+    chooseWindow([{ url: "about:blank", closed: true }, { url: FORM }]), 1);
+  check("and a single closed one leaves nothing",
+    chooseWindow([{ url: "about:blank", closed: true }]), -1);
+  check("undefined is not a crash", chooseWindow(undefined), -1);
+
+  // 30s was the old value and it is what failed.
+  ok("Go is given minutes, not seconds", POPUP_TIMEOUT_MS >= 120000, String(POPUP_TIMEOUT_MS));
+}
+
 console.log(`\n${fail ? "❌" : "✅"} ${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

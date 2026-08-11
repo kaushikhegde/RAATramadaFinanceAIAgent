@@ -923,6 +923,25 @@ the way the reconcile and creditor-payment screens were; what is written below
 comes from the client's screenshots plus the id conventions the rest of Tramada
 follows.
 
+**Go takes as long as the SEARCH takes — not as long as a window takes to
+paint.** Tramada posts the form, works through the ledger, and only then calls
+`window.open`. On a wide date range that is well past 30 seconds, and a 30s
+wait failed with
+
+```
+page.waitForEvent: Timeout 30000ms exceeded while waiting for event "popup"
+```
+
+with the window opening immediately afterwards, orphaned — the wait had already
+given up. The run now allows three minutes (`IPSI_POPUP_TIMEOUT_MS`), says how
+long it has been waiting every 15s, and watches the whole browser context rather
+than only popups attributed to the search page.
+
+Because that context is the human's OWN Chrome, a tab they open while the search
+runs is a new window too. A window already showing the receipt form always wins;
+failing that exactly one new window is taken; two unidentifiable ones are not
+guessed between.
+
 **Playwright is not the extension, and does see it.** A `window.open` popup
 arrives as a `Page` on the browser context, so the run can drive it — it just
 has to be listening when it opens:
@@ -951,6 +970,21 @@ Measured 10-08-2026. The popup **can** be loaded in an ordinary tab after all �
 but only with the live `dataContainerId` from a real Go submit in the URL
 (`…&dataContainerId=161&…`). Without it, Error Page. So: press Go, take the
 popup's address, and it opens anywhere; there is no way to conjure one.
+
+**That is what the run does now.** The window is slow — it paints from nothing
+and every later step waits on it — so `searchIssueReceipts` waits only for the
+popup's navigation to COMMIT, reads the URL, loads it in the tab it already has,
+and closes the window. The form is confirmed in the tab **before** the window is
+closed; if it does not appear, the window is kept and used exactly as before.
+`IPSI_KEEP_POPUP=true` turns it off.
+
+> **Not yet confirmed: pressing Issue from an ordinary tab.** The page rendering
+> there is measured; the submit is not. A form built for a popup can reference
+> `window.opener` (null in a tab) or call `self.close()`, and if its Issue
+> handler does, the click would throw instead of posting. That fails safe —
+> nothing is filed and the run reports it — but it has not been proven either
+> way. Tick **Dry run** for the first IPSI run after this change: it fills the
+> form and stops before Issue, which is exactly the question.
 
 ```
 #receipttransactionTypeCode   ""  CQ=Cheque  ET=EFT     ← same two as the payment form

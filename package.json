@@ -6,7 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "CDP_MODE=external node server.js",
-    "dev": "CDP_MODE=external DEBUG=true node --watch server.js",
+    "dev": "IPSI_KEEP_POPUP=true CDP_MODE=external DEBUG=true node --watch server.js",
     "start:chrome": "./start-chrome.sh",
     "build": "node build-recon.js",
     "test": "node test-xlsx-lite.js && node test-statement-csv.js && node test-recon-core.js && node test-travelpay.js && node test-ipsi.js && node test-run-store.js && node test-receipt-guard.js && node test-fixtures.js",
