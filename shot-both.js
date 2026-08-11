@@ -60,6 +60,41 @@ const ok = (name, cond, detail) => {
     await page.waitForTimeout(700);
   };
 
+  /* THE TAB. A favicon and a title are the only parts of this app a person sees
+     with the window in the background, and both are added by the BUILD — typed
+     into the mockup they would go with the next one the client sends. Served
+     over HTTP here, so a 404 is a real failure and not a file:// quirk. */
+  const tab = await page.evaluate(async () => {
+    const link = document.querySelector('link[rel="icon"]');
+    const href = link ? link.getAttribute("href") : "";
+    let status = 0, type = "";
+    if (href) {
+      const r = await fetch(href);
+      status = r.status;
+      type = r.headers.get("content-type") || "";
+    }
+    return { title: document.title, href, status, type };
+  });
+  ok("the tab has a favicon", !!tab.href, JSON.stringify(tab));
+  ok("and the browser can fetch it", tab.status === 200, JSON.stringify(tab));
+  ok("served as an image", /svg/.test(tab.type), tab.type);
+  /* AND IT ACTUALLY DRAWS. A malformed SVG is still served 200 with an
+     image/svg+xml content type, so status and type prove nothing on their own —
+     the first version of this icon had a double hyphen inside an XML comment,
+     which is illegal, and every browser showed a broken-image glyph while the
+     request looked perfectly healthy. Decoding it is the only real check. */
+  const drew = await page.evaluate((href) => new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve({ ok: img.naturalWidth > 0, w: img.naturalWidth });
+    img.onerror = () => resolve({ ok: false, w: 0 });
+    img.src = href;
+  }), tab.href);
+  ok("and the browser can actually draw it", drew.ok, JSON.stringify(drew));
+  ok("the title names the app", /Reconciliation Agent/.test(tab.title), tab.title);
+  // It stopped being a mockup a while ago, and that is what a person reads in a
+  // tab strip of twenty.
+  ok("and no longer calls itself a mockup", !/mockup/i.test(tab.title), tab.title);
+
   await pick("bpay", "tramada-statement-lines.csv");
   ok("one report loaded enables Start run",
     !(await page.locator("#startRun").isDisabled()));

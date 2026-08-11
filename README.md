@@ -174,7 +174,7 @@ that moved.
 | `server.js` | One page, one socket, and the run history over HTTP. |
 | `run-store.js` | `uploads/` and `runs.json` — where a run is written down. |
 | `recon-wire.html` | The live wiring added to the client's mockup. |
-| `build-recon.js` | `public/index.html` ← `recon-ui-mockup.html` + `recon-wire.html` |
+| `build-recon.js` | `public/index.html` ← `recon-ui-mockup.html` + `recon-wire.html`, plus the tab title and favicon |
 
 ### The page is generated — never hand-edit `public/index.html`
 
