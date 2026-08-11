@@ -683,6 +683,52 @@ function matchTravelPayAgainstStatement(row, statementRows) {
   };
 }
 
+/* ── receipts already on a booking ───────────────────────────────────────── */
+
+/**
+ * The Booking Receipts grid, by header name.
+ *
+ *   Action | Receipt No. | Receipt Category | Receipt Type | Trans. Type |
+ *   Received From | Reference | Date Received | Amount | Allocated
+ */
+const BOOKING_RECEIPT_COLUMNS = {
+  receiptNo: ["receipt no.", "receipt no"],
+  receiptCategory: ["receipt category"],
+  receiptType: ["receipt type"],
+  transType: ["trans. type", "trans type"],
+  receivedFrom: ["received from"],
+  reference: ["reference"],
+  dateReceived: ["date received"],
+  amount: ["amount"],
+  allocated: ["allocated"],
+};
+
+/**
+ * Is this receipt already on the booking?
+ *
+ * **Reference AND amount, both.** Either one alone is not a duplicate:
+ * a booking can legitimately take two receipts for the same amount on
+ * different references, and one reference can be followed by a correcting
+ * receipt for a different figure. It is the pair that says "this exact receipt
+ * has already been filed", and filing it again takes the money twice.
+ *
+ * Reference is compared as text, case- and space-insensitive, because it is
+ * typed. Amount is compared in cents, because "394.00" and "394" are the same
+ * money and neither is a float here.
+ *
+ * A row with no reference matches nothing — a blank cell must never look like
+ * a blank request.
+ */
+function findFiledReceipt(rows, { reference, amount, amountCents } = {}) {
+  const wantRef = refKey(reference);
+  const wantCents = amountCents != null ? amountCents : cents(amount);
+  if (!wantRef || wantCents == null) return null;
+  const hits = (rows || []).filter((r) =>
+    refKey(r.reference) === wantRef && cents(r.amount) === wantCents);
+  if (!hits.length) return null;
+  return { ...hits[0], duplicates: hits.length > 1 ? hits.length : undefined };
+}
+
 /** Counts for the Mint inbox. There is no allocation, so there is no column. */
 function summariseMint(results) {
   const r = results || [];
@@ -1346,6 +1392,7 @@ module.exports = {
   STATEMENT_COLUMNS, TRANSACTION_COLUMNS, TRANSACTION_FALLBACK,
   MINT_COLUMNS, csvGrid, parseMintRows, matchMintAgainstStatement, summariseMint,
   matchTravelPayAgainstStatement, MATCHERS, matcherFor, matchesOn,
+  BOOKING_RECEIPT_COLUMNS, findFiledReceipt,
   TRAVELPAY_COLUMNS, parseTravelPayRows, serialDate, bookingFromReference, REPORTS,
   IPSI_COLUMNS, parseIpsiRows, matchIpsiAgainstReceipts, summariseIpsi,
   tidyError,

@@ -65,6 +65,19 @@ and Closing boxes on the Sources screen no longer reach either form — they use
 to be typed over the top of Tramada's own number, which meant a statement could
 be created against a balance somebody had guessed at.
 
+**A receipt already on the booking is never filed twice.** Before it opens
+anything, the run reads the booking's own Receipts list and looks for the same
+**reference AND the same amount**. If it finds one, that row takes the receipt
+number that is already there and nothing is filed — so uploading the same CSV
+twice does not take the money twice. The row still reconciles, against the
+receipt that already exists.
+
+Both have to match. A booking can legitimately take two receipts for the same
+amount under different references, and one reference can be followed by a
+correcting receipt for a different figure; it is the pair that makes it the same
+receipt. `skipIfAlreadyFiled: false` overrides it for a caller that really means
+to file a second identical receipt.
+
 **Done commits the page.** Until 10-Aug-2026 this run deliberately stopped short
 of it, and the line it would not cross was the difference between a run that
 reads a statement and a run that commits one. It crosses that line now, so two
@@ -111,6 +124,18 @@ no history.
 
 The mode is read once, at the moment Start run is pressed. Ticking the box
 mid-run cannot change what the run in flight is allowed to do.
+
+### Looking at a past run
+
+The inbox's **Report date** select is the run picker: *This run*, or any run
+before it, read back from `runs.json`. Choosing one draws that run's rows in the
+same table, with the chip reading **past run** rather than *live run*; the
+**Report** select beside it narrows a combined run to one of its four reports. A
+new run always snaps the screen back to now — a row arriving for a run you are
+not looking at is how yesterday's numbers get read as today's.
+
+Both were controls the mockup drew and nothing filled. `#ibShop` still isn't
+filled, because there are no shops here.
 
 ## Where a run is written down
 
@@ -170,8 +195,8 @@ marked *sample data*.
 ## Tests
 
 ```bash
-npm test        # 513 assertions, all offline — no network, no browser
-npm run shots   # screenshots of the page, a BPay run and a Mint run
+npm test        # 524 assertions, all offline — no network, no browser
+npm run shots   # 74 render checks — the page, a BPay run, a Mint run, the overview
 ```
 
 The tests never open Tramada and never launch Playwright. The rules are checked

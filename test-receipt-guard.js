@@ -173,6 +173,46 @@ const thrown = async (fn) => {
     check("with the segment type", good[0].segType, "Ticket");
   }
 
+  console.log("\na receipt already on the booking is not filed again");
+  {
+    /* Upload the same CSV twice and, without this, the second run takes the
+       money a second time against a booking that no longer owes it. Reference
+       AND amount both have to match: a booking can legitimately take two
+       receipts for the same amount on different references, and one reference
+       can be followed by a correcting receipt for a different figure. */
+    const core = require("./recon-core");
+    const onBooking = [
+      { receiptNo: "R.0000009429", reference: "BP-ONQ3Y-13262", amount: "394.00", allocated: "0.00" },
+      { receiptNo: "R.0000009430", reference: "BP-ONQ3Y-13265", amount: "394.00", allocated: "394.00" },
+    ];
+    const find = (q) => core.findFiledReceipt(onBooking, q);
+
+    const same = find({ reference: "BP-ONQ3Y-13262", amount: "394.00" });
+    ok("the same reference and amount is the same receipt", !!same, JSON.stringify(same));
+    check("and it names the one already there", same.receiptNo, "R.0000009429");
+    ok("formatting does not hide it",
+      !!find({ reference: " bp-onq3y-13262 ", amount: "$394" }), "394 vs 394.00, case and spaces");
+
+    ok("the same amount on another reference is NOT it",
+      !find({ reference: "BP-ONQ3Y-99999", amount: "394.00" }));
+    ok("and the same reference at another amount is NOT it",
+      !find({ reference: "BP-ONQ3Y-13262", amount: "395.00" }));
+    // A blank cell must never read as a blank request.
+    ok("a blank reference matches nothing", !find({ reference: "", amount: "394.00" }));
+    ok("an unreadable amount matches nothing", !find({ reference: "BP-ONQ3Y-13262", amount: "n/a" }));
+    ok("an empty booking matches nothing",
+      !core.findFiledReceipt([], { reference: "BP-ONQ3Y-13262", amount: "394.00" }));
+    ok("and no list at all does not throw",
+      !core.findFiledReceipt(undefined, { reference: "A", amount: "1.00" }));
+
+    // Two identical receipts already there is itself worth saying out loud.
+    const twice = core.findFiledReceipt(
+      onBooking.concat([{ receiptNo: "R.0000009499", reference: "BP-ONQ3Y-13262", amount: "394.00" }]),
+      { reference: "BP-ONQ3Y-13262", amount: "394.00" });
+    check("a reference already filed twice is counted", twice.duplicates, 2);
+    check("and the first is the one reported", twice.receiptNo, "R.0000009429");
+  }
+
   console.log("\nthe page is filtered for one report and read whole for several");
   {
     /* One report at a time there is exactly one Rec/Pay Type to show, and

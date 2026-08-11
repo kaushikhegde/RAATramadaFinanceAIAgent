@@ -3504,7 +3504,7 @@ function askMarkStale(){
   };
   // A run with any BPay in it needs the allocation chips; one without cannot
   // use them, because nothing in it allocates.
-  const filters = () => FILTER_SETS[runWrites() ? 'bpay' : 'mint'];
+  const filters = () => FILTER_SETS[viewWrites() ? 'bpay' : 'mint'];
 
   // The search box searches what a person has in front of them: the reference
   // they were given, the booking they are chasing, the receipt number they are
@@ -3513,10 +3513,118 @@ function askMarkStale(){
     [r.reference, r.transNo, r.toCompany, r.bookingNo, r.receiptNo, r.amount, r.date]
       .join(' ').toLowerCase().includes(search);
 
+
+  /* ── past runs ──
+     The inbox showed exactly one thing: the run you had just started. Every run
+     before it was in runs.json, reachable over /api/runs, and unreachable from
+     the screen a person actually works in.
+
+     `viewing` is null for the live run and a stored run otherwise. Everything
+     the table draws goes through rows(), so one variable switches the whole
+     screen between "now" and "then" — and a live run coming in always snaps it
+     back to now, because a row arriving for a run you are not looking at is
+     how a person ends up reading yesterday's numbers as today's. */
+  let viewing = null;
+  let runList = [];
+  let reportOnly = '';
+
+  /* NOT `rows` — that name is already taken by the active source's rows a
+     hundred lines up, and a second declaration in this scope is a SyntaxError
+     that takes the entire wiring script down on load. */
+  const viewRows = () => (viewing ? viewing.rows || [] : results);
+  /* Does the run ON SCREEN write anything? For the live run that is which cards
+     are loaded; for a stored one it is what its rows say they were. */
+  const viewWrites = () => (viewing
+    ? (viewing.rows || []).some((r) => (r.src ? !checksOnly(r.src) : viewing.source === 'bpay'))
+    : runWrites());
+
+  const runLabel = (r) => {
+    const at = String(r.startedAt || '').replace('T', ' ').slice(5, 16).replace('-', '/');
+    const what = r.summary && r.summary.perReport
+      ? r.summary.perReport
+      : (SOURCES[r.source] || {}).title || r.source || 'run';
+    const n = (r.totals && r.totals.rows) || (r.rows || []).length || 0;
+    return at + ' · ' + what + ' · ' + n + ' row' + (n === 1 ? '' : 's') +
+      (r.dryRun ? ' · dry run' : '') + (r.status === 'failed' ? ' · stopped' : '');
+  };
+
+  function mountRunPicker() {
+    const sel = $('#ibDate');
+    if (!sel) return;
+    sel.title = 'Which run';
+    sel.style.display = '';
+    const draw = () => {
+      sel.innerHTML = '<option value="">This run</option>' +
+        runList.map((r) => '<option value="' + esc(r.id) + '">' + esc(runLabel(r)) + '</option>').join('');
+      sel.value = viewing ? viewing.id : '';
+    };
+    draw();
+    sel.onchange = async () => {
+      const id = sel.value;
+      if (!id) { viewing = null; reportOnly = ''; drawReportPicker(); render(); return; }
+      try {
+        const r = await fetch('/api/runs/' + encodeURIComponent(id)).then((x) => x.json());
+        // A stored run keeps its rows exactly as they finished, so the table
+        // needs no special case — it is the same shape the live run produces.
+        viewing = r && r.id ? r : null;
+      } catch (e) { viewing = null; }
+      reportOnly = '';
+      drawReportPicker();
+      render();
+    };
+    // Read once at load and again whenever a run finishes, so the list a person
+    // opens is not the list from whenever the tab happened to be opened.
+    refreshRuns();
+  }
+
+  async function refreshRuns() {
+    try {
+      const all = await fetch('/api/runs').then((x) => x.json());
+      runList = (Array.isArray(all) ? all : all.runs || [])
+        .slice().sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+    } catch (e) { runList = []; }
+    const sel = $('#ibDate');
+    if (sel) {
+      sel.innerHTML = '<option value="">This run</option>' +
+        runList.map((r) => '<option value="' + esc(r.id) + '">' + esc(runLabel(r)) + '</option>').join('');
+      sel.value = viewing ? viewing.id : '';
+    }
+  }
+
+  /* Which report, within whatever run is on screen. A combined run puts four
+     reports in one table; this is how you look at one of them. The options are
+     the reports THAT RUN actually carried — offering IPSI on a run that had no
+     IPSI in it is a filter that can only ever show nothing. */
+  function drawReportPicker() {
+    const sel = $('#ibReport');
+    if (!sel) return;
+    const present = [];
+    for (const r of viewRows()) if (r.src && !present.includes(r.src)) present.push(r.src);
+    sel.style.display = present.length > 1 ? '' : 'none';
+    if (present.length <= 1) { reportOnly = ''; return; }
+    sel.innerHTML = '<option value="">All reports</option>' +
+      present.map((k) => '<option value="' + esc(k) + '">' +
+        esc((SOURCES[k] || {}).title || k) + '</option>').join('');
+    sel.value = reportOnly;
+  }
+
+  function mountReportPicker() {
+    const sel = $('#ibReport');
+    if (!sel) return;
+    sel.title = 'Report';
+    sel.onchange = () => { reportOnly = sel.value; render(); };
+    drawReportPicker();
+  }
+
   function render() {
     const pane = $('#triagePane');
     if (!pane) return;
-    const mint = !runWrites();
+    /* EVERYTHING below reads `all`, not `results` — that is the one line that
+       makes this screen able to show a run from yesterday. `results` is the
+       live run; `all` is whichever run is on screen, filtered to one report
+       when the report picker asks for one. */
+    const all = viewRows().filter((r) => !reportOnly || r.src === reportOnly);
+    const mint = !viewWrites();
     const SET = filters();
     if (!SET.some(([k]) => k === filter)) filter = 'all';    // chips differ per report
 
@@ -3524,9 +3632,11 @@ function askMarkStale(){
     if (tri) {
       tri.innerHTML = SET.map(([k, label, fn]) =>
         '<button class="tri' + (filter === k ? ' on' : '') + '" data-f="' + k + '">' + label +
-        ' <span class="n">' + results.filter(fn).length + '</span></button>').join('') +
-        '<div class="spacer"></div><span class="badge ' + (running ? 'b-ai' : 'b-mute') +
-        '" style="margin-bottom:8px">' + (running ? '✦ live run' : results.length ? 'run finished' : 'no run yet') + '</span>';
+        ' <span class="n">' + all.filter(fn).length + '</span></button>').join('') +
+        '<div class="spacer"></div><span class="badge ' + (running && !viewing ? 'b-ai' : 'b-mute') +
+        '" style="margin-bottom:8px">' +
+        (viewing ? 'past run' : running ? '✦ live run' : results.length ? 'run finished' : 'no run yet') +
+        '</span>';
       tri.querySelectorAll('.tri').forEach((b) => { b.onclick = () => { filter = b.dataset.f; render(); }; });
     }
     const state = $('#ibState');
@@ -3537,7 +3647,7 @@ function askMarkStale(){
     }
 
     const fn = (SET.find((f) => f[0] === filter) || SET[0])[2];
-    const shown = results.filter((r) => fn(r) && matchesSearch(r));
+    const shown = all.filter((r) => fn(r) && matchesSearch(r));
     const head = mint
       ? '<th style="width:16px"></th><th>Transaction</th><th class="num">Amount</th>' +
         '<th>To company</th><th>Reconciled</th><th>Why</th>'
@@ -3575,17 +3685,17 @@ function askMarkStale(){
     pane.innerHTML = '<table><thead><tr>' + head + '</tr></thead><tbody>' +
       (shown.length ? body
         : '<tr><td colspan="' + cols + '" style="padding:26px;text-align:center" class="muted">' +
-          (results.length ? 'Nothing matches that filter.'
+          (all.length ? 'Nothing matches that filter.'
             : 'Load a report on Sources &amp; upload.') + '</td></tr>') +
       '</tbody></table>';
 
     const t = $('#ibTitle'), l = $('#ibLede'), a = $('#ibActions');
     if (t) t.textContent = 'Reconciliation inbox';
     if (l) {
-      const al = results.filter((r) => r.allocation === 'Allocated').length;
-      const rc = results.filter((r) => r.reconciliation === 'Reconciled').length;
-      const diff = results.filter((r) => r.mismatch).length;
-      const n = results.length;
+      const al = all.filter((r) => r.allocation === 'Allocated').length;
+      const rc = all.filter((r) => r.reconciliation === 'Reconciled').length;
+      const diff = all.filter((r) => r.mismatch).length;
+      const n = all.length;
       const counts = n + ' row' + (n === 1 ? '' : 's') + ' · ' +
         (mint ? rc + ' reconciled' + (diff ? ' · ' + diff + ' to check' : '')
               : al + ' allocated · ' + rc + ' reconciled');
@@ -3604,7 +3714,7 @@ function askMarkStale(){
         : 'Upload a report on Sources & upload, then start the run.';
       l.style.color = stopped ? 'var(--err)' : '';
     }
-    const ran = results.some((r) => (r.allocation && r.allocation !== 'Pending') ||
+    const ran = all.some((r) => (r.allocation && r.allocation !== 'Pending') ||
       (r.reconciliation && r.reconciliation !== 'Pending'));
     if (a) a.innerHTML = '<button class="btn" id="rcExport"' + (ran ? '' : ' disabled') + '>Export working file</button>';
     const ex = $('#rcExport'); if (ex) ex.onclick = exportCsv;
@@ -3618,7 +3728,7 @@ function askMarkStale(){
        and reconciled. Nothing to chase, no badge. */
     const pill = document.querySelector('.nav-item[data-go="inbox"] .pill-n');
     if (pill) {
-      const need = results.filter((r) => mint
+      const need = all.filter((r) => mint
         ? r.reconciliation !== 'Reconciled' || r.mismatch
         : !(r.allocation === 'Allocated' && r.reconciliation === 'Reconciled')).length;
       pill.textContent = String(need);
@@ -3718,6 +3828,10 @@ function askMarkStale(){
       return;
     }
     running = true;
+    /* Back to now. A row arriving for a run you are not looking at is how a
+       person ends up reading yesterday's numbers as today's. */
+    viewing = null;
+    reportOnly = '';
     stopped = null;
     needLogin = null;
     statementPage = null;
@@ -3793,8 +3907,10 @@ function askMarkStale(){
       $('#startRun').disabled = false;
       stopped = m.error || null;
       // The run is in runs.json now, whether it worked or not, so the overview
-      // is stale the moment this frame lands.
+      // is stale the moment this frame lands — and so is the run picker, which
+      // has just gained the run that finished.
       loadOverview();
+      refreshRuns();
       if (m.error) {
         // Rows the run never reached must not keep saying "Pending" as though
         // a check were still coming, and must not be called "Not reconciled"
@@ -4042,11 +4158,23 @@ function askMarkStale(){
       setNoteLead(host, 'No statement balances were read on this run.');
     }
 
-    /* The two streams this system actually has. The mockup's other two —
-       Merchant settlements and Passenger refunds — are left exactly as they
-       came: there is no such report here, and inventing one would be worse
-       than leaving the design's own example in place. */
+    /* FOUR streams, and all four are real now.
+       The mockup's third and fourth cards were headed "Merchant settlements"
+       and "Passenger refunds" — examples from a design drawn before this
+       system had its last two reports. They are retitled here, from the
+       wiring, so the MOCKUP stays pristine: the client sends a new one from
+       time to time and a rename typed into it would be lost on the next build.
+       The names match the upload cards on the Sources screen, because a person
+       reading this screen has just come from that one. */
     const streams = host.querySelectorAll('.g-4 .stream');
+    const retitle = (card, title, sub) => {
+      if (!card) return;
+      const h = card.querySelector('h4'), s2 = card.querySelector('.src');
+      if (h) h.textContent = title;
+      if (s2) s2.textContent = sub;
+    };
+    retitle(streams[2], 'IPSI', 'IPSI merchant settlement · by merchant reference');
+    retitle(streams[3], 'TravelPay', 'TravelPay merchant settlement · by payment reference');
     /* The LATEST run of that report, not every run of it ever. A stream card
        reads as "how did today's Mint settlement go" — summing six months into
        it would make the card climb forever and mean nothing. Per source, so
@@ -4060,12 +4188,11 @@ function askMarkStale(){
       const okRows = mine.streams[src].reconciled;
       return { total, done: okRows, review: 0, bad: Math.max(0, total - okRows) };
     };
-    /* Looked up by source rather than hard-wired to card 0 and card 1, so the
-       day a merchant or refund report exists its card fills itself. Until then
-       those two read 0 / 0 — this system has no such report, and leaving the
-       design's example figures there would put invented money on a screen whose
-       other four panels are real. */
-    ['mint', 'bpay', 'merchant', 'refunds'].forEach((src, i) => fillStream(streams[i], forSource(src)));
+    /* Looked up by source, in the order the cards sit on the screen. The last
+       two used to ask for 'merchant' and 'refunds' — sources that have never
+       existed here, so those cards always read 0 / 0 no matter how many IPSI
+       or TravelPay runs had been done. */
+    ['mint', 'bpay', 'ipsi', 'travelpay'].forEach((src, i) => fillStream(streams[i], forSource(src)));
 
     fillReaction(host, o.needsReaction || [], true);
     fillActivity(host, o.activity || []);
@@ -4227,15 +4354,18 @@ function askMarkStale(){
         '<ul class="tl" id="rcTl"></ul></div>';
       grid.appendChild(act);
     }
-    /* The inbox's filter row. Three of these describe things this run has no
-       concept of — a report type, a report date, a shop — and with the demo
-       script off they were simply dead controls sitting above real data. The
-       two that do mean something here are wired to the same filter set as the
-       chips above them. */
-    ['#ibReport', '#ibDate', '#ibShop'].forEach((sel) => {
-      const el = document.querySelector(sel);
-      if (el) el.style.display = 'none';
-    });
+    /* The inbox's filter row, and all but one of it means something now.
+       #ibDate is the mockup's own "Report date" select — a dead control until
+       there were past runs to put in it. It is the run picker: this run, or any
+       run before it, read back from runs.json.
+       #ibReport picks a report WITHIN whatever run is being looked at, which
+       matters on a combined run where four reports share one table.
+       #ibShop stays hidden — there are no shops here and inventing some would
+       be worse than one gap in a row of controls. */
+    const shop = document.querySelector('#ibShop');
+    if (shop) shop.style.display = 'none';
+    mountRunPicker();
+    mountReportPicker();
     // NOT `state` — hideUnwired already has a `const state` for the top bar's
     // "Agent running · step 3 of 4" chip, and a second one in the same scope is
     // a SyntaxError that kills the whole wiring script on load.

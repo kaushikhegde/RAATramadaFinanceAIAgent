@@ -1003,6 +1003,24 @@ async function fileReceipts(results, { auth, cb, say, row }) {
         callbacks: { onNeedLogin: cb.onNeedLogin },
       });
 
+      /* ALREADY ON THE BOOKING — same reference, same amount. The probe
+         reads the receipts list before it opens anything, so this comes back
+         without a form having been touched. The row takes the receipt that is
+         already there and the run moves on: filing it again would take the
+         money a second time, which is exactly what happens if the same CSV is
+         uploaded twice. */
+      if (probe && probe.skipped && probe.reason === "already filed") {
+        const was = probe.receipt || {};
+        r.receiptNo = was.receiptNo || "";
+        r.allocation = "Already filed";
+        r.why = `already on booking ${r.bookingNo} as ${was.receiptNo} for ${was.amount}` +
+          (probe.duplicates ? ` — and ${probe.duplicates} receipts carry that reference and amount` : "") +
+          " — nothing was filed again";
+        row(r.n, { receiptNo: r.receiptNo, allocation: r.allocation, why: r.why });
+        say(`Row ${r.n}: ${r.why}`, true);
+        continue;
+      }
+
       const segments = (probe && probe.segments) || [];
       const decision = core.decideAllocation(r.amountCents, segments);
       say(`Row ${r.n}: ${decision.reason}`);

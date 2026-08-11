@@ -21,6 +21,10 @@
  */
 
 const { chromium } = require("playwright");
+/* The one rule this module asks for rather than deciding itself: "has this
+   exact receipt already been filed?" is a judgement about money, so it lives in
+   recon-core with the rest of them and is tested offline. */
+const core = require("./recon-core");
 
 const TRAMADA_BASE_URL =
   process.env.TRAMADA_URL || "https://asp.tramada.com.au/ttms/raatravelsandbox";
@@ -38,8 +42,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * Money is compared in whole cents here for the same reason it is everywhere
  * else in this project: 0.1 + 0.2 is not 0.3, and an allocation that is one
  * float-hair over the receipt is rejected by Tramada exactly as hard as one
- * that is a hundred dollars over. Kept local so this module still depends on
- * nothing but Playwright.
+ * that is a hundred dollars over.
  */
 const centsOf = (v) => {
   const s = String(v == null ? "" : v).replace(/[^0-9.-]/g, "");
@@ -399,6 +402,43 @@ async function setFieldWithEvents(page, selector, value) {
   }, String(value));
 }
 
+/**
+ * Every receipt already on the booking, read BY HEADER NAME.
+ *
+ * The list this reads is the one the run is standing on anyway — the receipts
+ * page it opens to reach "Add / Issue Receipt" — so nothing extra is loaded to
+ * find out what is already there.
+ *
+ * `readLatestReceipt` reads the same grid by hard-coded column index. That one
+ * is checking a row it just created, one field, immediately; this one decides
+ * whether real money gets taken again, so it asks the header.
+ */
+async function readBookingReceipts(page) {
+  const grid = await page.evaluate(() => {
+    const norm = (s) => String(s == null ? "" : s).replace(/\s+/g, " ").trim();
+    const table = [...document.querySelectorAll("table")]
+      .find((t) => /receipt\s*no/i.test(t.textContent) && /reference/i.test(t.textContent));
+    if (!table) return { headers: [], rows: [] };
+    const trs = [...table.querySelectorAll("tr")];
+    const head = trs.find((tr) => /receipt\s*no/i.test(tr.textContent));
+    if (!head) return { headers: [], rows: [] };
+    return {
+      headers: [...head.children].map((c) => norm(c.textContent)),
+      // The TOTALS row has no receipt number and must not read as a receipt.
+      rows: trs.filter((tr) => tr !== head && tr.querySelectorAll("td").length >= 5)
+        .map((tr) => [...tr.querySelectorAll("td")].map((td) => norm(td.textContent)))
+        .filter((cells) => cells.some((c) => /^R\./i.test(c))),
+    };
+  }).catch(() => ({ headers: [], rows: [] }));
+
+  const cols = core.mapColumns(grid.headers, core.BOOKING_RECEIPT_COLUMNS);
+  return grid.rows.map((cells) => {
+    const out = {};
+    for (const [key, i] of Object.entries(cols)) out[key] = i >= 0 ? cells[i] || "" : "";
+    return out;
+  });
+}
+
 async function openReceiptForm(page, bookingNo, receipt) {
   // PROVEN PATH: open the Receipts list and click "Add / Issue Receipt".
   // (Navigating straight to the form URL once ended in a Tramada server error
@@ -408,6 +448,29 @@ async function openReceiptForm(page, bookingNo, receipt) {
     { waitUntil: "domcontentloaded" }
   );
   await page.waitForSelector('input[value="Add / Issue Receipt"]', { timeout: 15000 });
+
+  /* ALREADY FILED? THEN NOTHING IS FILED AGAIN.
+   *
+   * Same reference AND same amount on this booking means this exact receipt has
+   * already been taken — upload the same CSV twice and the second run would
+   * take the money a second time, against a booking that no longer owes it.
+   *
+   * Both have to match: a booking can legitimately take two receipts for the
+   * same amount under different references, and one reference can be followed
+   * by a correcting receipt for a different figure. The pair is what makes it
+   * the same receipt.
+   *
+   * Read here, on the list the run already has open, BEFORE Add is clicked —
+   * so the duplicate never reaches a form at all. */
+  if (receipt.skipIfAlreadyFiled !== false && receipt.reference) {
+    const already = await readBookingReceipts(page);
+    const dupe = core.findFiledReceipt(already, {
+      reference: receipt.reference,
+      amount: receipt.amount,
+    });
+    if (dupe) return { alreadyFiled: dupe, onBooking: already.length };
+  }
+
   await page.click('input[value="Add / Issue Receipt"]');
   await page.waitForSelector("#receipttransactionTypeCode", { timeout: 20000 });
 
@@ -918,6 +981,11 @@ async function runTramadaReceipt({
   dryRun = false,
   skipIfNoAllocatable = false, // return {skipped:true} instead of throwing when
                                // the receipt form has nothing to allocate
+  /* Default ON. A receipt already on this booking with the SAME reference and
+     the SAME amount is this receipt, already taken — upload the same CSV twice
+     and without this the second run takes the money again. Pass false only for
+     something that genuinely means to file a second identical receipt. */
+  skipIfAlreadyFiled = true,
   callbacks = {},
 } = {}) {
   const onProgress = callbacks.onProgress || (() => {});
@@ -960,10 +1028,29 @@ async function runTramadaReceipt({
     const payerName = receipt.payerName || details.payerName || details.clientName || "";
 
     onProgress(50, `Preparing ${dryRun ? "receipt preview" : "receipt"}...`);
-    const { segments } = await openReceiptForm(page, bookingNo, {
+    const opened = await openReceiptForm(page, bookingNo, {
       ...receipt,
       payerName,
+      skipIfAlreadyFiled: skipIfAlreadyFiled !== false,
     });
+
+    /* This receipt is already on the booking — same reference, same amount.
+       Nothing was opened, nothing was typed, and the run gets the receipt that
+       is already there rather than a second one taking the money again. */
+    if (opened.alreadyFiled) {
+      const was = opened.alreadyFiled;
+      onProgress(100,
+        `Booking ${bookingNo} already has ${was.receiptNo} for $${was.amount} on reference ` +
+        `"${was.reference}" — nothing filed.`);
+      _ok = true;
+      return {
+        details, itinerary: itin, segments: [], committed: false,
+        skipped: true, reason: "already filed",
+        receipt: was,
+        duplicates: was.duplicates,
+      };
+    }
+    const { segments } = opened;
 
     // Credit card entry only on real commit (a card is a real side effect;
     // dryRun skips it so a preview never creates a card).
@@ -1093,6 +1180,7 @@ module.exports = {
   toTramadaDate,
   resolveTxnType,
   allocateSegments,
+  readBookingReceipts,
   centsOf,
   TXN_TYPE,
 };

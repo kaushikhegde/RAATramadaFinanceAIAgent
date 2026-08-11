@@ -209,6 +209,79 @@ const { chromium } = require("playwright");
     seen.activity.some((a) => a.includes("stopped")), seen.activity.join(" ~ ").slice(0, 200));
   ok("no sample-data banner is left on this screen", !seen.structure.sampleBanner);
 
+  /* THE STREAM CARDS SAY WHAT THE UPLOAD CARDS SAY.
+     The mockup's third and fourth were "Merchant settlements" and "Passenger
+     refunds" — a design drawn before this system had IPSI and TravelPay — and
+     they were wired to sources named 'merchant' and 'refunds' that have never
+     existed here, so they read 0 / 0 however many IPSI runs had been done. */
+  const cards = await page.evaluate(() => [...document.querySelectorAll("#s-overview .g-4 .stream")]
+    .map((c) => ({
+      title: (c.querySelector("h4") || {}).textContent || "",
+      sub: (c.querySelector(".src") || {}).textContent || "",
+      big: (c.querySelector(".big") || {}).textContent || "",
+    })));
+  ok("four stream cards", cards.length === 4, String(cards.length));
+  ok("the third is IPSI", cards[2] && cards[2].title === "IPSI", cards[2] && cards[2].title);
+  ok("the fourth is TravelPay", cards[3] && cards[3].title === "TravelPay", cards[3] && cards[3].title);
+  ok("named the same as the upload cards",
+    /IPSI merchant settlement/.test(cards[2].sub) && /TravelPay merchant settlement/.test(cards[3].sub),
+    cards[2].sub + " ~ " + cards[3].sub);
+  ok("and no mockup names survive anywhere on the screen",
+    !(await page.evaluate(() => /Merchant settlements|Passenger refunds/.test(
+      (document.querySelector("#s-overview") || {}).textContent || ""))),
+    "Merchant settlements / Passenger refunds");
+
+  /* PAST RUNS. The inbox showed one run — the one you had just started — while
+     every run before it sat in runs.json, reachable over HTTP and unreachable
+     from the screen a person works in. #ibDate is the mockup's own "Report
+     date" select, dead until there was something to put in it. */
+  await page.evaluate(() => {
+    const go = document.querySelector('[data-go="inbox"]');
+    if (go) go.click();
+  });
+  await page.waitForTimeout(600);
+  const picker = await page.evaluate(() => {
+    const sel = document.querySelector("#ibDate");
+    return sel ? {
+      shown: sel.style.display !== "none",
+      options: [...sel.options].map((o) => o.textContent),
+      value: sel.value,
+    } : null;
+  });
+  ok("the inbox has a run picker", picker && picker.shown, JSON.stringify(picker));
+  ok("it starts on this run", picker && picker.value === "", picker && picker.value);
+  ok("and lists the runs in runs.json",
+    picker && picker.options.length === 4, JSON.stringify(picker && picker.options));
+  ok("each one says when, what and how many",
+    picker && /·/.test(picker.options[1]) && /row/.test(picker.options[1]), picker && picker.options[1]);
+  // Newest first: the dates in the labels have to descend.
+  const when = (picker.options || []).slice(1).map((t) => t.split(" ")[0]);
+  ok("newest first", when.join(",") === when.slice().sort().reverse().join(","), when.join(" | "));
+
+  // Picking one draws it. The live run is empty here, so rows appearing at all
+  // is the proof that a stored run reached the table.
+  await page.selectOption("#ibDate", picker.options[1] ? await page.evaluate(() =>
+    document.querySelector("#ibDate").options[1].value) : "");
+  await page.waitForTimeout(700);
+  const past = await page.evaluate(() => ({
+    rows: document.querySelectorAll("#triagePane tbody tr").length,
+    badge: ((document.querySelector("#inboxGrid .triage .badge") || {}).textContent || "").trim(),
+  }));
+  ok("choosing a past run shows its rows", past.rows > 0, JSON.stringify(past));
+  ok("and the screen says it is a past run", /past run/i.test(past.badge), past.badge);
+
+  await page.selectOption("#ibDate", "");
+  await page.waitForTimeout(400);
+  const back = await page.evaluate(() =>
+    ((document.querySelector("#inboxGrid .triage .badge") || {}).textContent || "").trim());
+  ok("and going back says so too", !/past run/i.test(back), back);
+
+  await page.evaluate(() => {
+    const go = document.querySelector('[data-nav="overview"], [data-go="overview"]');
+    if (go) go.click();
+  });
+  await page.waitForTimeout(400);
+
   /**
    * And the state that actually shipped broken: NO runs at all.
    *
