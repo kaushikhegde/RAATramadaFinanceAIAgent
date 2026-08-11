@@ -51,8 +51,9 @@
  *   travelpay  bookings + costings + RECEIPTS → csv_uploads/travelpay-payments.csv
  *              TravelPay files nothing, so the receipts have to exist before
  *              the run looks for them. Each row's Payment Reference is the
- *              receipt number Tramada issued, digits only — that is what turns
- *              up as `Trans. No` on the statement page.
+ *              reference the receipt was raised under — TP-{tag}-{booking} —
+ *              because that is what a real TravelPay file carries there and it
+ *              is what the statement page shows in its Reference column.
  *
  *   mint       bookings + costings + PAYMENTS → csv_uploads/mint-payments.csv
  *              Real creditor payments to READY ROOMS. Each row's Transaction
@@ -509,11 +510,23 @@ async function makeTravelPay() {
       });
       const receiptNo = (filed && filed.receipt && filed.receipt.receiptNo) || "";
       if (!receiptNo) throw new Error("no receipt number came back");
-      // R.0000009403 → 9403. receiptKey reduces the statement's Trans. No the
-      // same way, so the two meet in the middle.
-      const paymentRef = core.receiptKey(receiptNo).replace(/^[A-Z]+/, "");
+      /* Payment Reference is TRAVELPAY's number, not Tramada's.
+         The client's own export carries `31282716` there — a merchant gateway
+         id — and it reaches Tramada because it is typed into the receipt's
+         Reference field, which is where the statement page shows it. So the
+         reference this run typed IS the Payment Reference.
+
+         It used to be `core.receiptKey(receiptNo).replace(/^[A-Z]+/, "")` —
+         `R.0000009413` reduced to `9413` — which made the file match itself
+         against the statement's Trans. No column and proved nothing about a
+         real TravelPay file, whose Payment Reference can never be a Tramada
+         receipt number. */
+      const paymentRef = ref("TP", b.bookingNo);
       say(`     ✓ ${receiptNo} → Payment Reference ${paymentRef}`);
       row["Payment Reference"] = paymentRef;
+      // The processor's own id in the real file (`PR.46nyrd`). Tramada's
+      // receipt number is the only second id a fixture has, and nothing
+      // matches on this column, so it is the traceable thing to put here.
       row["Processor Reference"] = receiptNo;
       csv.update();
     } catch (err) {

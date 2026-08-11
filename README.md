@@ -66,6 +66,36 @@ ship `readonly` behind an unnamed **Edit** button. Typing into a readonly input
 succeeds silently and changes nothing — which is why the opening balance used to
 go missing.
 
+### Dry run
+
+Next to the statement date and balances on the Sources screen there is a
+**Dry run** checkbox. Ticked, the run is a dry run; unticked, it is not.
+
+A dry run holds back **the two finance screens, and nothing else**:
+
+| | full run | dry run |
+|---|---|---|
+| Receipts filed against the bookings | yes | **yes** |
+| Creditor payments raised | yes | **yes** |
+| Bank statement page created | yes | yes |
+| Sorted, filtered, read, balances written | yes | yes |
+| Matched rows ticked and verified | yes | yes |
+| **Done pressed on the statement page** | yes | **no** |
+| **Finance Receipts merchant receipt issued** | yes | **no** |
+
+So everything that makes the run worth watching still happens — the receipts are
+real, so the statement page really does have this run's transactions on it, and
+they really are matched and ticked. What is withheld is the click that makes the
+*statement* permanent, and the Finance Receipts Issue. The page is left open on
+screen with the ticks in place, for you to look at before committing it by hand.
+
+The run is still recorded in `runs.json`, marked `dryRun: true` — a history that
+could not tell a committed statement from an uncommitted one would be worse than
+no history.
+
+The mode is read once, at the moment Start run is pressed. Ticking the box
+mid-run cannot change what the run in flight is allowed to do.
+
 ## Where a run is written down
 
 ```
@@ -124,7 +154,7 @@ marked *sample data*.
 ## Tests
 
 ```bash
-npm test        # 356 assertions, all offline — no network, no browser
+npm test        # 459 assertions, all offline — no network, no browser
 npm run shots   # screenshots of the page, a BPay run and a Mint run
 ```
 

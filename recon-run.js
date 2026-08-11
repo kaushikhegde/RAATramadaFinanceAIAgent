@@ -535,7 +535,7 @@ async function readVisibleTransactions(page) {
 const BALANCE_EDIT_BUTTON =
   'dl.edit input[type="button"][value="Edit"], input.button[type="button"][value="Edit"]';
 
-async function setStatementBalances(page, { openingBalance, closingBalance } = {}, say = () => {}) {
+async function setStatementBalances(page, { openingBalance, closingBalance } = {}, say = () => {}, dryRun = false) {
   const want = {
     openingBalance: core.money(core.cents(openingBalance)),
     closingBalance: core.money(core.cents(closingBalance)),
@@ -574,7 +574,48 @@ async function setStatementBalances(page, { openingBalance, closingBalance } = {
 
   const stillLocked = await page.$eval("#openingBalance", (el) => el.readOnly).catch(() => true);
   if (stillLocked) {
-    throw new Error("Clicked Edit but the statement balance fields are still read-only.");
+    /* "Clicked Edit but the fields are still read-only" was the whole message,
+       and it names the one thing already known. It cannot say WHICH Edit was
+       clicked — the selector's second half matches any `input.button` valued
+       "Edit" anywhere on the page, so `.first()` may well have pressed one
+       belonging to a different section — nor what state the field ended in.
+       So the page is asked, while it is still open. */
+    const seen = await page.evaluate(() => {
+      const el = document.querySelector("#openingBalance");
+      const where = (n) => {
+        const bits = [];
+        for (let p = n.parentElement, i = 0; p && i < 4; p = p.parentElement, i++) {
+          bits.push(p.tagName.toLowerCase() + (p.className ? "." + String(p.className).trim().split(/\s+/).join(".") : ""));
+        }
+        return bits.join(" < ");
+      };
+      return {
+        field: el ? {
+          readOnly: el.readOnly, disabled: el.disabled,
+          cls: el.className || "", value: el.value || "",
+        } : null,
+        edits: [...document.querySelectorAll('input[type="button"][value="Edit"], button')]
+          .filter((n) => /^edit$/i.test((n.value || n.textContent || "").trim()))
+          .map((n) => ({ cls: n.className || "", inside: where(n) })),
+      };
+    }).catch(() => null);
+    const detail = seen
+      ? ` The field reads readOnly=${seen.field && seen.field.readOnly}, ` +
+        `disabled=${seen.field && seen.field.disabled}, class="${seen.field && seen.field.cls}", ` +
+        `value="${seen.field && seen.field.value}". ${seen.edits.length} Edit button(s) on the page: ` +
+        seen.edits.map((e) => `[${e.cls}] in ${e.inside}`).join(" ; ")
+      : "";
+    const message = `Clicked Edit but the statement balance fields are still read-only.${detail}`;
+    /* On a dry run this is not worth stopping for. The balances are only ever
+       committed by Done, which a dry run never presses, so the figure being
+       missing changes nothing about what the run is here to check — and a
+       rehearsal that halts at the first problem tells you less than one that
+       runs to the end and lists everything wrong with it. */
+    if (dryRun) {
+      say(`Dry run — ${message} Carrying on; the balances are never committed on a dry run anyway.`, false);
+      return { skipped: true, reason: message };
+    }
+    throw new Error(message);
   }
 
   // Real keystrokes, and TRIPLE-CLICK rather than Control+A to clear what is
@@ -703,10 +744,23 @@ async function selectMatchedTransactions(page, statementRows, matchedTransNos, s
  * — committing an empty page is not a no-op, it finalises a statement that
  * reconciles nothing.
  */
-async function finishStatementPage(page, tickedCount, say = () => {}) {
+async function finishStatementPage(page, tickedCount, say = () => {}, dryRun = false) {
   if (!tickedCount) {
     say("Nothing matched, so Done was not pressed — the page is left open, uncommitted.", false);
     return { done: false, reason: "nothing was ticked" };
+  }
+  /* A DRY RUN STOPS HERE, and this one click is the whole of it on this
+     screen. Everything above has already happened for real — the receipts were
+     filed, the page was created, the rows were found, ticked and verified, the
+     balances typed in — and Done is the single thing that makes the STATEMENT
+     permanent. Not pressing it leaves the page exactly as a person would see it
+     in the second before committing, with the run's own receipts sitting on it
+     and ticked, ready to check by eye. */
+  if (dryRun) {
+    say(`Dry run — Done was NOT pressed. ${tickedCount} transaction${tickedCount === 1 ? "" : "s"} ` +
+      "are ticked and would have been reconciled. The page is left open, uncommitted, " +
+      "for you to look at.", true);
+    return { done: false, dryRun: true, wouldTick: tickedCount, reason: "dry run" };
   }
   const done = page.locator("#done");
   if (!(await done.count())) {
@@ -863,6 +917,12 @@ async function fileReceipts(results, { auth, cb, say, row }) {
           dateReceived: r.date,
           allocation: decision.allocation,
         },
+        /* Filed for real even on a dry run. Dry run holds back the two
+           FINANCE screens — the bank statement page's Done and the Finance
+           Receipts merchant receipt's Issue — and nothing else. A booking
+           receipt that was not raised would leave the statement page with
+           nothing of ours on it, and then the reconciliation half of the run
+           would be rehearsing against an empty page. */
         dryRun: false,
         skipIfNoAllocatable: false,
         callbacks: { onNeedLogin: cb.onNeedLogin },
@@ -909,6 +969,12 @@ async function runReconciliation(o = {}) {
   const say = cb.onProgress || (() => {});
   const row = cb.onRow || (() => {});
   const accountLabel = o.accountLabel || "[TRUST] Trust Account";
+  /* Checks only. Everything happens except the two clicks that make it
+     permanent: Issue on a receipt, and Done on the statement page. The page is
+     still created, the forms are still filled, the allocation is still worked
+     out and typed in — so a rehearsal exercises the same code and the same
+     guards as the real thing, and stops one click short. */
+  const dryRun = !!o.dryRun;
   const rows = o.rows || [];
   if (!rows.length) throw new Error("No rows to run.");
   const results = rows.map((r, i) => ({ ...r, n: i + 1 }));
@@ -957,10 +1023,10 @@ async function runReconciliation(o = {}) {
     const balances = await setStatementBalances(page, {
       openingBalance: o.openingBalance,
       closingBalance: o.closingBalance,
-    }, say);
+    }, say, dryRun);
 
     const selection = await selectMatchedTransactions(page, statement, matched, say);
-    const finished = await finishStatementPage(page, selection.ticked.length, say);
+    const finished = await finishStatementPage(page, selection.ticked.length, say, dryRun);
 
     ok = true;
     return {
@@ -1002,14 +1068,27 @@ async function runMintReconciliation(o = {}) {
   const say = cb.onProgress || (() => {});
   const row = cb.onRow || (() => {});
   const accountLabel = o.accountLabel || "[TRUST] Trust Account";
+  /* Checks only. Everything happens except the two clicks that make it
+     permanent: Issue on a receipt, and Done on the statement page. The page is
+     still created, the forms are still filled, the allocation is still worked
+     out and typed in — so a rehearsal exercises the same code and the same
+     guards as the real thing, and stops one click short. */
+  const dryRun = !!o.dryRun;
   const recPayType = o.recPayType || "Creditor Payment";
   const rows = o.rows || [];
   if (!rows.length) throw new Error("No rows to run.");
 
+  /* This function serves BOTH check-only reports and they do not match the
+     same way — see `core.MATCHERS`. The choice is made there, once, because
+     making it here and again in the combined run is how TravelPay ended up
+     matched against `Trans. No`. */
+  const matchFor = core.matcherFor(o.source);
+
   const results = rows.map((r, i) => ({ ...r, n: i + 1 }));
   // Said up front, because "no receipts were created" is a surprising thing to
   // discover afterwards on a screen whose other flow files them.
-  say(`${results.length} settlement${results.length === 1 ? "" : "s"} to check. ` +
+  say(`${results.length} settlement${results.length === 1 ? "" : "s"} to check, ` +
+    `${core.matchesOn(o.source)}. ` +
     "Nothing is filed — this run only looks for them on the statement page.");
 
   const browser = await openBrowser();
@@ -1034,7 +1113,7 @@ async function runMintReconciliation(o = {}) {
 
     const matched = [];
     for (const r of results) {
-      const m = core.matchMintAgainstStatement(r, statement);
+      const m = matchFor(r, statement);
       r.reconciliation = m.status;
       r.mismatch = m.mismatch;
       r.why = m.reason;
@@ -1047,10 +1126,10 @@ async function runMintReconciliation(o = {}) {
     const balances = await setStatementBalances(page, {
       openingBalance: o.openingBalance,
       closingBalance: o.closingBalance,
-    }, say);
+    }, say, dryRun);
 
     const selection = await selectMatchedTransactions(page, statement, matched, say);
-    const finished = await finishStatementPage(page, selection.ticked.length, say);
+    const finished = await finishStatementPage(page, selection.ticked.length, say, dryRun);
 
     ok = true;
     return {
@@ -1097,6 +1176,12 @@ async function runCombinedReconciliation(o = {}) {
   const say = cb.onProgress || (() => {});
   const row = cb.onRow || (() => {});
   const accountLabel = o.accountLabel || "[TRUST] Trust Account";
+  /* Checks only. Everything happens except the two clicks that make it
+     permanent: Issue on a receipt, and Done on the statement page. The page is
+     still created, the forms are still filled, the allocation is still worked
+     out and typed in — so a rehearsal exercises the same code and the same
+     guards as the real thing, and stops one click short. */
+  const dryRun = !!o.dryRun;
 
   /* One numbering across every report: `n` reaches the page and the store, and
      two rows called 1 would overwrite each other in both. `byReport` arrives as
@@ -1176,7 +1261,9 @@ async function runCombinedReconciliation(o = {}) {
       for (const k of p.reports) {
         // BPay reconciles on the receipt number Tramada handed back; everything
         // else on the reference the report itself carries.
-        const match = core.REPORTS[k].files ? core.matchAgainstStatement : core.matchMintAgainstStatement;
+        // One per report, from the same table the single-report run reads.
+        // Choosing by `files` put TravelPay on Mint's matcher.
+        const match = core.matcherFor(k);
         for (const r of rowsOf(k)) {
           const m = match(r, statement);
           r.reconciliation = m.status;
@@ -1197,10 +1284,10 @@ async function runCombinedReconciliation(o = {}) {
     const balances = await setStatementBalances(page, {
       openingBalance: o.openingBalance,
       closingBalance: o.closingBalance,
-    }, say);
+    }, say, dryRun);
 
     const selection = { ticked, missing, futureDated };
-    const finished = await finishStatementPage(page, ticked.length, say);
+    const finished = await finishStatementPage(page, ticked.length, say, dryRun);
 
     ok = true;
     return {

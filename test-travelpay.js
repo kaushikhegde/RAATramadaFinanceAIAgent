@@ -120,6 +120,98 @@ ok("and the difference is reported", /1735.84/.test(odd2.mismatch || ""), odd2.m
 const gone = C.matchMintAgainstStatement({ transNo: "99999999", amountCents: 100 }, statement);
 ok("a reference that is not there does not reconcile", !gone.reconciled);
 
+console.log("\nPayment Reference is TRAVELPAY's number, so it is looked for in the Reference column");
+{
+  /* The client's own export puts `31282716` in Payment Reference — a merchant
+     gateway id. Tramada's Trans. No is an `R.` receipt number and can never
+     equal one, so matching Payment Reference against Trans. No could only ever
+     match a file whose Payment Reference had been made to hold a Tramada
+     receipt number. Our fixture was doing exactly that, and matching itself. */
+  const page = [
+    { transNo: "R.0000009413", reference: "TP-PG5DR-13223", amount: "250.00", payee: "RAA" },
+    { transNo: "R.0000009414", reference: "TP-PG5DR-13226", amount: "145.54", payee: "RAA" },
+  ];
+  const row = { transNo: "TP-PG5DR-13223", amountCents: 25000 };
+
+  const good = C.matchTravelPayAgainstStatement(row, page);
+  ok("a merchant reference reconciles off the Reference column", good.reconciled, good.reason);
+  check("and says which column found it", good.on, "reference");
+  check("reporting the transaction it belongs to", good.transNo, "R.0000009413");
+
+  // The bug, written down: the old matcher looked only at Trans. No.
+  const old = C.matchMintAgainstStatement(row, page);
+  ok("the Mint matcher cannot find it at all", !old.reconciled, old.reason);
+
+  // Files written before today carry the receipt number, digits only. Those
+  // still work — the fallback costs nothing, and a row found either way really
+  // is on the page.
+  const legacy = C.matchTravelPayAgainstStatement({ transNo: "9413", amountCents: 25000 }, page);
+  ok("an older file carrying the receipt number still reconciles", legacy.reconciled, legacy.reason);
+  check("and says it matched the other way", legacy.on, "transNo");
+
+  const wrongMoney = C.matchTravelPayAgainstStatement({ transNo: "TP-PG5DR-13223", amountCents: 99900 }, page);
+  ok("a different amount still reconciles", wrongMoney.reconciled);
+  ok("and the difference is reported", /250\.00/.test(wrongMoney.mismatch || ""), wrongMoney.mismatch);
+
+  /* MerchantCompanyName is RAA's own merchant account — "Monarto Resort Pty
+     Ltd" on every row of the client's export — while the statement names the
+     CLIENT the receipt came from. They disagree by design, so comparing them
+     would put a difference on every row and teach you to ignore the one column
+     that exists to catch a real one. */
+  const clean = C.matchTravelPayAgainstStatement(
+    { transNo: "TP-PG5DR-13223", amountCents: 25000, toCompany: "Monarto Resort Pty Ltd" },
+    [{ transNo: "R.0000009413", reference: "TP-PG5DR-13223", amount: "250.00", payee: "GRAY/SPIDER MS" }]);
+  ok("the merchant name is not compared against the client on the page", clean.reconciled, clean.reason);
+  check("so a good row carries no mismatch at all", clean.mismatch, undefined);
+  // Mint's To Company IS the creditor being paid, so there the check is real.
+  const mintNote = C.matchMintAgainstStatement(
+    { transNo: "P.0000004123", amountCents: 25000, toCompany: "READY ROOMS" },
+    [{ transNo: "P.0000004123", amount: "250.00", payee: "SOMEONE ELSE" }]);
+  ok("Mint still checks it, because there it means something",
+    /SOMEONE ELSE/.test(mintNote.mismatch || ""), mintNote.mismatch);
+
+  const gone = C.matchTravelPayAgainstStatement({ transNo: "TP-XXXXX-99999", amountCents: 100 }, page);
+  ok("a reference on neither column does not reconcile", !gone.reconciled);
+  ok("and says it looked in both",
+    /Reference column/.test(gone.reason) && /transaction number/.test(gone.reason), gone.reason);
+
+  const blank = C.matchTravelPayAgainstStatement({ transNo: "", amountCents: 100 }, page);
+  ok("a row with no payment reference matches nothing", !blank.reconciled, blank.reason);
+
+  // Two rows carrying one reference is how a double posting hides.
+  const dupes = C.matchTravelPayAgainstStatement(row,
+    page.concat([{ transNo: "R.0000009499", reference: "TP-PG5DR-13223", amount: "250.00" }]));
+  check("a duplicated reference is counted", dupes.duplicates, 2);
+}
+
+console.log("\nevery report is matched by the RIGHT matcher, chosen in one place");
+{
+  /* This is the assertion that would have caught the live failure. The choice
+     was made twice — `runMintReconciliation` by `o.source`, the combined run by
+     `REPORTS[k].files` — and the second one put TravelPay on Mint's matcher,
+     which reported "not among the transactions on this page" about a row
+     sitting FIRST on the page with its reference in plain sight. One table
+     now, and this reads it. */
+  check("BPay matches on the receipt number", C.matcherFor("bpay"), C.matchAgainstStatement);
+  check("Mint on its P. number", C.matcherFor("mint"), C.matchMintAgainstStatement);
+  check("TravelPay on the Reference column", C.matcherFor("travelpay"), C.matchTravelPayAgainstStatement);
+  ok("Mint and TravelPay do NOT share one", C.matcherFor("mint") !== C.matcherFor("travelpay"));
+  // An unknown report falls back rather than crashing a live run.
+  check("something unknown falls back to Mint's", C.matcherFor("nonsense"), C.matchMintAgainstStatement);
+  check("and so does nothing at all", C.matcherFor(undefined), C.matchMintAgainstStatement);
+
+  // Said out loud at the start of a run, so the wrong column is visible from
+  // the log instead of only from a row that mysteriously will not reconcile.
+  ok("a run says which column it will look in",
+    /Reference column/.test(C.matchesOn("travelpay")), C.matchesOn("travelpay"));
+  ok("and Mint says Trans. No", /Trans\. No/.test(C.matchesOn("mint")), C.matchesOn("mint"));
+
+  // Every report that reconciles against a statement page needs an entry.
+  const needsOne = Object.keys(C.REPORTS).filter((k) => C.REPORTS[k].recPayType);
+  ok("every statement-page report has a matcher of its own",
+    needsOne.every((k) => C.MATCHERS[k]), JSON.stringify(needsOne.filter((k) => !C.MATCHERS[k])));
+}
+
 console.log("\nwhat the report IS");
 check("TravelPay files nothing", C.REPORTS.travelpay.files, false);
 // Client Payment Receipt, confirmed 10-08-2026 — NOT the Finance Merchant

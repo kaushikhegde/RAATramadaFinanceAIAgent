@@ -3105,6 +3105,16 @@ function askMarkStale(){
     return { rows: out, bad };
   }
 
+  /* ── dry run ──
+     One question, asked in one place: is this run allowed to COMMIT THE TWO
+     FINANCE SCREENS? Everything else happens for real — the receipts are
+     filed, the statement page is created, the rows are matched, ticked and
+     verified, the balances typed in. What a dry run holds back is Done on the
+     bank statement page and Issue on the Finance Receipts merchant receipt.
+     So the page is left on screen with this run's own receipts ticked on it,
+     for you to look at before anything is made permanent. */
+  const dryOn = () => !!($('#rcDryRun') || {}).checked;
+
   /* ── the Sources screen ── */
   function mountSources() {
     const host = $('#s-sources .page-h');
@@ -3125,7 +3135,15 @@ function askMarkStale(){
         '<div><label class="field-lbl" style="margin:0 0 3px;display:block">Opening balance</label>' +
         '<input class="btn" id="rcOpening" style="width:130px" placeholder="0.00"></div>' +
         '<div><label class="field-lbl" style="margin:0 0 3px;display:block">Closing balance</label>' +
-        '<input class="btn" id="rcClosing" style="width:130px" placeholder="0.00"></div>';
+        '<input class="btn" id="rcClosing" style="width:130px" placeholder="0.00"></div>' +
+        /* One checkbox, called Dry run. A fourth field in the row this script
+           already builds, wearing the same .btn as the three beside it. The
+           mockup's own markup is not touched; #stmtDate was already being
+           replaced by this block long before the checkbox existed. */
+        '<label class="btn" id="rcDryWrap" title="Files the receipts as normal, but does not ' +
+        'press Done on the statement page and does not issue the Finance Receipt." ' +
+        'style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">' +
+        '<input type="checkbox" id="rcDryRun" style="margin:0;flex:none">Dry run</label>';
       old.replaceWith(box);
       // The card quotes the balances back, so it has to hear about them being
       // typed. Redrawing the card cannot steal focus from these — they live
@@ -3140,7 +3158,9 @@ function askMarkStale(){
     if (note) {
       note.querySelector('div').innerHTML =
         '<b>Drop the statement CSV in.</b> Start run files the receipts in Tramada immediately — ' +
-        'the preview below is the only check before it does.';
+        'the preview below is the only check before it does. Tick <b>Dry run</b> and it still ' +
+        'files them and still ticks the statement page — it just stops short of pressing Done, ' +
+        'so you can look at the page before it is committed.';
     }
 
     renderSource();
@@ -3711,15 +3731,20 @@ function askMarkStale(){
       ? { ...r, reconciliation: 'Pending', mismatch: undefined, why: '' }
       : { ...r, allocation: 'Running', reconciliation: 'Pending', receiptNo: '', why: '' }));
 
+    const dry = dryOn();
     const titles = loaded().map((k) => SOURCES[k].title).join(' + ');
     note('Run started — ' + titles + ', ' + results.length +
       ' row' + (results.length === 1 ? '' : 's') +
       (kind === 'both' ? ', both on one statement page' : '') +
-      ', statement date ' + date + '.');
+      ', statement date ' + date + '.' +
+      (dry ? ' DRY RUN — receipts are filed as normal, but Done is not pressed and no ' +
+        'Finance Receipt is issued.' : ''));
     render();
     go('inbox');
 
-    const common = { statementDate: date, openingBalance: op, closingBalance: cl };
+    // Read once, at the moment Start was pressed. Ticking the box mid-run must
+    // not change what the run in flight is allowed to do.
+    const common = { statementDate: date, openingBalance: op, closingBalance: cl, dryRun: dry };
     ws.send(JSON.stringify(kind === 'both'
       ? {
           type: 'recon_run', source: 'both',

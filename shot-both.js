@@ -101,6 +101,58 @@ const ok = (name, cond, detail) => {
     sent[0] && sent[0].statementDate === "10-08-2026" && sent[0].openingBalance === "111753.97",
     JSON.stringify(sent[0] && { d: sent[0].statementDate, o: sent[0].openingBalance }));
 
+  /* DRY RUN. The switch is only worth anything if it reaches the wire, and a
+     box that looks ticked while the run commits the statement anyway is the
+     worst available outcome on a screen that files real money. So: the default
+     is asserted first (unticked = a full run), then the ticked state. */
+  ok("a run is a FULL run unless the box is ticked", sent[0] && sent[0].dryRun === false,
+    JSON.stringify(sent[0] && sent[0].dryRun));
+  const label = await page.evaluate(() =>
+    ((document.querySelector("#rcDryWrap") || {}).textContent || "").trim());
+  ok("the box is called Dry run", label === "Dry run", label);
+
+  // The ticked half needs a fresh page: pressing Start leaves the app on the
+  // inbox with the run still in flight (the socket is stubbed, so no
+  // recon_done ever arrives), and a second Start would be refused.
+  const checksOnlyReachesTheWire = async () => {
+    await page.goto(`http://127.0.0.1:${process.env.PORT}/`, { waitUntil: "networkidle" });
+    await page.evaluate(() => {
+      window.__sent = [];
+      const send = WebSocket.prototype.send;
+      WebSocket.prototype.send = function (data) {
+        try {
+          const m = JSON.parse(data);
+          window.__sent.push(m);
+          if (m.type === "recon_run") return;
+        } catch (e) { /* not ours */ }
+        return send.call(this, data);
+      };
+    });
+    await pick("bpay", "tramada-statement-lines.csv");
+    await page.fill("#rcDate", "10-08-2026");
+    await page.fill("#rcOpening", "111753.97");
+    await page.fill("#rcClosing", "120000.00");
+
+    ok("it starts unticked", !(await page.locator("#rcDryRun").isChecked()));
+    await page.check("#rcDryRun");
+    await page.waitForTimeout(300);
+
+    await page.click("#startRun");
+    await page.waitForTimeout(600);
+    const dry = await page.evaluate(() => window.__sent.filter((m) => m.type === "recon_run"));
+    ok("and the run goes down the socket as a dry run",
+      dry[0] && dry[0].dryRun === true, JSON.stringify(dry[0] && dry[0].dryRun));
+    ok("carrying its rows exactly as a full run would",
+      dry[0] && (dry[0].rows || []).length > 0, JSON.stringify(dry[0] && (dry[0].rows || []).length));
+    const said = await page.evaluate(() => (document.querySelector("#rcTl") || {}).textContent || "");
+    ok("and the run log says so, not just the checkbox",
+      /dry run/i.test(said), said.slice(0, 160));
+    // The mode is about the statement page, not the receipts. A log that read
+    // "nothing will be filed" would be describing a different feature.
+    ok("and does not claim the receipts are held back too",
+      !/nothing (will be |is )?(issued|filed)/i.test(said), said.slice(0, 200));
+  };
+
   const inbox = await page.evaluate(() => ({
     rows: [...document.querySelectorAll("#triagePane tbody tr")].map((tr) =>
       [...tr.children].map((td) => td.textContent.replace(/\s+/g, " ").trim())),
@@ -129,6 +181,10 @@ const ok = (name, cond, detail) => {
   ok("no page errors", problems.length === 0, problems.join(" | "));
 
   await page.screenshot({ path: path.join(__dirname, "both-loaded.png"), fullPage: false });
+
+  // Last, because it reloads the page out from under everything above.
+  await checksOnlyReachesTheWire();
+
   console.log(`\n  both-loaded.png written${bad ? " (with failures above)" : ""}\n`);
   await browser.close();
   fs.rmSync(DIR, { recursive: true, force: true });

@@ -111,7 +111,7 @@ function saveUpload(originalName, buffer, at = new Date().toISOString()) {
 
 /* ── runs ────────────────────────────────────────────────────────────────── */
 
-function startRun({ source, file, statementDate, openingBalance, closingBalance, rows }, at = new Date().toISOString()) {
+function startRun({ source, file, statementDate, openingBalance, closingBalance, rows, dryRun }, at = new Date().toISOString()) {
   const doc = readAllOrQuarantine();
   // The stamp alone collides when two runs start in the same second, which the
   // Mint and BPay cards make easy to do; the count makes it unique.
@@ -119,6 +119,10 @@ function startRun({ source, file, statementDate, openingBalance, closingBalance,
     id: `run-${core.stampOf(at)}-${doc.runs.length + 1}`,
     startedAt: at,
     finishedAt: null,
+    // A rehearsal is kept, because "we ran it and it looked fine" is worth
+    // having — but it is marked, because a history that cannot tell a run
+    // that filed money from one that only looked is worse than no history.
+    dryRun: !!dryRun,
     source: source || "bpay",
     file: file || null,
     statementDate: statementDate || "",

@@ -248,6 +248,8 @@ async function handleReconRun(session, msg) {
       statementDate: msg.statementDate,
       openingBalance: msg.openingBalance,
       closingBalance: msg.closingBalance,
+      // Checks only: the run does everything except press Issue and Done.
+      dryRun: !!msg.dryRun,
       callbacks: callbacks(session, run),
     });
     const s = out.summary;
@@ -310,6 +312,8 @@ async function handleCombinedRun(session, msg) {
       statementDate: msg.statementDate,
       openingBalance: msg.openingBalance,
       closingBalance: msg.closingBalance,
+      // Checks only: the run does everything except press Issue and Done.
+      dryRun: !!msg.dryRun,
       callbacks: callbacks(session, run),
     });
     const s = out.summary;
@@ -356,6 +360,8 @@ async function handleIpsiRun(session, msg) {
       rows,
       payerName: msg.payerName || "RAA",
       toDate: msg.statementDate,
+      // Checks only: the run does everything except press Issue and Done.
+      dryRun: !!msg.dryRun,
       callbacks: callbacks(session, run),
     });
     const s = out.summary;
@@ -394,6 +400,7 @@ function openRun(session, source, msg, rows) {
       statementDate: msg.statementDate,
       openingBalance: msg.openingBalance,
       closingBalance: msg.closingBalance,
+      dryRun: !!msg.dryRun,
       rows,
     });
   } catch (err) {
@@ -444,10 +451,17 @@ async function handleMintRun(session, msg) {
   try {
     const out = await runMintReconciliation({
       rows,
+      // The NORMALISED source, not `msg.source`: line 1 above already falls
+      // back to "mint" for anything it does not recognise, and passing the raw
+      // value would let the two disagree about which report this is — which is
+      // exactly the class of bug that put TravelPay on Mint's matcher.
+      source,
       recPayType: report.recPayType,
       statementDate: msg.statementDate,
       openingBalance: msg.openingBalance,
       closingBalance: msg.closingBalance,
+      // Checks only: the run does everything except press Issue and Done.
+      dryRun: !!msg.dryRun,
       callbacks: callbacks(session, run),
     });
     const s = out.summary;

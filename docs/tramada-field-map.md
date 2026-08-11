@@ -670,6 +670,35 @@ number read from the grid, never remembered.
 
 ---
 
+## TravelPay's Payment Reference is TravelPay's number
+
+The client's own export:
+
+| Payment Reference | Processor Reference | Processed Amount |
+|---|---|---|
+| `31282716` | `PR.46nyrd` | 1480.88 |
+| `31282311` | `PR.46nvkd` | 1735.84 |
+
+Both are **the merchant gateway's** ids. Tramada's `Trans. No` is an `R.`
+receipt number and can never equal one of them, so a TravelPay row cannot be
+reconciled against that column.
+
+It reaches Tramada through the **Reference** field on the receipt — that is
+where the consultant types the merchant's number when raising it — and the
+reconciliation page shows it in its own **Reference** column. So
+`matchTravelPayAgainstStatement` looks there first, and only then at
+`Trans. No`.
+
+**This went unnoticed because the fixture matched itself.** `make-fixtures.js
+travelpay` wrote `9413` into Payment Reference — the receipt number with its
+prefix and padding stripped — and a comment claimed `receiptKey` reduced both
+sides "the same way, so the two meet in the middle". It does not:
+`receiptKey("R.0000009413")` is `R9413`, not `9413`. The two never met, and
+TravelPay reconciled nothing. The fixture now writes the reference the receipt
+was actually raised under.
+
+---
+
 ## The creditor payment form, mapped live (10-08-2026)
 
 `booking/booking-creditor-payment.htm?mode=add&parentId={bookingNo}`, reached

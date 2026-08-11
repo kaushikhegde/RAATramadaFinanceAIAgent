@@ -598,6 +598,91 @@ function matchMintAgainstStatement(row, statementRows) {
   };
 }
 
+/**
+ * A TravelPay settlement row against the statement page.
+ *
+ * **TravelPay's Payment Reference is TRAVELPAY's number, not Tramada's.** The
+ * client's own export carries `31282716` and `31282311` — merchant gateway
+ * transaction ids. Tramada's `Trans. No` is an `R.` receipt number and can
+ * never equal one of those, so the Mint matcher — which compares Payment
+ * Reference against `Trans. No` — could only ever match a file whose Payment
+ * Reference had been made to hold a Tramada receipt number.
+ *
+ * Our own fixture was doing exactly that. It wrote `9413` into the column the
+ * real file fills with `31282716`, matched itself, and proved nothing about the
+ * real thing. That is how this went unnoticed.
+ *
+ * Where a merchant's reference DOES land on the statement is the **Reference**
+ * column, because that is where it is typed when the receipt is raised. So that
+ * is looked at first.
+ *
+ * `Trans. No` is still tried after it. It costs nothing, it is what the older
+ * fixture files carry, and a row found either way is really on the page. Which
+ * one it matched on is reported rather than glossed over.
+ */
+function matchTravelPayAgainstStatement(row, statementRows) {
+  const rows = statementRows || [];
+  const want = refKey(row.transNo);
+
+  const describe = (hit, on, hits) => {
+    const notes = [];
+    if (row.amountCents != null && cents(hit.amount) !== row.amountCents) {
+      notes.push(`the page says $${money(cents(hit.amount))}, the file says $${money(row.amountCents)}`);
+    }
+    /* The company is NOT compared, and that is deliberate — the two columns
+       hold different things.
+
+       TravelPay's `MerchantCompanyName` is RAA's own merchant account,
+       "Monarto Resort Pty Ltd" on every row of the client's export. The
+       statement's "Receipt For/Payment To" is the CLIENT the receipt was taken
+       from, "GRAY/SPIDER MS". They disagree on every row by design, so
+       comparing them the way the Mint matcher does — where To Company really is
+       the creditor being paid — would flag a difference on all of them and
+       train you to ignore the column that exists to catch a real one. */
+    return {
+      reconciled: true, status: "Reconciled", on,
+      reason: `${row.transNo} found on the page` +
+        (on === "transNo" ? " as a transaction number" : " in the Reference column") +
+        (notes.length ? ` — ${notes.join("; ")}` : ""),
+      transNo: hit.transNo || null,
+      mismatch: notes.length ? notes.join("; ") : undefined,
+      duplicates: hits.length > 1 ? hits.length : undefined,
+    };
+  };
+
+  if (want) {
+    /* The digits alone, unpadded — `R.0000009413` and `9413` both reduce to
+       "9413". `receiptKey` does NOT: it keeps the letters, so `R.0000009413`
+       is "R9413" and a file carrying the bare number misses. The old fixture
+       wrote exactly that bare number and claimed in a comment that the two
+       "meet in the middle". They never did, and TravelPay reconciled nothing.
+       Only used when the file's value is all digits, so it cannot loosen the
+       match for a reference that is real text. */
+    const digits = (v) => String(v == null ? "" : v).replace(/\D/g, "").replace(/^0+/, "");
+    const numeric = /^\d+$/.test(String(row.transNo || "").trim());
+    const lookups = [
+      ["reference", (t) => refKey(t.reference) === want],
+      ["transNo", (t) => refKey(t.transNo) === want ||
+        receiptKey(t.transNo) === receiptKey(row.transNo) ||
+        (numeric && !!digits(row.transNo) && digits(t.transNo) === digits(row.transNo))],
+    ];
+    for (const [on, hit] of lookups) {
+      const hits = rows.filter(hit);
+      if (!hits.length) continue;
+      // Prefer one that agrees on the money, so the reported hit is the best
+      // match rather than merely the first — the rule every matcher here uses.
+      const onAmount = hits.find((t) => cents(t.amount) === row.amountCents);
+      return describe(onAmount || hits[0], on, hits);
+    }
+  }
+
+  return {
+    reconciled: false, status: "Not reconciled", on: null,
+    reason: `${row.transNo || "(no payment reference)"} is not on this page — ` +
+      "not in the Reference column and not as a transaction number",
+  };
+}
+
 /** Counts for the Mint inbox. There is no allocation, so there is no column. */
 function summariseMint(results) {
   const r = results || [];
@@ -991,6 +1076,36 @@ const REPORTS = {
   },
 };
 
+/**
+ * Which matcher a report reconciles with, and which column it reads.
+ *
+ * This lives here, once, because it was decided in two different places and
+ * they disagreed. `runMintReconciliation` serves both check-only reports and
+ * chose by `o.source`; the combined run chose by `REPORTS[k].files`. A run that
+ * reached the second path — or an older server still holding the first version
+ * in memory — matched a TravelPay row against `Trans. No`, a column its Payment
+ * Reference can never appear in, and reported "not among the transactions on
+ * this page" about a row sitting first on the page.
+ *
+ * One table, named columns, and a test that reads it.
+ */
+const MATCHERS = {
+  bpay: { fn: matchAgainstStatement, column: "Trans. No", what: "the receipt number it was handed" },
+  mint: { fn: matchMintAgainstStatement, column: "Trans. No", what: "the P. payment number" },
+  travelpay: { fn: matchTravelPayAgainstStatement, column: "Reference", what: "TravelPay's own payment reference" },
+};
+
+/** The matcher for a report, defaulting to Mint's — the older behaviour. */
+function matcherFor(source) {
+  return (MATCHERS[source] || MATCHERS.mint).fn;
+}
+
+/** What to tell the person the run is about to look for, and where. */
+function matchesOn(source) {
+  const m = MATCHERS[source] || MATCHERS.mint;
+  return `matched on ${m.what}, in the statement's ${m.column} column`;
+}
+
 /* ── the run's own summary ───────────────────────────────────────────────── */
 
 /** Counts for the UI's filter chips, from the finished result rows. */
@@ -1230,6 +1345,7 @@ module.exports = {
   mapColumns, rowsByHeader,
   STATEMENT_COLUMNS, TRANSACTION_COLUMNS, TRANSACTION_FALLBACK,
   MINT_COLUMNS, csvGrid, parseMintRows, matchMintAgainstStatement, summariseMint,
+  matchTravelPayAgainstStatement, MATCHERS, matcherFor, matchesOn,
   TRAVELPAY_COLUMNS, parseTravelPayRows, serialDate, bookingFromReference, REPORTS,
   IPSI_COLUMNS, parseIpsiRows, matchIpsiAgainstReceipts, summariseIpsi,
   tidyError,
