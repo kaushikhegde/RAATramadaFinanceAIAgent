@@ -277,8 +277,26 @@ async function createStatement(page, { pageNumber, statementDate, openingBalance
   };
   await typeInto("#pageNumber", pageNumber);
   await typeInto("#statementDate", core.toTramadaDate(statementDate));
-  await typeInto("#openingBalance", openingBalance);
-  await typeInto("#closingBalance", closingBalance);
+
+  /* THE BALANCES COME FROM THE FORM, NOT FROM US.
+   *
+   * Choosing the bank account fills Opening Balance with the account's own
+   * figure — 1300000.00 on Trust. That number is Tramada's, it is right by
+   * definition, and it is what the closing balance starts from. So the opening
+   * is left exactly as the form set it, and copied into Closing.
+   *
+   * Nothing typed into the Sources screen's balance boxes reaches this form any
+   * more. They used to be typed over the top of Tramada's own figure, which
+   * meant a statement could be created against a balance somebody had guessed
+   * at while the account said otherwise. */
+  const carried = await page.inputValue("#openingBalance").catch(() => "");
+  if (core.cents(carried) == null) {
+    throw new Error(
+      `The new-statement form shows no Opening Balance for ${accountLabel} (it reads "${carried}"), ` +
+      "so there is nothing to carry into the Closing Balance."
+    );
+  }
+  await typeInto("#closingBalance", carried);
   // Blur the last field so any on-change handler has run before submit.
   await page.locator("#pageNumber").click();
 
@@ -296,6 +314,8 @@ async function createStatement(page, { pageNumber, statementDate, openingBalance
   const back = await page.evaluate(() => ({
     page: (document.querySelector("#pageNumber") || {}).value,
     date: (document.querySelector("#statementDate") || {}).value,
+    opening: (document.querySelector("#openingBalance") || {}).value,
+    closing: (document.querySelector("#closingBalance") || {}).value,
     account: (() => {
       const el = document.querySelector("#bankAccount");
       return el ? (el.options[el.selectedIndex] || {}).text || "" : "";
@@ -310,6 +330,14 @@ async function createStatement(page, { pageNumber, statementDate, openingBalance
   if (String(back.date).trim() !== core.toTramadaDate(statementDate)) {
     throw new Error(
       `Tramada didn't keep the statement date ${core.toTramadaDate(statementDate)} (it reads "${back.date}").`
+    );
+  }
+  // Both balances, in cents, because "1,300,000.00" and "1300000.00" are the
+  // same money and the form reformats as it pleases.
+  if (core.cents(back.closing) !== core.cents(back.opening)) {
+    throw new Error(
+      `The closing balance did not take: opening reads "${back.opening}", closing reads "${back.closing}". ` +
+      "They have to start equal."
     );
   }
 
@@ -354,7 +382,10 @@ async function createStatement(page, { pageNumber, statementDate, openingBalance
         `Asked for page ${pageNumber} but landed on "${landed.heading}".`
       );
     }
-    return page.url();
+    // The balance goes back with it: the reconcile screen has to be made to
+    // agree with the statement just created, and this is the only place that
+    // figure was ever read.
+    return { url: page.url(), carriedBalance: carried };
   }
 
   /**
@@ -446,26 +477,27 @@ async function sortPage(page) {
 }
 
 /**
- * FILTERING IS OFF. Sorting still happens; the Rec/Pay Type filter does not.
+ * Filter the page, or read all of it?
  *
- * The code below is kept, whole and working — it is switched off, not deleted,
- * because "we tried filtering and stopped" is worth being able to undo in one
- * step rather than rewriting from the field map. Turn it back on with:
+ * ONE REPORT AT A TIME → filter to its Rec/Pay Type. There is exactly one type
+ * to show, showing it is what the screen is for, and a smaller grid is faster
+ * to read and easier to check by eye afterwards.
  *
- *     RECON_APPLY_FILTER=true npm start
+ * SEVERAL REPORTS AT ONCE → no filter. Two reports under one type and a third
+ * under another meant swapping the filter per pass and re-reading the grid each
+ * time; unfiltered, one read serves every report. Nothing about matching
+ * changes either way — a row is found by its receipt number or its reference,
+ * and both are as unique across the whole page as within one type.
  *
- * A switch rather than a comment block on purpose: commented-out code is not
- * compiled, not tested and quietly rots against the file around it. This stays
- * live, stays covered, and flips back with an env var.
- *
- * What changes with it off: the grid holds every transaction on the page
- * instead of one Rec/Pay Type. Nothing about matching changes — a row is found
- * by its receipt number or its reference, and both are as unique across the
- * whole page as within one type — but the page is bigger, so reading it is
- * slower, and on a combined run every report now reads ONE grid rather than one
- * per filter.
+ * `RECON_APPLY_FILTER=true|false` forces it either way. `applyFilter` itself is
+ * untouched, whole and exported, whichever way this lands.
  */
-const APPLY_FILTER = process.env.RECON_APPLY_FILTER === "true";
+const FILTER_OVERRIDE = process.env.RECON_APPLY_FILTER;
+function filterFor(combined) {
+  if (FILTER_OVERRIDE === "true") return true;
+  if (FILTER_OVERRIDE === "false") return false;
+  return !combined;
+}
 
 /** Show one Rec/Pay Type. Client-side; ticks already made are not disturbed. */
 async function applyFilter(page, recPayType) {
@@ -488,9 +520,9 @@ async function applyFilter(page, recPayType) {
   }
 }
 
-async function filterAndRead(page, recPayType = "Client Payment Receipt", say = () => {}) {
+async function filterAndRead(page, recPayType = "Client Payment Receipt", say = () => {}, doFilter = true) {
   await sortPage(page);
-  if (APPLY_FILTER) {
+  if (doFilter) {
     await applyFilter(page, recPayType);
   } else {
     // Said out loud every run, because "186 transactions showing" means a very
@@ -596,6 +628,25 @@ async function setStatementBalances(page, { openingBalance, closingBalance } = {
   if (!want.openingBalance && !want.closingBalance) return null;
 
   await page.waitForSelector("#openingBalance", { timeout: 20000 });
+
+  /* ALREADY RIGHT? THEN DO NOTHING.
+   *
+   * Since the new-statement form carries the account's own opening balance into
+   * the closing, the page usually arrives here already showing both. Clicking
+   * Edit to retype the same two numbers is pure risk: it is the step that
+   * failed with "clicked Edit but the fields are still read-only" and stopped a
+   * whole run. Compared in cents, so "1,300,000.00" and "1300000.00" are one
+   * number. */
+  const showing = await page.evaluate(() => ({
+    openingBalance: (document.querySelector("#openingBalance") || {}).value || "",
+    closingBalance: (document.querySelector("#closingBalance") || {}).value || "",
+  })).catch(() => null);
+  const agrees = showing && ["openingBalance", "closingBalance"].every((f) =>
+    !want[f] || core.cents(showing[f]) === core.cents(want[f]));
+  if (agrees) {
+    say(`The statement balances already read $${want.openingBalance} / $${want.closingBalance} — nothing to change.`, true);
+    return { alreadyRight: true, ...want };
+  }
 
   const locked = await page.$eval("#openingBalance", (el) => el.readOnly).catch(() => false);
   if (locked) {
@@ -882,15 +933,18 @@ async function openFreshStatementPage(page, o) {
      re-read and move up rather than stopping. Only ever forwards, and only a
      few times: a number that keeps coming back taken means something else is
      wrong and the loop should not paper over it. */
+  let carriedBalance = "";
   for (let attempt = 1; ; attempt++) {
     try {
-      await createStatement(page, {
+      // The balances are the FORM's, not ours — createStatement reads the
+      // account's own opening balance and carries it into the closing. What
+      // comes back is that figure, so the reconcile screen can be made to
+      // agree with the statement that was just created.
+      carriedBalance = (await createStatement(page, {
         pageNumber,
         statementDate: o.statementDate,
-        openingBalance: o.openingBalance,
-        closingBalance: o.closingBalance,
         accountLabel,
-      });
+      })).carriedBalance;
       break;
     } catch (err) {
       if (!err.pageTaken || attempt >= 3) throw err;
@@ -900,8 +954,9 @@ async function openFreshStatementPage(page, o) {
       say(`Trying page ${pageNumber}.`);
     }
   }
-  say(`Page ${pageNumber} created (${core.toTramadaDate(o.statementDate)}).`, true);
-  return pageNumber;
+  say(`Page ${pageNumber} created (${core.toTramadaDate(o.statementDate)}), ` +
+    `opening and closing both ${core.money(core.cents(carriedBalance))}.`, true);
+  return { pageNumber, carriedBalance };
 }
 
 /* ── phase one: the receipts ─────────────────────────────────────────────── */
@@ -1038,17 +1093,19 @@ async function runReconciliation(o = {}) {
     page = await ctx.newPage();
     await ensureLoggedIn(page, cb.onNeedLogin);
 
-    const pageNumber = await openFreshStatementPage(page, {
+    /* The balances are no longer passed in. Tramada's new-statement form fills
+       Opening Balance from the account itself, that figure is carried into
+       Closing, and it comes back here so the reconcile screen can be made to
+       agree with it. Nothing typed on the Sources screen reaches either form. */
+    const { pageNumber, carriedBalance } = await openFreshStatementPage(page, {
       accountLabel,
       statementDate: o.statementDate,
-      openingBalance: o.openingBalance,
-      closingBalance: o.closingBalance,
       say,
     });
 
     /* 3 — sort, filter, read, match. Nothing else is clicked here. */
     say("Sorting by date descending, then filtering to Client Payment Receipt…");
-    const statement = await filterAndRead(page, undefined, say);
+    const statement = await filterAndRead(page, undefined, say, filterFor(false));
     say(`${statement.length} transaction${statement.length === 1 ? "" : "s"} showing after the filter.`);
 
     const matched = [];
@@ -1066,8 +1123,8 @@ async function runReconciliation(o = {}) {
        the sort and the filter: sorting rebuilds the page, so anything typed
        before it would be typed into a document that no longer exists. */
     const balances = await setStatementBalances(page, {
-      openingBalance: o.openingBalance,
-      closingBalance: o.closingBalance,
+      openingBalance: carriedBalance,
+      closingBalance: carriedBalance,
     }, say, dryRun);
 
     const selection = await selectMatchedTransactions(page, statement, matched, say);
@@ -1144,16 +1201,18 @@ async function runMintReconciliation(o = {}) {
     page = await ctx.newPage();
     await ensureLoggedIn(page, cb.onNeedLogin);
 
-    const pageNumber = await openFreshStatementPage(page, {
+    /* The balances are no longer passed in. Tramada's new-statement form fills
+       Opening Balance from the account itself, that figure is carried into
+       Closing, and it comes back here so the reconcile screen can be made to
+       agree with it. Nothing typed on the Sources screen reaches either form. */
+    const { pageNumber, carriedBalance } = await openFreshStatementPage(page, {
       accountLabel,
       statementDate: o.statementDate,
-      openingBalance: o.openingBalance,
-      closingBalance: o.closingBalance,
       say,
     });
 
     say("Sorting by date descending…");
-    const statement = await filterAndRead(page, recPayType, say);
+    const statement = await filterAndRead(page, recPayType, say, filterFor(false));
     say(`${statement.length} transaction${statement.length === 1 ? "" : "s"} showing after the filter.`);
 
     const matched = [];
@@ -1169,8 +1228,8 @@ async function runMintReconciliation(o = {}) {
     }
 
     const balances = await setStatementBalances(page, {
-      openingBalance: o.openingBalance,
-      closingBalance: o.closingBalance,
+      openingBalance: carriedBalance,
+      closingBalance: carriedBalance,
     }, say, dryRun);
 
     const selection = await selectMatchedTransactions(page, statement, matched, say);
@@ -1241,6 +1300,8 @@ async function runCombinedReconciliation(o = {}) {
      two rows called 1 would overwrite each other in both. `byReport` arrives as
      { bpay: [...], mint: [...], travelpay: [...] } — whichever cards were
      loaded. */
+  // Several reports on one page: no filter — see filterFor().
+  const doFilter = filterFor(true);
   const byReport = o.byReport || {};
   const order = Object.keys(core.REPORTS).filter((k) => (byReport[k] || []).length);
   const results = order
@@ -1334,11 +1395,13 @@ async function runCombinedReconciliation(o = {}) {
     page = await ctx.newPage();
     await ensureLoggedIn(page, cb.onNeedLogin);
 
-    const pageNumber = await openFreshStatementPage(page, {
+    /* The balances are no longer passed in. Tramada's new-statement form fills
+       Opening Balance from the account itself, that figure is carried into
+       Closing, and it comes back here so the reconcile screen can be made to
+       agree with it. Nothing typed on the Sources screen reaches either form. */
+    const { pageNumber, carriedBalance } = await openFreshStatementPage(page, {
       accountLabel,
       statementDate: o.statementDate,
-      openingBalance: o.openingBalance,
-      closingBalance: o.closingBalance,
       say,
     });
 
@@ -1374,7 +1437,7 @@ async function runCombinedReconciliation(o = {}) {
        or three times over — slow, and `seen` would report a page two or three
        times its real size. Filtered, each pass has to re-read, because the
        filter is what changed. */
-    const wholePage = APPLY_FILTER ? null : await readVisibleTransactions(page);
+    const wholePage = doFilter ? null : await readVisibleTransactions(page);
     if (wholePage) {
       seen = wholePage.length;
       say(`Filter off — ${wholePage.length} transaction${wholePage.length === 1 ? "" : "s"} on the page, ` +
@@ -1383,7 +1446,7 @@ async function runCombinedReconciliation(o = {}) {
 
     for (const p of passes) {
       let statement = wholePage;
-      if (APPLY_FILTER) {
+      if (doFilter) {
         say(`Filtering to ${p.type}…`);
         await applyFilter(page, p.type);
         statement = await readVisibleTransactions(page);
@@ -1419,8 +1482,8 @@ async function runCombinedReconciliation(o = {}) {
     }
 
     const balances = await setStatementBalances(page, {
-      openingBalance: o.openingBalance,
-      closingBalance: o.closingBalance,
+      openingBalance: carriedBalance,
+      closingBalance: carriedBalance,
     }, say, dryRun);
 
     const selection = { ticked, missing, futureDated };
@@ -1442,7 +1505,7 @@ async function runCombinedReconciliation(o = {}) {
 
 module.exports = {
   runReconciliation, runMintReconciliation, runCombinedReconciliation,
-  sortPage, applyFilter, APPLY_FILTER, readVisibleTransactions, fileReceipts,
+  sortPage, applyFilter, filterFor, readVisibleTransactions, fileReceipts,
   readExistingPages, createStatement, openFreshStatementPage, filterAndRead,
   setStatementBalances, selectMatchedTransactions, finishStatementPage,
 };

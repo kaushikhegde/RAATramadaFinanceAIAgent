@@ -173,6 +173,17 @@ const thrown = async (fn) => {
     check("with the segment type", good[0].segType, "Ticket");
   }
 
+  console.log("\nthe page is filtered for one report and read whole for several");
+  {
+    /* One report at a time there is exactly one Rec/Pay Type to show, and
+       showing it is what the screen is for. Several at once meant swapping the
+       filter per pass and re-reading the grid each time; unfiltered, one read
+       serves them all. Matching is unaffected either way. */
+    const { filterFor } = require("./recon-run");
+    check("one report on its own is filtered", filterFor(false), true);
+    check("several together are not", filterFor(true), false);
+  }
+
   console.log(`\n${fail ? "❌" : "✅"} ${pass} passed, ${fail} failed\n`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error("\n  test harness failed:", e); process.exit(1); });
