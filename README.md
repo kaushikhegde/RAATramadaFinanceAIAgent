@@ -44,6 +44,93 @@ Tramada — see below.)
 receipt per row against a real booking, and nothing rolls back. The card's
 **Preview** is the only check before it does.
 
+## In Docker
+
+```bash
+docker compose up --build          # or: npm run docker:up
+
+#   app     http://127.0.0.1:3000
+#   screen  http://127.0.0.1:6080/vnc.html   ← SIGN INTO TRAMADA HERE
+```
+
+Open the screen first. It is a real X display inside the container with Chrome
+already on the Tramada login page — sign in there, by hand, exactly as you would
+locally, then go to the app and start a run. The rule has not moved: the run
+attaches to a browser a **human** signed into, and never types credentials.
+
+That is also why there is a window manager and a VNC server in the image at all.
+"Headless" here means no monitor, not no display — a run needs a browser a person
+can reach, because Tramada will ask for a password, and one day an OTP.
+
+**What survives a restart.** `./data` holds the Chrome profile — so the Tramada
+session outlives `docker compose down` — along with `runs.json` and `uploads/`.
+`./csv_uploads` is bound to the same folder the fixture generator writes to, so a
+CSV made inside the container is a file you can pick up and upload. Delete
+`./data/chrome-profile` and the next start is a signed-out browser.
+
+**Both ports are published to `127.0.0.1` only**, and the VNC server has no
+password by design — the loopback bind is what keeps it shut. From another
+machine, tunnel rather than republish:
+
+```bash
+ssh -L 6080:localhost:6080 -L 3000:localhost:3000 you@thathost
+```
+
+**Port 9222 is deliberately not published.** Anything that can reach the
+debugging port drives a browser signed into a finance system; the app reaches it
+on `127.0.0.1` inside the container, and nothing outside needs to.
+
+Point it at a different portal with `TRAMADA_URL` in a `.env` beside the compose
+file. Everything else has a working default.
+
+If any of the six processes dies — Xvfb, fluxbox, Chromium, x11vnc, websockify,
+node — the container stops and says which one. That is on purpose: restarting a
+dead Chrome on its own would hand back a browser nobody is signed into, and a run
+would then sit waiting for a login against a window that was never there.
+
+## The BPay rules
+
+The run reproduces *Reconciliation Guide — BPAY (daily)*. Two parts of it are
+worth knowing before you watch a run, because both make the agent do LESS than
+you might expect.
+
+**Three checks happen before any receipt is raised** (steps 4–6). The run reads
+the booking's departure date, what it still owes, and its debtor, and decides:
+
+| | departure ahead | departure passed |
+|---|---|---|
+| **something owing** | receipt raised | receipt raised, remarked *"Please review, departure date has passed"* |
+| **nothing owing** | **no receipt** — *"No outstanding amount found"* | **no receipt** — *"No outstanding amount found, departure date has passed"* |
+
+and on top of that, a debtor that is not **RAA of SA Limited (Retail)** stops
+the receipt with *"Please review, incorrect debtor found"*. A field that cannot
+be read also stops the row, remarked *"Please review"* — the alternative is
+filing a real receipt on the strength of something nobody managed to read.
+
+**Allocation is exact, or nothing** (BR07–BR11). A box is ticked in three cases
+only: the amount equals one segment, it equals all of them added up, or it
+exceeds all of them (which ticks everything and remarks *"Overpayment, please
+check"*). Anything else — including an amount that happens to fit some
+combination of segments — ticks **nothing** and remarks *"Please allocate"*.
+The receipt is still filed either way; the money was banked and has to be
+recorded. Only the allocation waits for a person.
+
+This replaced a best-fit rule that settled the largest combination not exceeding
+the receipt. $300 against two $200 segments used to tick one of them; it no
+longer does.
+
+**The Remarks column has a closed vocabulary.** Seven strings, quoted verbatim
+from the guide's business-rules table, in `recon-core.js`'s `REMARKS`. Finance
+filters and counts that column, so a sentence that is merely similar is a
+different value to anything reading the file. The prose explanation lives in
+`Why`, beside it.
+
+**One statement page per statement date** (BR12). A second run against a date
+that already has a page stops and names the page rather than creating another.
+Keyed on the statement DATE, not on today, so the guide's public-holiday case
+still works: two files uploaded on one Tuesday, dated Monday and Tuesday, get
+their two pages.
+
 ## What it touches, and what it will not
 
 On the reconciliation page it sets the sort, writes the statement balances,
@@ -58,12 +145,18 @@ Matching is unaffected either way — a row is found by its receipt number or it
 reference, and both are as unique across the whole page as within one type.
 `RECON_APPLY_FILTER=true|false` forces it.
 
-**The statement balances come from Tramada, not from you.** Choosing the bank
-account fills the new-statement form's Opening Balance with the account's own
-figure; the run leaves it alone and copies it into Closing Balance. The Opening
-and Closing boxes on the Sources screen no longer reach either form — they used
-to be typed over the top of Tramada's own number, which meant a statement could
-be created against a balance somebody had guessed at.
+**The opening balance is Tramada's; the closing balance is yours.** Choosing the
+bank account fills the new-statement form's Opening Balance with the account's
+own figure — it is yesterday's closing balance, it is right by definition, and
+the run never types over it. The Closing Balance box on the Sources screen is
+the one a Finance team member fills in off the Westpac statement, and that is
+the figure the run types in (step 27). Leave it blank and the opening is carried
+across instead, with the log saying which of the two happened.
+
+This was the other way round until 17-Aug-2026 — closing was copied from
+opening, which makes the variance $0.00 by construction whatever was actually
+banked, and so proves nothing. `RECON_ALLOW_SECOND_STATEMENT=true` is unrelated
+but sits nearby: it lifts BR12's one-page-per-day guard.
 
 **A receipt already on the booking is never filed twice.** Before it opens
 anything, the run reads the booking's own Receipts list and looks for the same

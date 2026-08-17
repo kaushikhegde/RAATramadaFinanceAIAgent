@@ -108,85 +108,464 @@ function splitCsvLine(line) {
  * Returns `{ rows, problems }`. A row that cannot be acted on is never quietly
  * dropped: it comes back in `problems` so the UI can show it.
  */
+/*
+ * `receipt no` is an alias of `reference`, not a column of its own.
+ *
+ * The guide calls this column "Receipt No" throughout — step 16 says to type
+ * "the numbers from the Receipt No column" into the receipt's Reference field.
+ * The code has always called it `reference`, because Reference is where the
+ * value lands. A file headed RECEIPT NO used to be rejected outright with
+ * "the header is missing: reference", which reads as a broken file rather than
+ * a naming difference.
+ *
+ * `recPayType` is OPTIONAL. The guide's BPay file has no such column, and the
+ * value is only ever echoed back into the report — nothing decides on it. A
+ * missing one is blank, not a rejected file.
+ */
 const HEADERS = {
-  date: ["date", "date received", "b/pay file date"],
-  /* "receipt no" is the BPAY SPREADSHEET's column and it is this field, not
-     `receiptNo`. Step 16 takes the number from the spreadsheet's "Receipt No"
-     column and types it into Tramada's *Reference* field; `receiptNo` on a
-     result row is the different number Tramada hands BACK (`R.0000009444`).
-     Two columns, similar names, opposite directions — which is why the export
-     calls Tramada's one "Tramada Receipt No" and never just "Receipt No". */
-  reference: ["reference", "reference number", "ref", "receipt no", "receipt number"],
+  date: ["date", "date received", "b/pay file date", "bpay file date"],
+  reference: ["reference", "reference number", "ref", "receipt no", "receipt no.", "receiptno", "receipt number"],
   recPayType: ["rec/pay type", "recpaytype", "payment type", "type"],
   amount: ["amount"],
-  bookingNo: ["booking no", "booking number", "bookingno", "booking reference", "booking", "booking no."],
+  bookingNo: ["booking no", "booking no.", "booking number", "bookingno", "booking reference", "booking", "tramada bkg no"],
 };
 
-/**
- * The BPay rows, from a GRID — a CSV's lines or a workbook's cells.
- *
- * Split out from `parseReconCsv` because step 1 says "prepares BPAY transaction
- * into a spreadsheet", and a spreadsheet is a .xlsx. BPay was the one report
- * whose file had to be a CSV, so Finance's actual workbook could not be
- * uploaded at all — every other report already read either container through
- * `xlsx-lite`. One rule, two containers, and the rule is here.
- */
-function parseReconRows(headers, gridRows) {
-  const header = (headers || []).map((h) => String(h == null ? "" : h).trim().toLowerCase());
-  if (!header.length) return { rows: [], problems: [{ line: 0, why: "the file is empty" }] };
+/** Columns the file may leave out entirely. */
+const OPTIONAL_HEADERS = ["recPayType"];
 
+function parseReconCsv(text) {
+  const lines = String(text || "").split(/\r?\n/).filter((l) => l.trim() !== "");
+  if (!lines.length) return { rows: [], problems: [{ line: 0, why: "the file is empty" }] };
+  const grid = csvGrid(text);
+  return parseReconRows(grid.headers, grid.rows);
+}
+
+/**
+ * The same rows, out of a WORKBOOK rather than a CSV.
+ *
+ * Finance's BPay file is whatever their bank and their spreadsheet produce,
+ * and the guide only ever calls it "a spreadsheet". A run used to accept an
+ * .xlsx from Mint, IPSI and TravelPay and refuse one from BPay, which is a
+ * distinction nobody outside this code could have predicted.
+ *
+ * `rows` is an array of cell arrays, `headers` their column names — exactly
+ * what `csvGrid` and `xlsx-lite`'s `readSheet` both hand back, so one parser
+ * serves both containers.
+ */
+function parseReconRows(headers, sheetRows) {
+  if (!headers || !headers.length) return { rows: [], problems: [{ line: 0, why: "the file is empty" }] };
+
+  const header = (headers || []).map((h) => String(h == null ? "" : h).trim().toLowerCase());
   const col = {};
   for (const [key, names] of Object.entries(HEADERS)) {
     col[key] = header.findIndex((h) => names.includes(h));
   }
-  /* `recPayType` is OPTIONAL and the rest are not.
-   *
-   * It is display only — nothing matches on it, nothing is typed from it. It
-   * was required because the first BPay files were built by `statement-csv.js`,
-   * which is a scrape of the reconcile screen and therefore has the column. The
-   * spreadsheet RAA Finance actually sends has Booking no., Receipt No, Amount
-   * and Date and no Rec/Pay Type anywhere, so requiring it rejected the real
-   * file with "the header is missing: recPayType" and no way forward. */
-  const OPTIONAL = ["recPayType"];
   const missing = Object.entries(col)
-    .filter(([k, i]) => i < 0 && !OPTIONAL.includes(k))
+    .filter(([k, i]) => i < 0 && !OPTIONAL_HEADERS.includes(k))
     .map(([k]) => k);
   if (missing.length) {
     return { rows: [], problems: [{ line: 1, why: `the header is missing: ${missing.join(", ")}` }] };
   }
 
+  // A workbook cell can be a number, a Date or undefined; a CSV field is always
+  // a string. Everything downstream reads text, so this is the one place it is
+  // made text — and an empty cell is "" rather than "undefined".
+  const at = (f, i) => (i < 0 || f[i] == null ? "" : String(f[i]).trim());
+
+  /* THE WHOLE FILE COMES THROUGH, not just the five columns the run acts on.
+   *
+   * Finance's spreadsheet has columns this code has no opinion about — a
+   * customer name, an internal note, whatever their bank puts in it — and the
+   * file they get back is supposed to be THEIR file with three columns filled
+   * in, not a new five-column one that happens to share some values. So every
+   * column is kept, in its original order and under its original heading, and
+   * the run reads its five out of the same row.
+   *
+   * A blank heading is skipped, and a repeated one is suffixed: a spreadsheet
+   * with two columns called "Amount" would otherwise silently lose one. */
+  const columns = [];
+  const seen = new Set();
+  (headers || []).forEach((h, i) => {
+    const name = String(h == null ? "" : h).trim();
+    if (!name) { columns.push(null); return; }
+    let unique = name, n = 2;
+    while (seen.has(unique.toLowerCase())) unique = `${name} (${n++})`;
+    seen.add(unique.toLowerCase());
+    columns.push(unique);
+  });
+  const kept = columns.filter(Boolean);
+
   const rows = [];
   const problems = [];
-  // A workbook cell can be a number; a CSV field is always a string. Everything
-  // downstream types these into a form, so they are strings from here on.
-  const at = (cells, key) =>
-    col[key] < 0 ? "" : String(cells[col[key]] == null ? "" : cells[col[key]]).trim();
-
-  (gridRows || []).forEach((cells, i) => {
+  for (let i = 0; i < (sheetRows || []).length; i++) {
+    const f = sheetRows[i] || [];
+    const cells = {};
+    columns.forEach((name, j) => { if (name) cells[name] = at(f, j); });
     const row = {
-      line: i + 2,                       // +1 for the header, +1 for 1-based
-      date: at(cells, "date"),
-      reference: at(cells, "reference"),
-      recPayType: at(cells, "recPayType"),
-      amount: at(cells, "amount"),
-      bookingNo: at(cells, "bookingNo"),
+      // The line number a person would count to in the file: the header is 1.
+      line: i + 2,
+      date: at(f, col.date),
+      reference: at(f, col.reference),
+      recPayType: at(f, col.recPayType),
+      amount: at(f, col.amount),
+      bookingNo: at(f, col.bookingNo),
+      amountCents: cents(at(f, col.amount)),
+      // Everything the file said, under the headings it said it with.
+      cells,
+      // Filled in from Tramada as the run goes: steps 7 and 9, and whichever
+      // business rule the row lands on. Present from the start so every row
+      // has the same shape and the report always has the columns.
+      consultant: "",
+      shop: "",
+      remark: "",
     };
-    row.amountCents = cents(row.amount);
     const why = [];
     if (!row.reference) why.push("no reference");
     if (row.amountCents == null) why.push(`unreadable amount "${row.amount}"`);
     if (!row.bookingNo) why.push("no booking number");
-    if (why.length) problems.push({ line: row.line, why: why.join("; "), row });
-    else rows.push(row);
-  });
-  return { rows, problems };
+
+    /* A row that says NOTHING in any of the columns this code reads is not a
+       transaction missing its booking number — it is a spacer, or the row a
+       spreadsheet carries a TOTAL and a transaction count on. RAA's own file
+       puts those on the last data row, but a blank one is a change away.
+       Remarking it "No booking number found" would put an instruction to
+       Finance beside a line that is not a payment. It is still carried into the
+       export, because whatever it holds is theirs. */
+    const blank = !row.reference && !row.bookingNo && row.amountCents == null;
+    if (blank) {
+      problems.push({ line: row.line, why: "nothing in it to reconcile", row, blank: true });
+    } else if (why.length) {
+      // BR01: a line with no booking number is not silently absent from what
+      // Finance gets back. It is not runnable, so it stays out of `rows` — but
+      // it carries its own remark and the report puts it back.
+      row.remark = !row.bookingNo ? REMARKS.noBooking : REMARKS.review;
+      problems.push({ line: row.line, why: why.join("; "), row });
+    } else rows.push(row);
+  }
+
+  /* The file may ALREADY have Consultant, Shop or Remarks columns — the guide
+     talks about "the Remarks column" as something that exists. Where it does,
+     whatever was in it is the starting value, so an operator's own note is not
+     wiped by a blank. */
+  for (const r of rows.concat(problems.map((p) => p.row).filter(Boolean))) {
+    const pick = (want) => {
+      const name = kept.find((c) => normaliseHeading(c) === want);
+      return name ? r.cells[name] || "" : "";
+    };
+    r.consultant = r.consultant || pick("consultant");
+    r.shop = r.shop || pick("shop");
+    r.remark = r.remark || pick("remarks");
+  }
+
+  return { rows, problems, columns: kept };
 }
 
-/** The same rule, over a CSV. */
-function parseReconCsv(text) {
-  const grid = csvGrid(text);
-  if (!grid.headers.length) return { rows: [], problems: [{ line: 0, why: "the file is empty" }] };
-  return parseReconRows(grid.headers, grid.rows);
+/** Headings compared the way a person would: case, spaces and dots ignored. */
+function normaliseHeading(h) {
+  return String(h == null ? "" : h).trim().toLowerCase().replace(/[\s._-]+/g, "");
+}
+
+/*
+ * What the run adds to the file, and what each column is called if it has to be
+ * created. Order is the order they are appended in.
+ */
+const EXPORT_FIELDS = [
+  { field: "consultant", heading: "Consultant" },     // step 7
+  { field: "shop", heading: "Shop" },                 // step 9
+  { field: "remark", heading: "Remarks" },            // BR01-BR11
+  { field: "receiptNo", heading: "Receipt No" },
+  { field: "allocation", heading: "Allocation" },
+  { field: "reconciliation", heading: "Reconciled" },
+  { field: "why", heading: "Why" },
+];
+
+/**
+ * The file Finance gets back: THEIR spreadsheet, with the run's columns filled
+ * in — not a new file that happens to share some values.
+ *
+ * Every original column survives, in its original order, under its original
+ * heading. Where the file already HAS a Consultant, Shop or Remarks column the
+ * run writes into it rather than appending a second one with the same name;
+ * where it does not, the column is added on the end.
+ *
+ * THE INPUT COLUMNS ARE OFF LIMITS, and that is not fussiness. The guide calls
+ * the reference column "Receipt No", so on a file headed that way an
+ * unqualified match would write Tramada's receipt number over the reference the
+ * row was found by — destroying the input while looking like it filled a column
+ * in. Anything already claimed by the parser keeps its own value, and the run's
+ * version appends beside it under a name that says whose it is.
+ */
+function buildExportGrid(rows, columns, opts = {}) {
+  const base = (columns || []).filter(Boolean);
+  const claimed = new Set((opts.inputColumns || []).map(normaliseHeading));
+
+  const headings = base.slice();
+  const source = new Map();          // heading → how to get its value
+  for (const h of headings) source.set(h, { cell: h });
+
+  for (const { field, heading } of EXPORT_FIELDS) {
+    /* Work out what this column WOULD be called, then look for it — in that
+       order, and it matters. Doing it the other way round means a file that
+       already has a "Tramada Receipt No" column (because it is an export being
+       fed back in, which is exactly what happens when somebody fixes a cell in
+       Excel and re-uploads) gets a second one every time it goes round.
+       Deciding the name first makes the whole thing idempotent: export, edit,
+       re-upload, export again, and the columns are the same columns. */
+    const taken = headings.some(
+      (h) => normaliseHeading(h) === normaliseHeading(heading) && claimed.has(normaliseHeading(h))
+    );
+    const target = taken ? `Tramada ${heading}` : heading;
+    const found = headings.find(
+      (h) => normaliseHeading(h) === normaliseHeading(target) && !claimed.has(normaliseHeading(h))
+    );
+    if (found) { source.set(found, { field }); continue; }
+    headings.push(target);
+    source.set(target, { field });
+  }
+
+  const body = (rows || []).map((r) => headings.map((h) => {
+    const from = source.get(h) || {};
+    if (from.field) return String(r[from.field] == null ? "" : r[from.field]);
+    const cells = r.cells || {};
+    return String(cells[h] == null ? "" : cells[h]);
+  }));
+
+  return { headings, rows: body };
+}
+
+/** The headings the parser itself claims, so an export never writes over one. */
+function inputColumnsOf(columns) {
+  const names = [];
+  for (const c of (columns || []).filter(Boolean)) {
+    const low = String(c).trim().toLowerCase();
+    if (Object.values(HEADERS).some((aliases) => aliases.includes(low))) names.push(c);
+  }
+  return names;
+}
+
+/**
+ * Which columns of an export grid hold money, so a workbook can format them.
+ *
+ * By heading, and only the ones this code knows are money — the file's own
+ * Amount column, and nothing else. A column called "Rate" or "Qty" belongs to
+ * Finance and is left exactly as they wrote it.
+ */
+function moneyColumnsOf(headings) {
+  const names = HEADERS.amount;
+  return (headings || []).reduce((acc, h, i) => {
+    if (names.includes(String(h == null ? "" : h).trim().toLowerCase())) acc.push(i);
+    return acc;
+  }, []);
+}
+
+/** One grid → CSV text, quoted the way a spreadsheet expects. */
+function gridToCsv(grid) {
+  const q = (v) => {
+    const s = v == null ? "" : String(v);
+    // A leading =, + or - makes a spreadsheet try to evaluate the cell, and a
+    // leading zero is dropped from a reference like 0041 unless it is quoted.
+    return /[",\n]/.test(s) || /^[\s+=@-]/.test(s) || /^0\d/.test(s)
+      ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return [grid.headings.map(q).join(",")]
+    .concat((grid.rows || []).map((r) => r.map(q).join(",")))
+    .join("\n") + "\n";
+}
+
+/* ── the BPay business rules ─────────────────────────────────────────────── */
+
+/*
+ * The Remarks column has a CLOSED vocabulary.
+ *
+ * Every string here is quoted verbatim from the guide's Business Rules table.
+ * Finance reads this column to decide what to do next, and a sentence that is
+ * merely similar — "no outstanding amount" for "No outstanding amount found" —
+ * cannot be filtered, counted or trusted the same way. The prose explanation
+ * still goes in `why`; this column stays a vocabulary.
+ */
+const REMARKS = {
+  noBooking: "No booking number found",                                  // BR01
+  departurePassed: "Please review, departure date has passed",           // BR02
+  noOutstanding: "No outstanding amount found",                          // BR03
+  noOutstandingPassed: "No outstanding amount found, departure date has passed", // BR04
+  wrongDebtor: "Please review, incorrect debtor found",                  // BR05
+  allocate: "Please allocate",                                           // BR09, BR10
+  overpayment: "Overpayment, please check",                              // BR11
+  // Not in the guide. Used only where the guide has no case: the page did not
+  // give us something a rule needs, so the rule cannot be applied and a person
+  // has to look. Never used to paper over a rule that DID apply.
+  review: "Please review",
+};
+
+/**
+ * "[WEST] RAA West Croydon" → "WEST".
+ *
+ * The guide says the shortcode is enough. Pure, and here rather than inside a
+ * page.evaluate, so the one thing that turns a branch label into the value
+ * Finance reads can be tested without a browser.
+ */
+function branchCode(label) {
+  const s = String(label == null ? "" : label).trim();
+  const m = s.match(/\[([A-Za-z0-9]+)\]/);
+  return m ? m[1] : s;
+}
+
+/** BR05 — the only debtor a BPay receipt may be raised against. */
+const RETAIL_DEBTOR = "RAA of SA Limited (Retail)";
+
+/**
+ * Is this date before today?
+ *
+ * Tramada writes dd-mm-yyyy and dd/mm/yyyy; a spreadsheet may hand over
+ * yyyy-mm-dd. All three are read, in UTC, at day granularity — a departure at
+ * any hour today is "today", not "passed".
+ *
+ * Unreadable is `null`, never `false`. A false here would say "the departure
+ * has not passed" about a date nobody parsed, and BR02/BR04 would go unraised.
+ */
+function isPastDate(value, today) {
+  const iso = toIsoDate(value);
+  if (!iso) return null;
+  const now = toIsoDate(today) || new Date().toISOString().slice(0, 10);
+  return iso < now;
+}
+
+/** dd-mm-yyyy | dd/mm/yyyy | yyyy-mm-dd | Date → yyyy-mm-dd, or "" */
+function toIsoDate(value) {
+  if (value instanceof Date && !isNaN(value)) return value.toISOString().slice(0, 10);
+  const s = String(value == null ? "" : value).trim();
+  if (!s) return "";
+  let m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  if (m) return `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`;
+  m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+  if (m) return `${m[3]}-${pad2(m[2])}-${pad2(m[1])}`;
+  /* TWO-DIGIT YEARS, day first.
+   *
+   * RAA's own BPay export writes 07-01-26 for the 7th of January 2026, and
+   * until this was here that read as nothing at all — which meant the date the
+   * receipt was filed under was whatever Tramada made of the string, and any
+   * rule that compares dates simply never fired.
+   *
+   * Day first, not month first: this is an Australian bank file and 07-01-26
+   * is January, not July. Nothing in the file says which, so it is written down
+   * here rather than inferred — a file that ever arrives month-first will need
+   * its own column name, not a cleverer guess.
+   *
+   * 00-69 is 20xx and 70-99 is 19xx, the POSIX window. A travel booking dated
+   * 1970 is a typo either way; one dated 2069 is somebody's grandchild's
+   * honeymoon and still parses.
+   */
+  m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2})$/);
+  if (m) {
+    const yy = Number(m[3]);
+    const year = yy <= 69 ? 2000 + yy : 1900 + yy;
+    return `${year}-${pad2(m[2])}-${pad2(m[1])}`;
+  }
+  return "";
+}
+function pad2(n) { return String(n).padStart(2, "0"); }
+
+/**
+ * Steps 4, 5 and 6 — may this row have a receipt raised against it at all?
+ *
+ * The order is the guide's order, and the order matters: the balance decides
+ * whether to stop (BR03/BR04) before the debtor is even looked at, and a stop
+ * wins over a warning. Where both a warning and a stop apply, the Remarks
+ * column takes the STOP — that is the one telling Finance what to do — and the
+ * warning survives in `reason`, which is the prose the dashboard shows.
+ *
+ *   outstanding + future   → proceed, no remark
+ *   outstanding + past     → proceed, "Please review, departure date has passed"   BR02
+ *   nothing owing + future → STOP,    "No outstanding amount found"                BR03
+ *   nothing owing + past   → STOP,    "No outstanding amount found, departure…"    BR04
+ *   wrong debtor           → STOP,    "Please review, incorrect debtor found"      BR05
+ *
+ * Anything unreadable STOPS. Not because the guide says so — it has no such
+ * case — but because the alternative is filing a real receipt on the strength
+ * of a field nobody managed to read, and this whole flow moves money.
+ */
+function decidePreReceipt({ depDate, debtor, outstandingCents, today } = {}) {
+  const stop = (remark, reason) => ({ proceed: false, remark, reason });
+
+  if (outstandingCents == null) {
+    return stop(REMARKS.review,
+      "the amount outstanding on this booking could not be read, so no receipt was raised");
+  }
+
+  const passed = isPastDate(depDate, today);
+  if (passed == null) {
+    return stop(REMARKS.review,
+      `the departure date could not be read (it reads "${depDate == null ? "" : depDate}"), ` +
+      "so no receipt was raised");
+  }
+
+  // BR03 / BR04 — nothing owing stops the receipt, and the remark says whether
+  // the departure had also gone.
+  if (outstandingCents <= 0) {
+    return passed
+      ? stop(REMARKS.noOutstandingPassed, "the booking has nothing outstanding and the departure date has passed")
+      : stop(REMARKS.noOutstanding, "the booking has nothing outstanding");
+  }
+
+  // BR05 — right money, wrong debtor. Compared on trimmed, case-folded text:
+  // the page renders it with its own spacing and this is a name, not a code.
+  const found = String(debtor || "").trim();
+  if (found.toLowerCase() !== RETAIL_DEBTOR.toLowerCase()) {
+    return stop(REMARKS.wrongDebtor,
+      `the debtor is "${found || "(blank)"}", not ${RETAIL_DEBTOR}`);
+  }
+
+  // BR02 — owing, but the departure has gone. Receipt proceeds; Finance is told.
+  if (passed) {
+    return {
+      proceed: true, remark: REMARKS.departurePassed,
+      reason: `$${money(outstandingCents)} outstanding, but the departure date ${depDate} has passed`,
+    };
+  }
+
+  return { proceed: true, remark: "", reason: `$${money(outstandingCents)} outstanding` };
+}
+
+/**
+ * BR12 — "Only 1 bank statement to be created each day."
+ *
+ * Keyed on the STATEMENT DATE, not on today. That is what makes the rule and
+ * the guide's own holiday note agree: when SA has a Monday public holiday,
+ * Finance comes back on Tuesday and uploads two files, one for Monday and one
+ * for Tuesday. Those are two statement dates, so they are two pages, uploaded
+ * on one day — and this does not stand in their way. Two runs of the SAME
+ * day's file are one date, and the second one is the mistake this catches.
+ *
+ * Returns the page already holding that date, or null.
+ */
+function pageForDate(pages, statementDate) {
+  const want = toIsoDate(statementDate);
+  if (!want) return null;
+  return (pages || []).find((p) => p && toIsoDate(p.statementDate) === want) || null;
+}
+
+/**
+ * BR14 — the order Finance reads the file in: Shop, then Consultant.
+ *
+ * Alphabetical, case-insensitively, and blanks last rather than first: a row
+ * whose branch could not be read is an exception, and exceptions belong at the
+ * bottom of the page and not above ADL. Rows that tie on both keep the order
+ * they came in, so the file still reads as the file that was uploaded.
+ */
+function sortForFinance(rows) {
+  const key = (v) => String(v == null ? "" : v).trim().toLowerCase();
+  return (rows || [])
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => {
+      const as = key(a.r.shop), bs = key(b.r.shop);
+      if (!as !== !bs) return as ? -1 : 1;
+      if (as !== bs) return as < bs ? -1 : 1;
+      const ac = key(a.r.consultant), bc = key(b.r.consultant);
+      if (!ac !== !bc) return ac ? -1 : 1;
+      if (ac !== bc) return ac < bc ? -1 : 1;
+      return a.i - b.i;
+    })
+    .map((x) => x.r);
 }
 
 /* ── decision 1: allocate, or don't ──────────────────────────────────────── */
@@ -200,6 +579,33 @@ function parseReconCsv(text) {
  * a silent zero would make an unmatched amount look matched and allocate a
  * receipt that should have been left alone.
  */
+/**
+ * Step 5 — is there an outstanding amount on this booking?
+ *
+ * The sum of the POSITIVE dues. Two differences from `totalLeftToAllocate`,
+ * and both are deliberate:
+ *
+ *   · a booking with no segments at all is 0, not null — "nothing outstanding"
+ *     is exactly what that means, and it is what BR03/BR04 need to fire;
+ *   · a credit (negative due) does not net off against another segment's debt.
+ *     A booking owing 200 on one segment and holding 50 in credit on another
+ *     still has an outstanding amount, and BR03 must not stop the receipt.
+ *
+ * A due that cannot be read still poisons the whole answer to `null`, because
+ * the alternative is treating an unreadable figure as nothing owed and
+ * withholding a receipt for money that was actually banked.
+ */
+function outstandingFrom(segments) {
+  if (!Array.isArray(segments) || !segments.length) return 0;
+  let sum = 0;
+  for (const s of segments) {
+    const c = cents(s && s.debtorDue);
+    if (c == null) return null;
+    if (c > 0) sum += c;
+  }
+  return sum;
+}
+
 function totalLeftToAllocate(segments) {
   if (!Array.isArray(segments) || !segments.length) return null;
   let sum = 0;
@@ -212,245 +618,162 @@ function totalLeftToAllocate(segments) {
 }
 
 /**
- * The exact words that go in the spreadsheet's Remarks column.
+ * Choose which WHOLE segments a receipt settles.
  *
- * Written once, here, because a person reading the returned file sorts and
- * filters on these strings by eye and Finance's guide quotes them verbatim.
- * "Please allocate" typed a second time as "please allocate" is a remark that
- * silently stops grouping with its own kind.
+ * Segments are never part-paid. A segment is either ticked — settling its full
+ * Debtor Due, which is what ticking auto-fills — or left alone. So the job is
+ * to pick the combination of complete segments whose total is the largest that
+ * does not exceed the receipt:
+ *
+ *   $500 against 200 + 200  →  both, 400 settled, 100 of the receipt left over
+ *   $300 against 200 + 200  →  one; 400 would exceed the receipt
+ *   $200 against 200 + 200  →  the one it matches exactly
+ *   $100 against 200 + 200  →  none; the receipt is filed and ticks nothing
+ *
+ * Two things fall out of "never exceed", and both matter. Nothing is ever typed
+ * into an allocation box — ticking fills it — so the whole class of
+ * silently-dropped-value bugs cannot apply here. And Seg Total stays at or
+ * below Amt Rcvd, so the form's `Unalloc` can never go negative.
+ *
+ * All combinations are tried, not just a greedy sweep: against 50 + 200 a $200
+ * receipt should settle the 200 outright, where taking the cheapest first would
+ * settle the 50 and strand the rest. Bookings carry a handful of segments, so
+ * the exhaustive search is free; past FEW_ENOUGH it falls back to
+ * cheapest-first, which is the same answer in every case anyone will meet.
+ *
+ * Ties go to the cheapest segments — your "lowest Debtor Due first" — so
+ * 200 against 100 + 100 + 200 clears the two hundreds rather than the one.
  */
-const REMARKS = {
-  NO_BOOKING: "No booking number found",                              // BR01
-  DEPARTED: "Please review, departure date has passed",               // BR02
-  NO_OUTSTANDING: "No outstanding amount found",                      // BR03
-  NO_OUTSTANDING_DEPARTED: "No outstanding amount found, departure date has passed", // BR04
-  WRONG_DEBTOR: "Please review, incorrect debtor found",              // BR05
-  ALLOCATE: "Please allocate",                                        // BR09, BR10
-  OVERPAYMENT: "Overpayment, please check",                           // BR11
-};
+const FEW_ENOUGH = 16;
 
-/** The only debtor a BPAY receipt may be raised against (BR05). */
-const REQUIRED_DEBTOR = "RAA of SA Limited (Retail)";
+function chooseSegments(amountCents, dues) {
+  // Cheapest first: makes the greedy fallback right, and makes the tie-break
+  // fall out of preferring earlier indexes.
+  const asc = dues
+    .map((d, i) => ({ ...d, i }))
+    .filter((d) => d.due > 0)
+    .sort((a, b) => (a.due - b.due) || (a.i - b.i));
+  if (!asc.length) return [];
 
-/**
- * Payer Name on every BPAY receipt (BR06).
- *
- * The literal word, not the booking's client name. Finance identifies these
- * receipts as a group by this field; taking the traveller's name — which is
- * what the receipt module does by default — made each one look like an
- * unrelated over-the-counter payment.
- */
-const BPAY_PAYER_NAME = "BPAY";
-
-/** Today as `dd-mm-yyyy`, the shape every Tramada screen uses. */
-function today(now) {
-  const d = now instanceof Date ? now : new Date();
-  const p = (n) => String(n).padStart(2, "0");
-  return `${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()}`;
-}
-
-/**
- * Two debtor names, compared the way a person compares them.
- *
- * Case and surrounding/internal whitespace only — the brackets and the "of"
- * are load-bearing. `RAA of SA Limited` and `RAA of SA Limited (Retail)` are
- * different debtors and a normaliser that stripped punctuation would file a
- * receipt against the wrong one, which is BR05's whole purpose.
- */
-function sameDebtor(a, b) {
-  const k = (v) => String(v == null ? "" : v).replace(/\s+/g, " ").trim().toLowerCase();
-  return k(a) === k(b) && k(a) !== "";
-}
-
-/**
- * A Tramada date to a sortable YYYYMMDD number, or null.
- *
- * Accepts `dd-mm-yyyy` (what Tramada renders), `dd/mm/yyyy` and ISO
- * `yyyy-mm-dd`. Day-first is assumed for the two-then-four shapes because that
- * is what every Tramada screen in this system serves; nothing here guesses
- * between `03-04-2026` as March and as April by looking at which number could
- * be a month, because that guess is wrong half the time and silently.
- */
-function dateKey(v) {
-  const s = String(v == null ? "" : v).trim();
-  if (!s) return null;
-  let m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
-  if (m) return Number(m[1]) * 10000 + Number(m[2]) * 100 + Number(m[3]);
-  m = /^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/.exec(s);
-  if (m) return Number(m[3]) * 10000 + Number(m[2]) * 100 + Number(m[1]);
-  return null;
-}
-
-/** Is this departure date strictly before today? Unreadable dates are not. */
-function hasDeparted(departureDate, today) {
-  const d = dateKey(departureDate);
-  const t = dateKey(today);
-  // An unreadable date is never "in the past". Guessing here would attach
-  // "departure date has passed" to a booking nobody has looked at.
-  if (d == null || t == null) return false;
-  return d < t;
-}
-
-/**
- * May this booking be receipted at all? (Steps 4–6, BR01–BR05.)
- *
- * Runs BEFORE the receipt form is opened, in the order Finance's guide runs it:
- * the balance decides whether there is anything to receipt, and only then is
- * the debtor checked. A booking that owes nothing never reaches the debtor
- * test, because the guide sends it straight back to the next row.
- *
- * `balanceCents` is the booking summary's **Client/Debtor Balance**, not the
- * receipt form's segment dues. They answer different questions: the balance is
- * "does this booking owe anything at all", which is what decides whether a
- * receipt is raised; the segment dues decide what that receipt can settle.
- * A booking can owe money with no allocatable segment on the form, and the
- * guide still wants the receipt raised — see "AI Agent can continue to receipt
- * even when unable to allocate to the segments".
- *
- * Returns `{ proceed, remarks[], reason }`. `remarks` is a list because a
- * booking can carry an exception and still be receipted (BR02).
- */
-function decideBookingEligibility(booking, today) {
-  const b = booking || {};
-
-  if (!b.found) {
-    return { proceed: false, remarks: [REMARKS.NO_BOOKING],
-      reason: `booking ${b.bookingNo || "(blank)"} could not be found in Tramada` };
+  if (asc.length > FEW_ENOUGH) {
+    const out = [];
+    let left = amountCents;
+    for (const d of asc) {
+      if (d.due <= left) { out.push(d); left -= d.due; }
+    }
+    return out;
   }
 
-  const departed = hasDeparted(b.departureDate, today);
-
-  // An unreadable balance is NOT nothing-outstanding. Treating it as zero would
-  // skip a booking that owes money and write "No outstanding amount found"
-  // against it, which reads as a checked fact rather than a failed read.
-  if (b.balanceCents == null) {
-    return { proceed: false, remarks: [REMARKS.ALLOCATE],
-      reason: `the Client/Debtor Balance on booking ${b.bookingNo} could not be read ` +
-        `(it reads "${b.balance == null ? "" : b.balance}")` };
+  let best = [];
+  let bestTotal = 0;
+  for (let mask = 1; mask < (1 << asc.length); mask++) {
+    let total = 0;
+    const pick = [];
+    for (let b = 0; b < asc.length; b++) {
+      if (mask & (1 << b)) { total += asc[b].due; pick.push(asc[b]); }
+    }
+    if (total > amountCents) continue;
+    // Strictly greater only, so the FIRST subset reaching a total wins — and
+    // because `asc` is cheapest-first, the earlier mask is the cheaper set.
+    if (total > bestTotal) { bestTotal = total; best = pick; }
   }
-
-  if (b.balanceCents <= 0) {
-    return {
-      proceed: false,
-      remarks: [departed ? REMARKS.NO_OUTSTANDING_DEPARTED : REMARKS.NO_OUTSTANDING],
-      reason: `booking ${b.bookingNo} has no outstanding amount ` +
-        `(Client/Debtor Balance $${money(b.balanceCents)})` +
-        (departed ? `, and departed ${b.departureDate}` : ""),
-    };
-  }
-
-  if (!sameDebtor(b.debtor, REQUIRED_DEBTOR)) {
-    return { proceed: false, remarks: [REMARKS.WRONG_DEBTOR],
-      reason: `booking ${b.bookingNo} is against "${b.debtor || ""}", not ${REQUIRED_DEBTOR}` };
-  }
-
-  // Outstanding and the right debtor — receipt it. A departure already gone by
-  // is a remark, not a refusal (BR02).
-  return {
-    proceed: true,
-    remarks: departed ? [REMARKS.DEPARTED] : [],
-    reason: `booking ${b.bookingNo} owes $${money(b.balanceCents)} to ${REQUIRED_DEBTOR}` +
-      (departed ? `, departed ${b.departureDate}` : ""),
-  };
+  return best;
 }
 
 /**
- * What to do with one receipt. (Step 17, BR07–BR11.)
+ * What to do with one receipt — BR07 to BR11.
  *
- * THIS USED TO BE A SUBSET-SUM SEARCH and it is not one any more. The old rule
- * picked whichever combination of whole segments came closest to the receipt
- * without exceeding it, so $300 against 200 + 200 settled one of them and came
- * back "Part allocated". Finance's BPAY guide does not allow that: BR09 and
- * BR10 say a receipt that does not land on a clean boundary ticks NOTHING and
- * goes back to a person with "Please allocate". Deciding which of two identical
- * segments a part-payment belongs to is exactly the judgement the guide
- * reserves for a human, and the old code was making it silently and filing it.
+ * THE RULE IS "EXACT, OR NOTHING", and it is narrower than it used to be.
+ * There are exactly three ways a box gets ticked:
  *
- * So there are three ways to tick, and one way not to:
+ *   BR07  the receipt equals ONE segment exactly        → tick that one
+ *   BR08  the receipt equals ALL the segments added     → tick them all
+ *   BR11  the receipt is MORE than all of them added    → tick them all, and
+ *                                                         say "Overpayment"
  *
- *   amount == one segment's due    tick that segment          Allocated
- *   amount == every segment summed tick them all              Allocated
- *   amount >  every segment summed tick them all              Allocated + "Overpayment, please check"
- *   anything else                  tick nothing               Not allocated + "Please allocate"
+ * Everything else — BR09 and BR10 — ticks nothing and asks a person, whether
+ * the amount happens to fit some combination of segments or fits none of them.
  *
- * The receipt is filed either way. "AI Agent can continue to receipt even when
- * unable to allocate to the segments" — the money reached the bank and the
- * receipt records that; only the allocation waits for a person.
+ * This deliberately replaces the earlier best-fit behaviour, which settled the
+ * largest combination that did not exceed the receipt: $300 against 200 + 200
+ * used to tick one of them and report "Part allocated". It no longer does. An
+ * allocation nobody sanctioned is harder to unpick than one nobody made, and
+ * the guide is explicit that the ambiguous case belongs to a human. The receipt
+ * is still FILED either way (the money is banked and must be recorded); only
+ * the allocation waits.
  *
- * `allocation` is what runTramadaReceipt takes: "ALL" when every segment is
- * selected (the proven Select All path), an array of `{segId, amount}` for a
- * single segment, or `[]` to file the receipt and tick nothing.
- *
- * "Part allocated" is no longer reachable from here. `summarise` still counts
- * it, because a stored run from before this change can still hold one.
+ * `allocation` is what runTramadaReceipt takes: "ALL" for the proven Select All
+ * path, an array of `{segId, amount}` for one named segment, or `[]` to file
+ * the receipt and tick nothing.
  */
 function decideAllocation(csvAmountCents, segments) {
-  const nothing = (reason, remark) => ({
-    allocate: false, allocation: [], status: "Not allocated",
-    reason, remarks: remark ? [remark] : [],
-  });
+  const no = (reason, remark = "") =>
+    ({ allocate: false, allocation: [], status: "Not allocated", remark, reason });
 
-  if (csvAmountCents == null) {
-    return nothing("the CSV amount could not be read", REMARKS.ALLOCATE);
-  }
+  if (csvAmountCents == null) return no("the CSV amount could not be read", REMARKS.review);
   if (!Array.isArray(segments) || !segments.length) {
-    return nothing("the booking has nothing outstanding to allocate against", REMARKS.ALLOCATE);
+    return no("the booking has nothing outstanding to allocate against");
   }
 
   const dues = segments.map((s) => ({ segId: s && s.segId, due: cents(s && s.debtorDue) }));
   if (dues.some((d) => d.due == null)) {
     // An unreadable due is never treated as zero — that reads as "nothing owed"
     // and would tick a segment for an amount nobody has seen.
-    return nothing("the amount outstanding on the receipt form could not be read", REMARKS.ALLOCATE);
+    return no("the amount outstanding on the receipt form could not be read", REMARKS.review);
   }
 
   const owing = dues.filter((d) => d.due > 0);
-  if (!owing.length) {
-    return nothing("the booking has nothing outstanding to allocate against", REMARKS.ALLOCATE);
-  }
+  if (!owing.length) return no("the booking has nothing outstanding to allocate against");
 
   const total = owing.reduce((a, d) => a + d.due, 0);
+  const all = `all ${owing.length} segment${owing.length === 1 ? "" : "s"}`;
 
-  // BR08 first, and BR11 with it: both tick everything, and checking "all of
-  // them" before "one of them" keeps a single-segment booking on the proven
-  // Select All path instead of hand-ticking the only row there is.
-  if (csvAmountCents === total) {
-    return {
-      allocate: true, allocation: "ALL", status: "Allocated", remarks: [],
-      reason: `$${money(total)} settles all ${owing.length} segment${owing.length === 1 ? "" : "s"} exactly`,
-    };
-  }
+  // BR11 — more money than the booking owes. Everything is settled and the
+  // remainder sits unallocated on the receipt for someone to look at.
   if (csvAmountCents > total) {
     return {
-      allocate: true, allocation: "ALL", status: "Allocated", remarks: [REMARKS.OVERPAYMENT],
-      reason: `$${money(csvAmountCents)} is more than the $${money(total)} outstanding across ` +
-        `all ${owing.length} segment${owing.length === 1 ? "" : "s"} — all of them are settled and ` +
-        `$${money(csvAmountCents - total)} of this receipt stays unallocated`,
+      allocate: true, allocation: "ALL", status: "Part allocated", remark: REMARKS.overpayment,
+      reason: `$${money(csvAmountCents)} is more than the $${money(total)} outstanding — ` +
+        `${all} settled, $${money(csvAmountCents - total)} of this receipt stays unallocated`,
     };
   }
 
-  // BR07. Ties are possible — two segments can owe the same amount — and the
-  // guide gives no way to tell them apart, so the FIRST one on the form is
-  // taken and the ambiguity is said out loud in the reason rather than being
-  // presented as a choice that was reasoned about.
-  const exact = owing.filter((d) => d.due === csvAmountCents);
-  if (exact.length) {
-    const pick = exact[0];
+  // BR08 — exactly what is owed, across every segment.
+  if (csvAmountCents === total) {
     return {
-      allocate: true, allocation: [{ segId: pick.segId, amount: money(pick.due) }],
-      status: "Allocated", remarks: [],
-      reason: `$${money(csvAmountCents)} settles segment ${pick.segId} exactly` +
-        (exact.length > 1
-          ? ` — ${exact.length} segments owe this amount and the first on the form was taken`
-          : ""),
+      allocate: true, allocation: "ALL", status: "Allocated", remark: "",
+      reason: `$${money(total)} settles ${all} exactly`,
     };
   }
 
-  // BR09 / BR10 — everything else. No partial allocation, no subset search.
-  return nothing(
-    `$${money(csvAmountCents)} is neither one whole segment nor all $${money(total)} of them ` +
-    `(the segments owe $${owing.map((d) => money(d.due)).join(", $")}) — nothing was ticked`,
-    REMARKS.ALLOCATE
+  // BR07 — exactly one segment. First match in the form's own order, so the
+  // segment ticked is the one a person reading the screen would tick.
+  const single = owing.find((d) => d.due === csvAmountCents);
+  if (single) {
+    return {
+      allocate: true, allocation: [{ segId: single.segId, amount: money(single.due) }],
+      status: "Allocated", remark: "",
+      reason: `$${money(csvAmountCents)} settles segment ${single.segId} exactly`,
+    };
+  }
+
+  // BR09 / BR10 — no tick either way. The two are told apart only in the prose,
+  // because they mean different things to whoever picks the row up: one is an
+  // amount that fits a combination nobody authorised, the other fits nothing.
+  const combination = chooseSegments(csvAmountCents, dues);
+  const fits = combination.reduce((a, d) => a + d.due, 0) === csvAmountCents && combination.length > 0;
+  if (fits) {
+    return no(
+      `$${money(csvAmountCents)} matches ${combination.length} of the ${owing.length} segments added together, ` +
+      `but not one on its own and not ${all} — left for a person to allocate`,
+      REMARKS.allocate
+    );
+  }
+  const cheapest = Math.min(...owing.map((d) => d.due));
+  return no(
+    `$${money(csvAmountCents)} matches no segment and does not match the $${money(total)} outstanding ` +
+    `(the cheapest segment owes $${money(cheapest)}) — left for a person to allocate`,
+    REMARKS.allocate
   );
 }
 
@@ -525,9 +848,15 @@ function nextPageNumber(existingPages) {
 /** Tramada writes dates dd-mm-yyyy. Accepts ISO or dd-mm-yyyy, returns dd-mm-yyyy. */
 function toTramadaDate(v) {
   const s = String(v == null ? "" : v).trim();
-  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (iso) return `${iso[3]}-${iso[2]}-${iso[1]}`;
-  if (/^\d{2}-\d{2}-\d{4}$/.test(s)) return s;
+  /* Everything goes through toIsoDate first, so every shape the files actually
+     carry — 2026-01-07, 07/01/2026, and RAA's own 07-01-26 — comes out as the
+     dd-mm-yyyy Tramada's date fields expect. A two-digit year used to be handed
+     to Tramada untouched, and what a finance system does with "07-01-26" in a
+     date field is its business, not something to find out on a live receipt.
+     Anything still unreadable is passed through rather than mangled: the field
+     read-back will catch it and say so. */
+  const iso = toIsoDate(s);
+  if (iso) return `${iso.slice(8, 10)}-${iso.slice(5, 7)}-${iso.slice(0, 4)}`;
   return s;
 }
 
@@ -1275,32 +1604,6 @@ const REPORTS = {
   bpay: {
     key: "bpay",
     title: "BPay receipts",
-    /* CLIENT PAYMENT RECEIPT, NOT DEBTOR PAYMENT RECEIPT — verified live on the
-       sandbox 17-08-2026, and it disagrees with Finance's BPAY guide.
-     *
-     * The guide's steps 11 and 30 both say "Debtor Payment Receipt". On the
-     * booking Receipts screen the dropdown beside Add / Issue Receipt is
-     * `#receiptCategory`, and it offers exactly four things:
-     *
-     *     Client Payment Receipt | Agency CC Client Receipt |
-     *     Migration Client Payment Receipt | Creditor Refund Receipt
-     *
-     * There is no Debtor Payment Receipt on it. A Debtor Payment Receipt is
-     * raised in the Debtors module against a debtor ACCOUNT, and has no
-     * booking and therefore no "Segments to Allocate" — which is step 17, the
-     * step the whole run exists for. The reconcile screen's Rec/Pay Type
-     * filter does list Debtor Payment Receipt among its fifteen types, so the
-     * name in the guide is real; it just is not what a booking can raise.
-     *
-     * Confirmed from the other end too: the receipts this system has already
-     * filed (R.0000009444/5/6, references BP-HM51N-133xx) sit on statement
-     * page 13 as Client Payment Receipt, trans type ET.
-     *
-     * `openReceiptForm` selects this by label and throws with the list the
-     * page actually offers if it is not there — so if RAA's production really
-     * does have a Debtor Payment Receipt on the booking form, the first run
-     * says so instead of quietly filing under something else. */
-    receiptCategory: "Client Payment Receipt",
     recPayType: "Client Payment Receipt",
     files: true,                          // one real receipt per row
   },
@@ -1361,116 +1664,6 @@ function matcherFor(source) {
 function matchesOn(source) {
   const m = MATCHERS[source] || MATCHERS.mint;
   return `matched on ${m.what}, in the statement's ${m.column} column`;
-}
-
-/* ── the spreadsheet that goes back to Finance ───────────────────────────── */
-
-/**
- * The updated BPAY spreadsheet's columns (steps 34–35).
- *
- * The file Finance uploaded, with the four things the run learned added:
- * Consultant, Shop, the receipt number Tramada issued, and Remarks.
- *
- * "Tramada Receipt No", never "Receipt No". The spreadsheet's own "Receipt No"
- * column is the BPAY reference that gets typed INTO Tramada, and `parseReconCsv`
- * reads it as `reference`. Two columns called Receipt No in one file would mean
- * re-uploading this export mapped Tramada's `R.0000009444` into the reference
- * field and filed every receipt against a number Finance never sent.
- */
-const BPAY_EXPORT_COLUMNS = [
-  ["date", "Date"],
-  ["reference", "Receipt No"],
-  ["amount", "Amount"],
-  ["bookingNo", "Booking No"],
-  ["consultant", "Consultant"],
-  ["shop", "Shop"],
-  ["receiptNo", "Tramada Receipt No"],
-  ["allocation", "Allocation"],
-  ["reconciliation", "Reconciled"],
-  ["remark", "Remarks"],
-];
-
-/**
- * One row's Remarks cell.
- *
- * Joined with "; " because a row can carry more than one (BR02 and BR11 both
- * apply to a departed booking that was overpaid) and the guide has one column.
- * Duplicates are dropped — a retried row that collected "Please allocate"
- * twice reads as one problem, not two.
- */
-function remarkCell(row) {
-  const list = (row && row.remarks) || [];
-  return [...new Set(list.filter(Boolean).map((s) => String(s).trim()))].join("; ");
-}
-
-/**
- * Sort the finished rows the way step 34 / BR14 asks: Shop, then Consultant.
- *
- * Case-insensitive, and blanks sort LAST rather than first. A booking whose
- * branch could not be read is the one a person most needs to see, and ""
- * sorting to the top of an alphabetical list buries it under whatever comes
- * next while looking deliberate. The original row number breaks ties, so the
- * order is total — two rows for the same consultant keep the order Finance
- * sent them in, which is how they will be checked off.
- */
-function sortForFinance(rows) {
-  const key = (v) => String(v == null ? "" : v).trim().toLowerCase();
-  return [...(rows || [])].sort((a, b) => {
-    const as = key(a.shop);
-    const bs = key(b.shop);
-    if (as !== bs) {
-      if (!as) return 1;
-      if (!bs) return -1;
-      return as < bs ? -1 : 1;
-    }
-    const ac = key(a.consultant);
-    const bc = key(b.consultant);
-    if (ac !== bc) {
-      if (!ac) return 1;
-      if (!bc) return -1;
-      return ac < bc ? -1 : 1;
-    }
-    return (a.n || 0) - (b.n || 0);
-  });
-}
-
-/** One CSV cell, quoted only when it has to be. */
-function csvCell(v) {
-  const s = v == null ? "" : String(v);
-  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
-
-/**
- * The updated BPAY spreadsheet, as CSV text.
- *
- * EVERY row is here, including the ones no receipt was raised for. That is the
- * point of the Remarks column: "No outstanding amount found" against a row is
- * the answer Finance needs, and a file that quietly contained only the rows
- * that worked would read as though the rest had never been sent.
- */
-function bpayExportCsv(rows) {
-  const out = [BPAY_EXPORT_COLUMNS.map(([, label]) => csvCell(label)).join(",")];
-  for (const r of sortForFinance(rows)) {
-    out.push(BPAY_EXPORT_COLUMNS
-      .map(([key]) => csvCell(key === "remark" ? remarkCell(r) : r[key]))
-      .join(","));
-  }
-  return out.join("\n") + "\n";
-}
-
-/**
- * The export's filename — ONE PER DAY, overwritten.
- *
- * Finance asked for no history of these: re-upload the day's spreadsheet after
- * a correction and the new export replaces the old one, so there is never a
- * question of which of two files is the current one. The RAW upload is still
- * archived per run under `uploads/` (CLAUDE.md §6b) — that is the evidence of
- * what arrived, and it is a different thing from the working file that goes
- * back out.
- */
-function bpayExportName(statementDate) {
-  const k = dateKey(statementDate);
-  return `bpay-reconciliation-${k == null ? "undated" : k}.csv`;
 }
 
 /* ── the run's own summary ───────────────────────────────────────────────── */
@@ -1706,10 +1899,9 @@ module.exports = {
   summariseCombined, sourceBreakdown,
   uploadName, stampOf, runTotals, needsReaction, overviewFrom,
   splitCsvLine, parseReconCsv, parseReconRows,
-  totalLeftToAllocate, decideAllocation,
-  REMARKS, REQUIRED_DEBTOR, BPAY_PAYER_NAME, today,
-  sameDebtor, dateKey, hasDeparted, decideBookingEligibility,
-  BPAY_EXPORT_COLUMNS, remarkCell, sortForFinance, bpayExportCsv, bpayExportName,
+  normaliseHeading, buildExportGrid, inputColumnsOf, moneyColumnsOf, gridToCsv, EXPORT_FIELDS,
+  REMARKS, RETAIL_DEBTOR, branchCode, isPastDate, toIsoDate, decidePreReceipt, sortForFinance, pageForDate,
+  outstandingFrom, totalLeftToAllocate, chooseSegments, decideAllocation,
   matchAgainstStatement,
   nextPageNumber, toTramadaDate,
   daysBefore,

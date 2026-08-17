@@ -410,17 +410,32 @@ async function makeBpay() {
   // A BPay row needs nothing but the booking and an amount, so it is written
   // the moment the booking exists — not after the last one, where a failure
   // three bookings in used to throw away the two that worked.
-  const csv = csvWriter("tramada-statement-lines.csv",
-    ["Date", "Reference", "Rec/Pay Type", "Amount", "Booking No"]);
+  /* RAA'S OWN COLUMN NAMES, since 17-Aug-2026.
+     A fixture headed differently to the real file is a fixture that cannot
+     catch the things the real file breaks — and the real file broke two: a
+     two-digit year, and CUSTOMER REF sitting next to TRAMADA BKG NO looking
+     just like a booking number (it is the booking with a check digit on the
+     end, 1211622 → 121162). Both are here so a run over the fixture exercises
+     the same reading as a run over Finance's file. */
+  const csv = csvWriter("tramada-statement-lines.csv", [
+    "B/PAY FILE DATE", "CUSTOMER REF", "RECEIPT NO", "AMOUNT",
+    "CONSULTANT", "SHOP", "TRAMADA BKG NO", "REMARKS",
+  ]);
   const meta = [];
   const made = await createBookings(list, (b) => {
     const cents = bpayCents(list[b.index] || {}, b.index);
+    const d = new Date();
+    const p2 = (n) => String(n).padStart(2, "0");
     csv.add({
-      Date: new Date().toISOString().slice(0, 10),
-      Reference: ref("BP", b.bookingNo),
-      "Rec/Pay Type": "Debtor Payment Receipt",
-      Amount: core.money(cents),
-      "Booking No": b.bookingNo,
+      // dd-mm-yy, the way the real export writes it.
+      "B/PAY FILE DATE": `${p2(d.getDate())}-${p2(d.getMonth() + 1)}-${String(d.getFullYear()).slice(2)}`,
+      "CUSTOMER REF": `${b.bookingNo}${(Number(b.bookingNo) || 0) % 10}`,
+      "RECEIPT NO": ref("BP", b.bookingNo),
+      AMOUNT: core.money(cents),
+      CONSULTANT: "",
+      SHOP: "",
+      "TRAMADA BKG NO": b.bookingNo,
+      REMARKS: "",
     });
     meta.push({ due: b.dueCents, cents });
     say(`     → ${shortPath(csv.path)} now has ${csv.rows.length} row(s)`);

@@ -63,6 +63,11 @@ const CDP_HOST = process.env.CDP_HOST || "127.0.0.1";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/* BR06 — "When filling the Payer name field, it must be entered as BPAY."
+   Not the booking's client name, which is what a receipt raised by hand from
+   the booking screen defaults to. One literal, one place. */
+const BPAY_PAYER = "BPAY";
+
 /* ── the browser ─────────────────────────────────────────────────────────── */
 
 async function openBrowser() {
@@ -278,34 +283,33 @@ async function createStatement(page, { pageNumber, statementDate, openingBalance
   await typeInto("#pageNumber", pageNumber);
   await typeInto("#statementDate", core.toTramadaDate(statementDate));
 
-  /* THE OPENING BALANCE COMES FROM THE FORM. THE CLOSING ONE COMES FROM WESTPAC.
+  /* THE OPENING IS TRAMADA'S. THE CLOSING IS FINANCE'S.
    *
-   * Choosing the bank account fills Opening Balance with the account's own
-   * figure — 1300000.00 on Trust. That number is Tramada's, it is right by
-   * definition, and it is step 26's "should automatically appear, because it's
-   * the closing balance from previous day". It is never typed over.
+   * Step 26: choosing the bank account fills Opening Balance with the account's
+   * own figure — 1300000.00 on Trust — because it is yesterday's closing
+   * balance. That number is Tramada's and it is right by definition, so it is
+   * left exactly as the form set it and never typed over.
    *
-   * The CLOSING balance is a different kind of number and this used to get it
-   * wrong. It was a copy of the opening one, which made the statement balance
-   * by construction — the variance was $0.00 on every run because the two
-   * figures were the same figure, so the one check a bank statement exists to
-   * perform could not fail. Step 27 says it comes from the Westpac statement,
-   * entered by a person on the dashboard, and a run without one has nothing to
-   * reconcile against and says so rather than inventing one (§3). */
+   * Step 27: the closing balance is the one a Finance team member reads off the
+   * Westpac statement and types into the dashboard. It is the whole point of
+   * the exercise — the statement page is what proves the day's receipts take
+   * the account from one figure to the other, and a closing balance copied from
+   * the opening proves nothing, because it makes the variance $0.00 by
+   * construction whatever was banked.
+   *
+   * With no figure given, the opening is carried across. That keeps a run
+   * possible when nobody has the bank statement to hand, and the log says which
+   * of the two happened. */
   const carried = await page.inputValue("#openingBalance").catch(() => "");
   if (core.cents(carried) == null) {
     throw new Error(
-      `The new-statement form shows no Opening Balance for ${accountLabel} (it reads "${carried}").`
+      `The new-statement form shows no Opening Balance for ${accountLabel} (it reads "${carried}"), ` +
+      "so there is nothing to reconcile this statement against."
     );
   }
-  if (core.cents(closingBalance) == null) {
-    throw new Error(
-      "No closing balance was given for this statement page. Step 27 takes it from the Westpac " +
-      "statement, entered in the Closing balance box on the dashboard — this run will not " +
-      `guess one, and will not reuse the opening balance of $${core.money(core.cents(carried))}.`
-    );
-  }
-  const wantClosing = core.money(core.cents(closingBalance));
+  const wantClosing = core.cents(closingBalance) == null
+    ? carried
+    : core.money(core.cents(closingBalance));
   await typeInto("#closingBalance", wantClosing);
   // Blur the last field so any on-change handler has run before submit.
   await page.locator("#pageNumber").click();
@@ -343,21 +347,17 @@ async function createStatement(page, { pageNumber, statementDate, openingBalance
     );
   }
   /* In cents, because "1,300,000.00" and "1300000.00" are the same money and
-     the form reformats as it pleases.
-
-     This asserts the closing balance is THE ONE THAT WAS TYPED. It used to
-     assert opening === closing, which was a real check when closing was a copy
-     of opening and is a meaningless one now — worse than meaningless, because
-     a Westpac figure that legitimately differs from the opening balance would
-     have failed it and stopped the run. */
+     the form reformats as it pleases. Checked against what was ASKED FOR, not
+     against the opening: the two are allowed to differ now, and the thing that
+     must not happen is the field silently keeping something else. */
   if (core.cents(back.closing) !== core.cents(wantClosing)) {
     throw new Error(
-      `The closing balance did not take: typed "${wantClosing}", the form reads "${back.closing}".`
+      `The closing balance did not take: it should read "${wantClosing}" and reads "${back.closing}".`
     );
   }
   if (core.cents(back.opening) !== core.cents(carried)) {
     throw new Error(
-      `The opening balance changed while the form was being filled: it was "${carried}" ` +
+      `The opening balance changed while the form was being filled in: it read "${carried}" ` +
       `and now reads "${back.opening}".`
     );
   }
@@ -406,7 +406,7 @@ async function createStatement(page, { pageNumber, statementDate, openingBalance
     // The balance goes back with it: the reconcile screen has to be made to
     // agree with the statement just created, and this is the only place that
     // figure was ever read.
-    return { url: page.url(), carriedBalance: carried };
+    return { url: page.url(), carriedBalance: carried, closingBalance: wantClosing };
   }
 
   /**
@@ -513,6 +513,12 @@ async function sortPage(page) {
  * `RECON_APPLY_FILTER=true|false` forces it either way. `applyFilter` itself is
  * untouched, whole and exported, whichever way this lands.
  */
+/* BR12's escape hatch, and it is deliberately an env var rather than a
+   checkbox: a second statement page for a date that already has one is almost
+   always a mistake, and the one time it is not, whoever needs it can say so
+   where a hurried operator will not. */
+const ALLOW_SECOND_STATEMENT = process.env.RECON_ALLOW_SECOND_STATEMENT === "true";
+
 const FILTER_OVERRIDE = process.env.RECON_APPLY_FILTER;
 function filterFor(combined) {
   if (FILTER_OVERRIDE === "true") return true;
@@ -942,6 +948,27 @@ async function openFreshStatementPage(page, o) {
   }
   if (!found.pages.length) say(`${accountLabel} has no statements yet — starting at page 1.`);
 
+  /* BR12 — one bank statement per statement date.
+   *
+   * Stops rather than reuses. Joining an existing page means ticking rows on a
+   * statement somebody else's run already pressed Done on, and there is no way
+   * to tell from here whether that page was finished or abandoned. Naming the
+   * page and stopping is the answer a person can act on: either that day is
+   * already done, or the date on the run screen is wrong.
+   *
+   * Keyed on the statement date, so the guide's public-holiday case — two files
+   * uploaded on one Tuesday, one dated Monday and one Tuesday — still gets its
+   * two pages. */
+  const taken = core.pageForDate(found.pages, o.statementDate);
+  if (taken && !ALLOW_SECOND_STATEMENT) {
+    throw new Error(
+      `${accountLabel} already has a bank statement for ${core.toTramadaDate(o.statementDate)} — ` +
+      `page ${taken.pageNo}. BR12 allows one statement per day, so this run stopped rather than ` +
+      `creating a second. If that page is wrong, reconcile it in Tramada or change the statement ` +
+      `date on the run screen.`
+    );
+  }
+
   let pageNumber = core.nextPageNumber(found.pages);
   // Say what was actually read, not just the conclusion. "Last page is 0" next
   // to a grid showing 1–9 is the whole story; "0 pages read" would have said it
@@ -955,18 +982,22 @@ async function openFreshStatementPage(page, o) {
      few times: a number that keeps coming back taken means something else is
      wrong and the loop should not paper over it. */
   let carriedBalance = "";
+  let closingUsed = "";
   for (let attempt = 1; ; attempt++) {
     try {
-      // The OPENING balance is the form's, not ours — createStatement reads
-      // the account's own figure and hands it back so the reconcile screen can
-      // be made to agree with the statement just created. The CLOSING one is
-      // the Westpac figure from the dashboard and is passed in.
-      carriedBalance = (await createStatement(page, {
+      /* The OPENING is the form's — createStatement reads the account's own
+         figure and never types over it. The CLOSING is Finance's, off the
+         Westpac statement (step 27); with none given the opening is carried
+         across. Both come back so the reconcile screen can be made to agree
+         with the statement that was just created. */
+      const made = await createStatement(page, {
         pageNumber,
         statementDate: o.statementDate,
         closingBalance: o.closingBalance,
         accountLabel,
-      })).carriedBalance;
+      });
+      carriedBalance = made.carriedBalance;
+      closingUsed = made.closingBalance;
       break;
     } catch (err) {
       if (!err.pageTaken || attempt >= 3) throw err;
@@ -976,189 +1007,11 @@ async function openFreshStatementPage(page, o) {
       say(`Trying page ${pageNumber}.`);
     }
   }
+  const sameFigure = core.cents(closingUsed) === core.cents(carriedBalance);
   say(`Page ${pageNumber} created (${core.toTramadaDate(o.statementDate)}), ` +
-    `opening ${core.money(core.cents(carriedBalance))}, ` +
-    `closing ${core.money(core.cents(o.closingBalance))}.`, true);
-  return { pageNumber, carriedBalance };
-}
-
-/* ── phase zero: is this booking allowed a receipt at all? ───────────────── */
-
-/**
- * Read one booking's Summary and Profile — the four facts steps 4–9 turn on.
- *
- * ONE READ, TWO PAGES, and no receipt form anywhere near it. The Summary
- * carries the debtor, the departure date, `Cons1` and the Client/Debtor
- * Balance; the Profile carries `Level 1 Branch`. Both were read live on
- * 17-08-2026 against booking 13127 on the sandbox.
- *
- * VALUES ARE FOUND BY WHOLE LABEL LINE, never by substring. The obvious
- * `text.match(/Debtor\s*:?\s*(.+)/)` finds the word "Debtors" in the top
- * navigation bar first and comes back with "s" as the debtor name — which then
- * fails BR05 for every booking in the file, each one reported as the wrong
- * debtor. Tramada renders these as a label line followed by a value line, so
- * that is what is matched: the line that IS the label, then the next non-empty
- * line after it.
- */
-async function readBookingFacts(page, bookingNo) {
-  const want = String(bookingNo || "").replace(/^B/i, "").trim();
-  if (!want) return { found: false, bookingNo: String(bookingNo || "") };
-
-  await page.goto(
-    `${TRAMADA_BASE_URL}/booking/booking-summary.htm?mode=edit&id=${encodeURIComponent(want)}`,
-    { waitUntil: "domcontentloaded" }
-  );
-  await sleep(700);
-
-  const summary = await page.evaluate((n) => {
-    if (!document.body) return { found: false };
-    const text = document.body.innerText || "";
-    const lines = text.split("\n").map((s) => s.trim());
-    const after = (label) => {
-      const want = label.toLowerCase();
-      for (let i = 0; i < lines.length; i++) {
-        const bare = lines[i].replace(/:\s*$/, "").trim().toLowerCase();
-        if (bare === want) {
-          for (let j = i + 1; j < lines.length; j++) if (lines[j]) return lines[j];
-          return "";
-        }
-        if (lines[i].toLowerCase().startsWith(want + ":")) {
-          const v = lines[i].slice(label.length + 1).trim();
-          if (v) return v;
-        }
-      }
-      return "";
-    };
-    // Tramada answers 200 for an id that does not exist and renders the shell
-    // without the header, so "the page loaded" says nothing. Match the NUMBER.
-    const header = text.match(/Booking No\.?\s*(\d+)/i);
-    const found = !!header && header[1] === String(n);
-    if (!found) return { found: false };
-    return {
-      found: true,
-      debtor: after("Debtor"),
-      // The left panel says "Dep. Date"; the summary body says "Departure
-      // Date". Either will do and the panel is on every booking screen.
-      departureDate: after("Dep. Date") || after("Departure Date"),
-      consultant: after("Cons1"),
-      balance: after("Client/Debtor Balance"),
-      totalDue: after("Total Client/Debtor Due"),
-      receipted: after("Client/Debtor Receipted"),
-    };
-  }, want);
-
-  if (!summary || !summary.found) return { found: false, bookingNo: want };
-
-  /* The shop. `#level1Branch` is a real `<select>` and its selected option
-     reads "[WEST] RAA West Croydon" — the guide only wants the shortcode, and
-     the shortcode is the part in brackets. Read from the select rather than
-     from the page text because the same branch name appears against the
-     preferred consultant ("Kaushik Hegde [ADL]"), which is a DIFFERENT branch
-     and would quietly become the shop for every booking that consultant made. */
-  let shop = "";
-  let shopName = "";
-  try {
-    await page.goto(
-      `${TRAMADA_BASE_URL}/booking/booking-profile.htm?mode=edit&id=${encodeURIComponent(want)}`,
-      { waitUntil: "domcontentloaded" }
-    );
-    await page.waitForSelector("#level1Branch", { timeout: 15000 });
-    shopName = await page.evaluate(() => {
-      const el = document.querySelector("#level1Branch");
-      return el ? ((el.options[el.selectedIndex] || {}).text || "").trim() : "";
-    });
-    const m = /^\[([^\]]+)\]/.exec(shopName);
-    shop = m ? m[1] : shopName;
-  } catch {
-    // A missing shop is a blank cell in the spreadsheet, not a failed row. The
-    // receipt does not depend on it and Finance can fill one in; refusing to
-    // receipt money because a branch dropdown did not render would be worse.
-    shop = "";
-  }
-
-  return {
-    found: true,
-    bookingNo: want,
-    debtor: summary.debtor,
-    departureDate: summary.departureDate,
-    consultant: summary.consultant,
-    balance: summary.balance,
-    balanceCents: core.cents(summary.balance),
-    shop,
-    shopName,
-  };
-}
-
-/**
- * Steps 3–9 for every row, before a single receipt is filed.
- *
- * Its own browser session, opened and closed before `fileReceipts` runs, for
- * the same reason `fileReceipts` holds no page of its own: `runTramadaReceipt`
- * calls `browser.close()` in its finally and over CDP that tears down the
- * shared browser. Reading every booking first also means a file full of wrong
- * debtors is reported as such without a single receipt having been raised.
- *
- * Rows that fail BR01–BR05 are marked `skip` and carry their remark. They are
- * NOT dropped: the guide wants them in the returned spreadsheet with the reason
- * in the Remarks column, which is the whole point of the column.
- */
-async function inspectBookings(results, { cb, say, row, today }) {
-  const browser = await openBrowser();
-  let page;
-  let ok = false;
-  try {
-    const ctx = browser.contexts()[0] || (await browser.newContext());
-    page = await ctx.newPage();
-    await ensureLoggedIn(page, cb.onNeedLogin);
-
-    for (const r of results) {
-      try {
-        say(`Row ${r.n}: checking booking ${r.bookingNo}…`);
-        const facts = await readBookingFacts(page, r.bookingNo);
-        const verdict = core.decideBookingEligibility(facts, today);
-
-        r.consultant = facts.consultant || "";
-        r.shop = facts.shop || "";
-        r.debtor = facts.debtor || "";
-        r.departureDate = facts.departureDate || "";
-        r.balance = facts.balance || "";
-        r.remarks = (r.remarks || []).concat(verdict.remarks);
-
-        if (!verdict.proceed) {
-          r.skip = true;
-          r.allocation = "Not allocated";
-          r.why = verdict.reason;
-          row(r.n, {
-            consultant: r.consultant, shop: r.shop, remarks: r.remarks,
-            allocation: r.allocation, why: r.why,
-          });
-          say(`Row ${r.n}: no receipt — ${verdict.reason}`, false);
-          continue;
-        }
-
-        row(r.n, { consultant: r.consultant, shop: r.shop, remarks: r.remarks });
-        say(`Row ${r.n}: ${verdict.reason}`, true);
-      } catch (err) {
-        /* A booking that could not be READ is not a booking that failed a rule.
-           It is skipped rather than receipted, because every rule that decides
-           whether to receipt it is unanswered — and it says so, rather than
-           borrowing one of BR01–BR05's words for a thing nobody checked. */
-        const why = core.tidyError(err.message);
-        r.skip = true;
-        r.allocation = "Not allocated";
-        r.error = why;
-        r.why = `booking ${r.bookingNo} could not be checked: ${why}`;
-        r.remarks = (r.remarks || []).concat(core.REMARKS.ALLOCATE);
-        row(r.n, { allocation: r.allocation, why: r.why, remarks: r.remarks });
-        say(`Row ${r.n}: ${r.why}`, false);
-      }
-    }
-    ok = true;
-    return results;
-  } finally {
-    if (ok && page) await page.close().catch(() => {});
-    await browser.close().catch(() => {});
-  }
+    `opening ${core.money(core.cents(carriedBalance))}, closing ${core.money(core.cents(closingUsed))}` +
+    (sameFigure ? " — no closing balance was given, so the opening was carried across." : "."), true);
+  return { pageNumber, carriedBalance, closingBalance: closingUsed };
 }
 
 /* ── phase one: the receipts ─────────────────────────────────────────────── */
@@ -1184,13 +1037,6 @@ async function inspectBookings(results, { cb, say, row, today }) {
  */
 async function fileReceipts(results, { auth, cb, say, row }) {
   for (const r of results) {
-    /* Already refused by BR01–BR05 in `inspectBookings`. The row keeps its
-       remark and its reason and no form is opened for it — this is the guide's
-       "stop, do not issue receipt", and it has to be a skip HERE rather than a
-       filter on the way in, because the row still belongs in the spreadsheet
-       that goes back to Finance. */
-    if (r.skip) continue;
-
     row(r.n, { allocation: "Running" });
     try {
       say(`Row ${r.n}: opening the receipt form for booking ${r.bookingNo}…`);
@@ -1201,20 +1047,18 @@ async function fileReceipts(results, { auth, cb, say, row }) {
         ...auth,
         bookingNo: r.bookingNo,
         receipt: {
-          receiptCategory: core.REPORTS.bpay.receiptCategory,
           transactionType: "EFT",
-          // BR06 — the payer is the payment method, not the traveller. Every
-          // BPAY receipt reads "BPAY" so Finance can find them as a group;
-          // before this it took the booking's client name and each one looked
-          // like an unrelated over-the-counter payment.
-          payerName: core.BPAY_PAYER_NAME,
           amount: r.amount,
           reference: r.reference,
           dateReceived: r.date,
           allocation: [],
+          payerName: BPAY_PAYER,
         },
         dryRun: true,
         skipIfNoAllocatable: true,
+        // Steps 8-9, on the read pass only, so the profile page is opened once
+        // per row rather than once per pass.
+        withBranch: true,
         callbacks: { onNeedLogin: cb.onNeedLogin },
       });
 
@@ -1237,6 +1081,44 @@ async function fileReceipts(results, { auth, cb, say, row }) {
       }
 
       const segments = (probe && probe.segments) || [];
+      const details = (probe && probe.details) || {};
+
+      /* STEPS 7 AND 9 — the two columns Finance gets back. Recorded from the
+         read pass whatever happens next, so a row that is about to be stopped
+         by a rule still tells Finance who booked it and which shop it was. */
+      r.consultant = details.consultant || "";
+      r.shop = details.branch || "";
+
+      /* STEPS 4, 5 AND 6 — the gate. This is the only thing standing between a
+         CSV row and a real receipt on a real booking, so it runs BEFORE the
+         commit call below and a `false` here means nothing is filed at all.
+         The outstanding figure is the receipt form's own Debtor Due, summed:
+         it is the number the form would allocate against, which makes it the
+         number the rule should be read against. */
+      const gate = core.decidePreReceipt({
+        depDate: details.depDate,
+        debtor: details.debtor,
+        outstandingCents: core.outstandingFrom(segments),
+        today: new Date().toISOString().slice(0, 10),
+      });
+      if (!gate.proceed) {
+        r.allocation = "Not allocated";
+        r.remark = gate.remark;
+        r.why = `no receipt raised — ${gate.reason}`;
+        /* Marked, so the reconciliation phase does not talk over it. Measured
+           on a real run 17-Aug-2026: a row stopped by BR03 had its explanation
+           replaced by "no receipt number came back, so there is nothing to look
+           for" — true, and useless, because the question a person has is WHY
+           there was no receipt. */
+        r.noReceipt = true;
+        row(r.n, {
+          allocation: r.allocation, remark: r.remark, why: r.why,
+          consultant: r.consultant, shop: r.shop,
+        });
+        say(`Row ${r.n}: ${gate.remark} — ${gate.reason}`, false);
+        continue;
+      }
+
       const decision = core.decideAllocation(r.amountCents, segments);
       say(`Row ${r.n}: ${decision.reason}`);
 
@@ -1244,13 +1126,14 @@ async function fileReceipts(results, { auth, cb, say, row }) {
         ...auth,
         bookingNo: r.bookingNo,
         receipt: {
-          receiptCategory: core.REPORTS.bpay.receiptCategory,
           transactionType: "EFT",
-          payerName: core.BPAY_PAYER_NAME,          // BR06
           amount: r.amount,
           reference: r.reference,
           dateReceived: r.date,
           allocation: decision.allocation,
+          // BR06. Not the booking's client name — the guide is explicit that
+          // the Payer Name on a BPay receipt reads "BPAY".
+          payerName: BPAY_PAYER,
         },
         /* Filed for real even on a dry run. Dry run holds back the two
            FINANCE screens — the bank statement page's Done and the Finance
@@ -1268,11 +1151,15 @@ async function fileReceipts(results, { auth, cb, say, row }) {
       r.receiptNo = (filed && filed.receipt && filed.receipt.receiptNo) || "";
       r.allocation = decision.status;
       r.why = decision.reason;
-      // BR09/BR10's "Please allocate" and BR11's "Overpayment, please check"
-      // join whatever BR02 already put there — a booking can have departed AND
-      // be overpaid, and the guide has one Remarks column for both.
-      r.remarks = (r.remarks || []).concat(decision.remarks || []);
-      row(r.n, { receiptNo: r.receiptNo, allocation: r.allocation, why: r.why, remarks: r.remarks });
+      /* BR02 survives an allocation remark, and vice versa. A row can be both
+         "the departure has gone" and "please allocate", and dropping one of
+         them loses a thing Finance has to act on. The gate's warning comes
+         first because it is about the booking, not this receipt. */
+      r.remark = [gate.remark, decision.remark].filter(Boolean).join(" · ");
+      row(r.n, {
+        receiptNo: r.receiptNo, allocation: r.allocation, why: r.why,
+        remark: r.remark, consultant: r.consultant, shop: r.shop,
+      });
       say(`Row ${r.n}: receipt ${r.receiptNo || "(no number returned)"} — ${decision.status}`,
         decision.status === "Allocated");
     } catch (err) {
@@ -1283,10 +1170,13 @@ async function fileReceipts(results, { auth, cb, say, row }) {
       r.allocation = "Not allocated";
       r.error = why;
       r.why = `receipt failed: ${why}`;
-      // A failed receipt is a row a person has to pick up, so it carries the
-      // remark that says so rather than going back to Finance with a blank cell.
-      r.remarks = (r.remarks || []).concat(core.REMARKS.ALLOCATE);
-      row(r.n, { allocation: r.allocation, why: r.why, remarks: r.remarks });
+      // A row that broke still needs a Remarks cell, or Finance reads a blank
+      // one as "nothing to do here".
+      r.remark = r.remark || core.REMARKS.review;
+      row(r.n, {
+        allocation: r.allocation, why: r.why, remark: r.remark,
+        consultant: r.consultant || "", shop: r.shop || "",
+      });
       say(`Row ${r.n}: ${why}`, false);
     }
   }
@@ -1319,18 +1209,7 @@ async function runReconciliation(o = {}) {
   const dryRun = !!o.dryRun;
   const rows = o.rows || [];
   if (!rows.length) throw new Error("No rows to run.");
-  const results = rows.map((r, i) => ({ ...r, n: i + 1, remarks: [] }));
-
-  /* 0 — steps 3–9. Every booking is read and judged BEFORE any receipt is
-     raised, so a file full of wrong debtors costs nothing but a read. */
-  await inspectBookings(results, { cb, say, row, today: o.today || core.today() });
-  const skipped = results.filter((r) => r.skip).length;
-  if (skipped) {
-    say(`${skipped} of ${results.length} row${results.length === 1 ? "" : "s"} will not be receipted — ` +
-      "see the Remarks column.", false);
-  }
-
-  /* 1 — the receipts, each on its own connection. */
+  const results = rows.map((r, i) => ({ ...r, n: i + 1 }));
   await fileReceipts(results, {
     auth: { username: process.env.TRAMADA_USERNAME, password: process.env.TRAMADA_PASSWORD },
     cb, say, row,
@@ -1350,9 +1229,11 @@ async function runReconciliation(o = {}) {
        Opening Balance from the account itself, that figure is carried into
        Closing, and it comes back here so the reconcile screen can be made to
        agree with it. Nothing typed on the Sources screen reaches either form. */
-    const { pageNumber, carriedBalance } = await openFreshStatementPage(page, {
+    const { pageNumber, carriedBalance, closingBalance } = await openFreshStatementPage(page, {
       accountLabel,
       statementDate: o.statementDate,
+      // Step 27 — Finance's figure off the Westpac statement, not a copy of
+      // the opening balance.
       closingBalance: o.closingBalance,
       say,
     });
@@ -1366,7 +1247,7 @@ async function runReconciliation(o = {}) {
     for (const r of results) {
       const m = core.matchAgainstStatement(r, statement);
       r.reconciliation = m.status;
-      r.why = r.error ? r.why : m.reason;
+      r.why = (r.error || r.noReceipt) ? r.why : m.reason;
       if (m.duplicates) r.why += ` — ${m.duplicates} transactions carry that number`;
       if (m.reconciled && m.transNo) { r.transNo = m.transNo; matched.push(m.transNo); }
       row(r.n, { reconciliation: r.reconciliation, why: r.why, transNo: r.transNo });
@@ -1376,14 +1257,9 @@ async function runReconciliation(o = {}) {
     /* 4 — the balances, then the ticks, then Done. In that order and all after
        the sort and the filter: sorting rebuilds the page, so anything typed
        before it would be typed into a document that no longer exists. */
-    /* The reconcile screen has to agree with the page that was just created:
-       Tramada's own opening figure, and the Westpac closing figure the Finance
-       team typed. It used to be handed `carriedBalance` for BOTH, which is how
-       a statement came out balancing to the cent every single time — the two
-       numbers were one number. */
     const balances = await setStatementBalances(page, {
       openingBalance: carriedBalance,
-      closingBalance: o.closingBalance,
+      closingBalance,
     }, say, dryRun);
 
     const selection = await selectMatchedTransactions(page, statement, matched, say);
@@ -1464,9 +1340,11 @@ async function runMintReconciliation(o = {}) {
        Opening Balance from the account itself, that figure is carried into
        Closing, and it comes back here so the reconcile screen can be made to
        agree with it. Nothing typed on the Sources screen reaches either form. */
-    const { pageNumber, carriedBalance } = await openFreshStatementPage(page, {
+    const { pageNumber, carriedBalance, closingBalance } = await openFreshStatementPage(page, {
       accountLabel,
       statementDate: o.statementDate,
+      // Step 27 — Finance's figure off the Westpac statement, not a copy of
+      // the opening balance.
       closingBalance: o.closingBalance,
       say,
     });
@@ -1480,21 +1358,16 @@ async function runMintReconciliation(o = {}) {
       const m = matchFor(r, statement);
       r.reconciliation = m.status;
       r.mismatch = m.mismatch;
-      r.why = m.reason;
+      r.why = (r.error || r.noReceipt) ? r.why : m.reason;
       if (m.duplicates) r.why += ` — ${m.duplicates} transactions carry that number`;
       if (m.reconciled && m.transNo) { r.transNo = m.transNo; matched.push(m.transNo); }
       row(r.n, { reconciliation: r.reconciliation, why: r.why, mismatch: r.mismatch, transNo: r.transNo });
       say(`Row ${r.n}: ${m.status} — ${m.reason}`, m.reconciled);
     }
 
-    /* The reconcile screen has to agree with the page that was just created:
-       Tramada's own opening figure, and the Westpac closing figure the Finance
-       team typed. It used to be handed `carriedBalance` for BOTH, which is how
-       a statement came out balancing to the cent every single time — the two
-       numbers were one number. */
     const balances = await setStatementBalances(page, {
       openingBalance: carriedBalance,
-      closingBalance: o.closingBalance,
+      closingBalance,
     }, say, dryRun);
 
     const selection = await selectMatchedTransactions(page, statement, matched, say);
@@ -1664,9 +1537,11 @@ async function runCombinedReconciliation(o = {}) {
        Opening Balance from the account itself, that figure is carried into
        Closing, and it comes back here so the reconcile screen can be made to
        agree with it. Nothing typed on the Sources screen reaches either form. */
-    const { pageNumber, carriedBalance } = await openFreshStatementPage(page, {
+    const { pageNumber, carriedBalance, closingBalance } = await openFreshStatementPage(page, {
       accountLabel,
       statementDate: o.statementDate,
+      // Step 27 — Finance's figure off the Westpac statement, not a copy of
+      // the opening balance.
       closingBalance: o.closingBalance,
       say,
     });
@@ -1734,7 +1609,7 @@ async function runCombinedReconciliation(o = {}) {
           const m = match(r, statement);
           r.reconciliation = m.status;
           r.mismatch = m.mismatch;
-          r.why = r.error ? r.why : m.reason;
+          r.why = (r.error || r.noReceipt) ? r.why : m.reason;
           if (m.duplicates) r.why += ` — ${m.duplicates} transactions carry that number`;
           if (m.reconciled && m.transNo) { r.transNo = m.transNo; matched.push(m.transNo); }
           row(r.n, { reconciliation: r.reconciliation, why: r.why, mismatch: r.mismatch, transNo: r.transNo });
@@ -1747,14 +1622,9 @@ async function runCombinedReconciliation(o = {}) {
       futureDated = futureDated.concat(sel.futureDated);
     }
 
-    /* The reconcile screen has to agree with the page that was just created:
-       Tramada's own opening figure, and the Westpac closing figure the Finance
-       team typed. It used to be handed `carriedBalance` for BOTH, which is how
-       a statement came out balancing to the cent every single time — the two
-       numbers were one number. */
     const balances = await setStatementBalances(page, {
       openingBalance: carriedBalance,
-      closingBalance: o.closingBalance,
+      closingBalance,
     }, say, dryRun);
 
     const selection = { ticked, missing, futureDated };

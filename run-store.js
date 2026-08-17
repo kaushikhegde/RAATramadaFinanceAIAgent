@@ -111,7 +111,7 @@ function saveUpload(originalName, buffer, at = new Date().toISOString()) {
 
 /* ── runs ────────────────────────────────────────────────────────────────── */
 
-function startRun({ source, file, statementDate, openingBalance, closingBalance, rows, dryRun }, at = new Date().toISOString()) {
+function startRun({ source, file, statementDate, openingBalance, closingBalance, rows, dryRun, columns, format }, at = new Date().toISOString()) {
   const doc = readAllOrQuarantine();
   // The stamp alone collides when two runs start in the same second, which the
   // Mint and BPay cards make easy to do; the count makes it unique.
@@ -126,6 +126,14 @@ function startRun({ source, file, statementDate, openingBalance, closingBalance,
     source: source || "bpay",
     file: file || null,
     statementDate: statementDate || "",
+    /* The uploaded file's own headings and container, kept with the run.
+       Without them a run reopened from the picker can only be shown, and
+       exported, as this code's five columns — and the whole point of the
+       working file is that it is THEIR spreadsheet with three columns filled
+       in. `format` is what decides whether the export comes back as .xlsx or
+       .csv, so it has to outlive the tab that did the upload. */
+    columns: Array.isArray(columns) ? columns.filter(Boolean) : [],
+    format: format === "xlsx" ? "xlsx" : "csv",
     openingBalance: core.money(core.cents(openingBalance)),
     closingBalance: core.money(core.cents(closingBalance)),
     pageNumber: null,

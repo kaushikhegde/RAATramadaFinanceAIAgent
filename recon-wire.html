@@ -42,13 +42,15 @@ header.top { display: none !important }
      refuses while both are loaded and says why. */
   const SOURCES = {
     bpay: {
-      title: 'BPay receipts',
-      blurb: 'The day\'s BPAY transactions. Each row becomes a receipt against its booking, '
+      title: 'BPay receipts CSV',
+      blurb: 'The day\'s statement lines. Each row becomes a receipt against its booking, '
            + 'then gets looked for on the new reconciliation page.',
-      // Finance sends a spreadsheet (guide, step 1). This was '.csv,text/csv'
-      // and their actual file could not be selected in the picker.
+      /* Either container. Finance's file is whatever their bank and their
+         spreadsheet produce, and the guide only ever calls it "a spreadsheet";
+         a .csv-only picker here meant an .xlsx was read as text and refused
+         with "the header is missing", which reads as a broken file. */
       accept: '.csv,text/csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      columns: 'Booking no., Receipt No, Amount, Date — .xlsx or .csv',
+      columns: 'Date, Receipt No (or Reference), Amount, Booking No',
     },
     mint: {
       title: 'Mint daily settlement',
@@ -95,6 +97,11 @@ header.top { display: none !important }
   let results = [];     // what the run made of them
   let running = false;
   let ws = null;
+  /* The id of the run in flight, learned from `recon_started`. An edited
+     Consultant or Shop cell has to say which run it belongs to, and it has to
+     be able to say it BEFORE the run finishes — a person corrects a name while
+     watching the rows come in, not half an hour later. */
+  let lastRunId = '';
 
   const loaded = () => Object.keys(source).filter((k) => source[k]);
   const kindOf = () => active || loaded()[0] || null;
@@ -112,16 +119,6 @@ header.top { display: none !important }
   let needLogin = null; // set while a run is waiting for a human to sign in
   let statementPage = null; // the page a finished run created — the header that
                             // used to show it is hidden in this project
-  /* The id of the run that just finished, so "Export working file" can ask the
-     SERVER for the spreadsheet instead of rebuilding it from this page's own
-     rows. Those rows are one socket's worth of frames — reload and the
-     Consultant, Shop and Remarks the file needs are gone, while runs.json has
-     had them since each row was decided. */
-  let lastRunId = null;
-
-  /** One row's Remarks cell — the same join recon-core does for the export. */
-  const remarkCell = (r) =>
-    [...new Set(((r && r.remarks) || []).filter(Boolean).map((s) => String(s).trim()))].join('; ');
 
   /* ── the CSV ──
      Parsed here only to SHOW what will be filed. The server re-parses it with
@@ -140,25 +137,24 @@ header.top { display: none !important }
     return out.map((x) => x.trim());
   }
 
-  // By header NAME, never position — the file is hand-editable and an inserted
-  // column would otherwise shift every amount while each row still looked fine.
-  /* KEEP THESE IN STEP WITH recon-core.HEADERS. They were not, and that is
-     worse than having two parsers: the server learned to read Finance's own
-     spreadsheet — "Booking no.", "Receipt No", "Amount", "Date received" — and
-     this one went on rejecting it with "the header is missing: reference,
-     recPayType" before a single byte reached the server. The fix was
-     unreachable through the only door the file comes in by. */
+  /* By header NAME, never position — the file is hand-editable and an inserted
+     column would otherwise shift every amount while each row still looked fine.
+
+     KEEP THIS IN STEP WITH recon-core's HEADERS. The guide calls the reference
+     column "Receipt No" throughout, and a file headed that way used to be
+     refused outright with "the header is missing: reference", which reads as a
+     broken file rather than a naming difference. Rec/Pay Type is optional: the
+     guide's BPay file has no such column and nothing decides on it. */
   const COLS = {
-    date: ['date', 'date received', 'b/pay file date'],
-    // "Receipt No" here is Finance's reference, the one typed INTO Tramada —
-    // not the R.0000009444 Tramada hands back.
-    reference: ['reference', 'reference number', 'ref', 'receipt no', 'receipt number'],
+    date: ['date', 'date received', 'b/pay file date', 'bpay file date'],
+    reference: ['reference', 'reference number', 'ref', 'receipt no', 'receipt no.', 'receiptno', 'receipt number'],
     recPayType: ['rec/pay type', 'recpaytype', 'payment type', 'type'],
     amount: ['amount'],
-    bookingNo: ['booking no', 'booking number', 'bookingno', 'booking reference', 'booking', 'booking no.'],
+    bookingNo: ['booking no', 'booking no.', 'booking number', 'bookingno', 'booking reference', 'booking', 'tramada bkg no'],
   };
-  // Display only. Finance's spreadsheet has no Rec/Pay Type column at all.
   const OPTIONAL_COLS = ['recPayType'];
+  const REMARK_NO_BOOKING = 'No booking number found';   // BR01
+  const REMARK_REVIEW = 'Please review';
 
   function parseCsv(text) {
     const lines = String(text || '').split(/\r?\n/).filter((l) => l.trim() !== '');
@@ -169,19 +165,73 @@ header.top { display: none !important }
     const missing = Object.entries(col)
       .filter(([k, i]) => i < 0 && OPTIONAL_COLS.indexOf(k) < 0).map(([k]) => k);
     if (missing.length) return { rows: [], error: 'the header is missing: ' + missing.join(', ') };
-    const out = [], bad = [];
+    const at = (f, i) => (i < 0 ? '' : f[i] || '');
+
+    /* Every column, under its own heading, in its own order — not just the five
+       the run acts on. The file Finance gets back is supposed to be THEIR
+       spreadsheet with columns filled in, and the inbox is supposed to show
+       what they uploaded. Blank headings are skipped; a repeated one is
+       suffixed, because two columns called Amount would otherwise lose one. */
+    const raw = splitLine(lines[0]).map((h) => String(h == null ? '' : h).trim());
+    const seen = {}, columns = [];
+    raw.forEach((name) => {
+      if (!name) { columns.push(null); return; }
+      let unique = name, n = 2;
+      while (seen[unique.toLowerCase()]) unique = name + ' (' + (n++) + ')';
+      seen[unique.toLowerCase()] = true;
+      columns.push(unique);
+    });
+    const kept = columns.filter(Boolean);
+
+    const out = [], bad = [], badRows = [];
     for (let i = 1; i < lines.length; i++) {
       const f = splitLine(lines[i]);
-      const at = (k) => (col[k] < 0 ? '' : (f[col[k]] || ''));
+      const cells = {};
+      columns.forEach((name, j) => { if (name) cells[name] = at(f, j); });
       const r = {
-        date: at('date'), reference: at('reference'),
-        recPayType: at('recPayType'), amount: at('amount'),
-        bookingNo: at('bookingNo'),
+        date: at(f, col.date), reference: at(f, col.reference),
+        recPayType: at(f, col.recPayType), amount: at(f, col.amount),
+        bookingNo: at(f, col.bookingNo),
+        cells: cells,
+        // Filled from Tramada as the run goes. Present from the start so every
+        // row has one shape and the export always has the columns.
+        consultant: '', shop: '', remark: '',
       };
-      if (!r.reference || !r.bookingNo || !/^\$?-?[\d,]+(\.\d+)?$/.test(r.amount)) bad.push(i + 1);
-      else out.push(r);
+      const blank = !r.reference && !r.bookingNo && !String(r.amount || '').trim();
+      if (blank) {
+        /* A spacer, or the row carrying a TOTAL and a transaction count. Not a
+           payment missing its booking number, so it gets no remark — it is
+           carried into the export because whatever it holds is theirs. */
+        bad.push(i + 1);
+        badRows.push(r);
+      } else if (!r.reference || !r.bookingNo || !/^\$?-?[\d,]+(\.\d+)?$/.test(r.amount)) {
+        /* BR01. The line cannot be run — there is nothing to open in Tramada —
+           but it is not dropped either. It comes back carrying its own remark
+           and the exported file puts it in front of Finance, which is the whole
+           point of the Remarks column. Silently shortening the file reads as
+           "that was all there was". */
+        r.remark = r.bookingNo ? REMARK_REVIEW : REMARK_NO_BOOKING;
+        bad.push(i + 1);
+        badRows.push(r);
+      } else out.push(r);
     }
-    return { rows: out, bad };
+
+    /* The file may already HAVE Consultant, Shop or Remarks columns — the guide
+       speaks of "the Remarks column" as something that exists. Where it does,
+       what is in it is the starting value, so an operator's own note is not
+       wiped out by a blank one. */
+    const norm = (h) => String(h == null ? '' : h).trim().toLowerCase().replace(/[\s._-]+/g, '');
+    const pickFrom = (r, want) => {
+      const name = kept.find((c) => norm(c) === want);
+      return name ? (r.cells[name] || '') : '';
+    };
+    out.concat(badRows).forEach((r) => {
+      r.consultant = r.consultant || pickFrom(r, 'consultant');
+      r.shop = r.shop || pickFrom(r, 'shop');
+      r.remark = r.remark || pickFrom(r, 'remarks');
+    });
+
+    return { rows: out, bad, badRows, columns: kept };
   }
 
   /* ── dry run ──
@@ -466,16 +516,38 @@ header.top { display: none !important }
      overwrite each other in the inbox and in runs.json alike. */
   function allResults() {
     let n = 0;
-    return Object.keys(SOURCES).reduce((acc, kind) => {
+    const runnable = Object.keys(SOURCES).reduce((acc, kind) => {
       if (!source[kind]) return acc;
       return acc.concat((source[kind].rows || []).map((x) => (checksOnly(kind)
         ? { ...x, n: ++n, src: kind, reconciliation: 'Pending' }
         : { ...x, n: ++n, src: kind, allocation: 'Pending', reconciliation: 'Pending' })));
     }, []);
+
+    /* BR01 — the lines that cannot be run, AFTER the ones that can.
+       They are here to be seen and exported, never to be sent: the payload the
+       server runs is built from `source[kind].rows`, which these are not in.
+       Their `n` continues past the last runnable row on purpose — the server
+       numbers what it runs 1..N and patches rows by that number, so anything
+       sharing an `n` with a real row would be overwritten by it mid-run. */
+    const skipped = Object.keys(SOURCES).reduce((acc, kind) => {
+      if (!source[kind] || checksOnly(kind)) return acc;
+      return acc.concat((source[kind].skippedRows || []).map((x) => ({
+        ...x, n: ++n, src: kind, skipped: true,
+        allocation: 'Not run', reconciliation: 'Not run',
+      })));
+    }, []);
+    return runnable.concat(skipped);
   }
 
-  function accept(kind, file, parsed, skipped) {
-    source[kind] = { file: { name: file.name, size: file.size }, rows: parsed, previewOpen: false };
+  function accept(kind, file, parsed, skipped, skippedRows, columns, format) {
+    source[kind] = {
+      file: { name: file.name, size: file.size }, rows: parsed,
+      skippedRows: skippedRows || [], previewOpen: false,
+      // The file's own headings, and the container it arrived in. The export
+      // hands back the same shape in the same format.
+      columns: (columns || []).filter(Boolean),
+      format: format === 'xlsx' ? 'xlsx' : 'csv',
+    };
     active = kind;
     syncActive();
     results = allResults();
@@ -505,17 +577,31 @@ header.top { display: none !important }
     if (!file || !kind) return;
     const fr = new FileReader();
 
-    /* A WORKBOOK GOES TO THE SERVER WHATEVER REPORT IT IS.
-     *
-     * `checksOnly` was doing double duty here — it means "this report files
-     * nothing", and it was also standing in for "this report's file is a
-     * workbook". That made BPay CSV-only, so the spreadsheet Finance actually
-     * sends could not be uploaded. What decides is the CONTAINER, and the
-     * container says what it is: a .xlsx is a zip and a zip starts "PK".
-     * `xlsx-lite` is node, and a second workbook parser in the browser is a
-     * second thing to keep in agreement with the one the run uses. */
-    const looksLikeWorkbook = /\.(xlsx|xls)$/i.test(file.name || '');
-    if (checksOnly(kind) || looksLikeWorkbook) {
+    /* A BPay WORKBOOK goes to the server like any other, for the same reason:
+       xlsx-lite is node, and a second workbook parser in the browser is a
+       second thing to keep in agreement with the one the run uses. A BPay CSV
+       is still read here, so the card fills in without a round trip and the
+       preview is available offline. Decided by the extension rather than the
+       bytes only because the choice has to be made before the file is read;
+       the server still checks the container itself. */
+    if (!checksOnly(kind) && /\.xlsx?$/i.test(file.name || '')) {
+      fr.onload = () => {
+        const bytes = new Uint8Array(fr.result);
+        let bin = '';
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        if (!ws || ws.readyState !== 1) {
+          reject(kind, file.name, 'not connected to the server — is it still running?');
+          return;
+        }
+        hint(kind, 'Reading ' + esc(file.name) + '…');
+        pending[kind] = { name: file.name, size: file.size };
+        ws.send(JSON.stringify({ type: 'recon_parse', source: kind, name: file.name, base64: btoa(bin) }));
+      };
+      fr.readAsArrayBuffer(file);
+      return;
+    }
+
+    if (checksOnly(kind)) {
       // The file goes to the server whole, workbook or CSV. `xlsx-lite` is
       // node, and a second parser in the browser is a second thing to keep in
       // agreement with the one the run actually uses.
@@ -536,7 +622,7 @@ header.top { display: none !important }
     }
 
     fr.onload = () => {
-      const { rows: r, error, bad } = parseCsv(fr.result);
+      const { rows: r, error, bad, badRows, columns } = parseCsv(fr.result);
       if (error) { reject(kind, file.name, error); return; }
       // The CSV also goes to the server, to be KEPT rather than parsed — it is
       // read here so the cards fill in without a round trip. Until this
@@ -551,7 +637,7 @@ header.top { display: none !important }
           }));
         } catch (e) { /* keeping a copy is not worth failing the upload over */ }
       }
-      accept(kind, file, r, bad);
+      accept(kind, file, r, bad, badRows, columns, 'csv');
     };
     fr.readAsText(file);
   }
@@ -568,7 +654,10 @@ header.top { display: none !important }
   };
   const dot = (r) =>
     r.allocation === 'Allocated' && r.reconciliation === 'Reconciled' ? 'done'
-      : r.allocation === 'Not allocated' || r.reconciliation === 'Not reconciled' ? 'need' : 'rev';
+      // A row carrying a remark needs a person, whatever else it says — that is
+      // what the Remarks column IS. A skipped line is the same thing.
+      : r.skipped || r.remark || r.allocation === 'Not allocated' ||
+        r.reconciliation === 'Not reconciled' ? 'need' : 'rev';
 
   let filter = 'all';
   let search = '';
@@ -737,13 +826,27 @@ header.top { display: none !important }
 
     const fn = (SET.find((f) => f[0] === filter) || SET[0])[2];
     const shown = all.filter((r) => fn(r) && matchesSearch(r));
+    /* THE WHOLE SPREADSHEET, when there is one spreadsheet to show.
+       Finance's file has columns this code has no opinion about, and hiding
+       them means the inbox and the file they get back disagree about what the
+       day's work was. So when a single writing report is on screen its own
+       columns are the table — under their own headings, in their own order —
+       with the run's columns after them. A combined run has no single column
+       set to be faithful to, so it keeps the compact table below. */
+    const sheet = fullColumns();
+    if (sheet && !mint) {
+      renderSheetTable(pane, shown, sheet, all.length);
+      afterTable(pane, all, shown);
+      return;
+    }
+
     const head = mint
       ? '<th style="width:16px"></th><th>Transaction</th><th class="num">Amount</th>' +
         '<th>To company</th><th>Reconciled</th><th>Why</th>'
       : '<th style="width:16px"></th><th>Statement line</th><th class="num">Amount</th>' +
-        '<th>Booking</th><th>Consultant</th><th>Shop</th><th>Receipt</th>' +
-        '<th>Allocation</th><th>Reconciled</th><th>Remarks</th><th>Why</th>';
-    const cols = mint ? 6 : 11;
+        '<th>Booking</th><th>Receipt</th><th>Allocation</th><th>Reconciled</th>' +
+        '<th>Remarks</th><th>Why</th>';
+    const cols = mint ? 6 : 9;
     const body = shown.map((r) => mint
       ? '<tr><td><span class="tdot ' + dot(r) + '"></span></td>' +
         '<td><b class="ref">' + esc(r.transNo) + '</b></td>' +
@@ -764,21 +867,17 @@ header.top { display: none !important }
             esc(r.date) + ' · ' + esc(r.recPayType) + '</div></td>') +
         '<td class="num">' + esc(r.amount) + '</td>' +
         '<td class="mono">' + esc(r.bookingNo || '') + '</td>' +
-        // Consultant and Shop are read off the booking before the receipt is
-        // raised, so they are there for a row that was refused as well as one
-        // that was filed — which is the point, because Finance sorts the
-        // returned spreadsheet by exactly these two.
-        '<td>' + esc(r.consultant || '') + '</td>' +
-        '<td class="mono">' + esc(r.shop || '') + '</td>' +
         '<td class="mono">' + esc(r.receiptNo || '') + '</td>' +
         // Nothing is filed for a Mint row, so its Allocation cell is empty
         // rather than "pending" — "pending" promises something that is never
         // coming.
         '<td>' + (checksOnly(r.src) ? '<span class="muted">—</span>' : badge(r.allocation)) + '</td>' +
         '<td>' + badge(r.reconciliation) + '</td>' +
-        // The Remarks column is Finance's, not ours: these are the exact words
-        // BR01–BR11 specify and they go back in the spreadsheet unaltered.
-        '<td>' + esc(remarkCell(r)) + '</td>' +
+        /* The guide's Remarks column, on screen as well as in the export —
+           this is the cell Finance acts on, so it is not left to the working
+           file alone. Bold because a remark always means somebody has
+           something to do. */
+        '<td>' + (r.remark ? '<b>' + esc(r.remark) + '</b>' : '<span class="muted">—</span>') + '</td>' +
         '<td class="muted">' + esc(r.why || '') + '</td></tr>').join('');
 
     pane.innerHTML = '<table><thead><tr>' + head + '</tr></thead><tbody>' +
@@ -788,6 +887,174 @@ header.top { display: none !important }
             : 'Load a report on Sources &amp; upload.') + '</td></tr>') +
       '</tbody></table>';
 
+    afterTable(pane, all, shown);
+  }
+
+  /* ── the file's own columns ──────────────────────────────────────────────
+     The uploaded spreadsheet's headings, when exactly ONE writing report is on
+     screen. Null otherwise: a combined run mixes files with different columns,
+     and a table pretending otherwise would put a Mint amount under a BPay
+     heading. Runs stored before this existed have no columns either, so they
+     fall back to the compact table too. */
+  function fullColumns() {
+    const rows = viewRows().filter((r) => !reportOnly || r.src === reportOnly);
+    const kinds = [...new Set(rows.map((r) => r.src).filter(Boolean))];
+    const writing = kinds.filter((k) => !checksOnly(k));
+    if (writing.length !== 1 || kinds.length > 1) return null;
+    if (viewing) return (viewing.columns && viewing.columns.length) ? viewing.columns : null;
+    const src = source[writing[0]];
+    return src && src.columns && src.columns.length ? src.columns : null;
+  }
+
+  /* The run's own columns, after the file's. Consultant and Shop come first of
+     these and are EDITABLE — they are the two the agent fills in from the
+     booking, and the two a person is most likely to want to correct. */
+  const RUN_COLUMNS = [
+    { key: 'consultant', label: 'Consultant', edit: true },
+    { key: 'shop', label: 'Shop', edit: true },
+    { key: 'receiptNo', label: 'Receipt No', mono: true },
+    { key: 'allocation', label: 'Allocation', badge: true },
+    { key: 'reconciliation', label: 'Reconciled', badge: true },
+    /* Editable, like the two above it. The agent's remark is a starting point:
+       Finance are the ones who know whether a row really does need review, and
+       they are the ones sending the file on. The vocabulary is the agent's
+       suggestion, not a lock. */
+    { key: 'remark', label: 'Remarks', edit: true, strong: true },
+    { key: 'why', label: 'Why', muted: true },
+  ];
+
+  const normHead = (h) => String(h == null ? '' : h).trim().toLowerCase().replace(/[\s._-]+/g, '');
+
+  function renderSheetTable(pane, shown, sheet, total) {
+    /* A column the file ALREADY has is not repeated. If Finance's spreadsheet
+       has its own Consultant column, that is the column the agent fills in and
+       the one shown here — not a second one beside it saying something else.
+       Same rule as the export, and deliberately the same normalisation. */
+    /* EXCEPT where the file's column is an INPUT column, which is the case
+       that destroys data. The guide heads the reference column "Receipt No",
+       so an unqualified match put Tramada's R.0000009401 in the column that
+       holds CBA0001 — the reference the row was FOUND BY, gone from the
+       screen, on a row that had reconciled perfectly. The parser's own columns
+       keep their own values, and the run's version appears beside them under a
+       name that says whose it is. Same rule as buildExportGrid. */
+    const inputHeads = {};
+    sheet.forEach((h) => {
+      const low = String(h == null ? '' : h).trim().toLowerCase();
+      if (Object.keys(COLS).some((k) => COLS[k].indexOf(low) >= 0)) inputHeads[normHead(h)] = true;
+    });
+    /* Name first, then look for it — same rule as buildExportGrid, and for the
+       same reason. A file that already has a "Tramada Receipt No" column is an
+       export being fed back in, which is exactly what happens when somebody
+       fixes a cell in Excel and re-uploads; looking before naming gave it a
+       second one every time round. */
+    const claimed = sheet.map(normHead).filter((h) => !inputHeads[h]);
+    const targets = RUN_COLUMNS.map((c) => {
+      const taken = sheet.some((h) => normHead(h) === normHead(c.label) && inputHeads[normHead(h)]);
+      return Object.assign({}, c, { label: taken ? 'Tramada ' + c.label : c.label });
+    });
+    const extra = targets.filter((c) => claimed.indexOf(normHead(c.label)) < 0);
+    const inSheet = targets.filter((c) => claimed.indexOf(normHead(c.label)) >= 0);
+    const fromSheet = (h) => (inputHeads[normHead(h)] ? null
+      : inSheet.find((c) => normHead(c.label) === normHead(h)) || null);
+
+    const head = '<th style="width:16px"></th>' +
+      sheet.map((h) => '<th>' + esc(h) + '</th>').join('') +
+      extra.map((c) => '<th>' + esc(c.label) + '</th>').join('');
+
+    const cell = (r, c) => {
+      const v = r[c.key] == null ? '' : String(r[c.key]);
+      if (c.edit) {
+        /* Editable, saved on blur rather than on every keystroke — a frame per
+           character would race the run's own row patches. `data-n` is the row
+           number the server knows it by, which is what lets the edit survive a
+           reload. */
+        return '<td><input class="cellIn" data-n="' + r.n + '" data-k="' + c.key +
+          '" value="' + esc(v) + '" placeholder="—" spellcheck="false"></td>';
+      }
+      if (c.badge) return '<td>' + (checksOnly(r.src) && c.key === 'allocation'
+        ? '<span class="muted">—</span>' : badge(v)) + '</td>';
+      if (c.strong) return '<td>' + (v ? '<b>' + esc(v) + '</b>' : '<span class="muted">—</span>') + '</td>';
+      // (unreached for editable columns — the edit branch above returns first)
+      if (c.mono) return '<td class="mono">' + esc(v) + '</td>';
+      return '<td class="muted">' + esc(v) + '</td>';
+    };
+
+    const body = shown.map((r) => '<tr><td><span class="tdot ' + dot(r) + '"></span></td>' +
+      sheet.map((h) => {
+        const run = fromSheet(h);
+        if (run) return cell(r, run);
+        const cells = r.cells || {};
+        return '<td>' + esc(cells[h] == null ? '' : cells[h]) + '</td>';
+      }).join('') +
+      extra.map((c) => cell(r, c)).join('') + '</tr>').join('');
+
+    const width = sheet.length + extra.length + 1;
+    pane.innerHTML =
+      // The file can be wider than the screen. Scrolling the table beats
+      // shrinking the text to something nobody can read.
+      '<div style="overflow-x:auto"><table style="min-width:100%"><thead><tr>' + head +
+      '</tr></thead><tbody>' +
+      (shown.length ? body
+        : '<tr><td colspan="' + width + '" style="padding:26px;text-align:center" class="muted">' +
+          (total ? 'Nothing matches that filter.' : 'Load a report on Sources &amp; upload.') +
+          '</td></tr>') +
+      '</tbody></table></div>';
+
+    /* TWO events, doing two different jobs.
+       `input` fires on every keystroke and writes to the row in memory only —
+       so the export always has what is on screen, even if the cell never loses
+       focus. `change` and `blur` are the commit, and only they go down the
+       socket: a frame per character would race the run's own row patches and
+       write a half-typed name to disk. */
+    pane.querySelectorAll('.cellIn').forEach((el) => {
+      const n = Number(el.dataset.n), k = el.dataset.k;
+      el.oninput = () => saveCell(n, k, el.value, false);
+      el.onchange = () => saveCell(n, k, el.value, true);
+      el.onblur = () => saveCell(n, k, el.value, true);
+      // Enter commits and moves on, because this is a spreadsheet and that is
+      // what Enter does in one.
+      el.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); el.blur(); } };
+    });
+  }
+
+  /**
+   * One edited cell.
+   *
+   * Written to the row on screen, then to the server so it outlives the tab.
+   * DELIBERATELY NOT re-rendered: re-rendering rebuilds the input the person is
+   * typing in and puts the caret back at the start, which makes correcting a
+   * name by hand impossible.
+   */
+  /* What has actually been SENT for each cell, which is not the same question
+     as what is in the row. `input` writes the row on every keystroke, so by the
+     time `change` fires the row already agrees with the box and comparing the
+     two would say "nothing changed" and never persist anything. */
+  const sentCells = {};
+
+  function saveCell(n, key, value, commit) {
+    const v = String(value == null ? '' : value).trim();
+    const target = (viewing ? viewing.rows : results) || [];
+    const row = target.find((r) => r.n === n);
+    if (!row) return;
+    row[key] = v;
+    if (!commit) return;
+    const id = n + '|' + key;
+    if (sentCells[id] === v) return;
+    sentCells[id] = v;
+    const runId = viewing ? viewing.id : lastRunId;
+    if (ws && ws.readyState === 1 && runId) {
+      try {
+        ws.send(JSON.stringify({ type: 'recon_edit', runId: runId, n: n, patch: { [key]: v } }));
+      } catch (e) { /* the edit is on screen and in the export either way */ }
+    }
+  }
+
+  /* Everything around the table: the title, the counts, the export button,
+     the activity rail and the sidebar badge. Extracted because the inbox now
+     draws its table two ways — the file's own columns when there is one file,
+     the compact shape otherwise — and both need all of this after it. */
+  function afterTable(pane, all, shown) {
+    const mint = !viewWrites();
     const t = $('#ibTitle'), l = $('#ibLede'), a = $('#ibActions');
     if (t) t.textContent = 'Reconciliation inbox';
     if (l) {
@@ -940,9 +1207,18 @@ header.top { display: none !important }
        Allocation column is honest where "Pending" forever is not. On a combined
        run both kinds of row sit in one table, so this is decided per ROW rather
        than per run. */
-    results = allResults().map((r) => (checksOnly(r.src)
-      ? { ...r, reconciliation: 'Pending', mismatch: undefined, why: '' }
-      : { ...r, allocation: 'Running', reconciliation: 'Pending', receiptNo: '', why: '' }));
+    results = allResults().map((r) => {
+      /* A row the run will never touch is not "running" and is not "pending".
+         Lines with no booking number, and the row carrying the file's TOTAL,
+         are in this table to be seen and exported — they were never sent to the
+         server, so nothing is ever coming back for them. Saying "running" over
+         a row that is not being run is the kind of small lie that makes a
+         person stop believing the rest of the screen. */
+      if (r.skipped) return { ...r, allocation: 'Not run', reconciliation: 'Not run' };
+      return checksOnly(r.src)
+        ? { ...r, reconciliation: 'Pending', mismatch: undefined, why: '' }
+        : { ...r, allocation: 'Running', reconciliation: 'Pending', receiptNo: '', why: '' };
+    });
 
     const dry = dryOn();
     const titles = loaded().map((k) => SOURCES[k].title).join(' + ');
@@ -957,7 +1233,17 @@ header.top { display: none !important }
 
     // Read once, at the moment Start was pressed. Ticking the box mid-run must
     // not change what the run in flight is allowed to do.
-    const common = { statementDate: date, openingBalance: op, closingBalance: cl, dryRun: dry };
+    /* `columns` and `format` go with the run, not just with the upload. They
+       are what let a run reopened from the picker next week still be shown as
+       the spreadsheet it was, and exported back in the container it arrived in
+       — by which time the tab that did the upload is long gone. A combined run
+       has more than one file, so it carries none. */
+    const only = kind === 'both' ? null : (source[kind] || {});
+    const common = {
+      statementDate: date, openingBalance: op, closingBalance: cl, dryRun: dry,
+      columns: only ? (only.columns || []) : [],
+      format: only ? (only.format || 'csv') : 'csv',
+    };
     ws.send(JSON.stringify(kind === 'both'
       ? {
           type: 'recon_run', source: 'both',
@@ -983,7 +1269,13 @@ header.top { display: none !important }
         reject(kind, m.name, (m.problems && m.problems[0] && m.problems[0].why) || 'nothing in it could be checked');
         return;
       }
-      accept(kind, f, m.rows, (m.problems || []).map((p) => p.line));
+      /* The server's `problems` carry the whole row, not just its line number,
+         and for BPay each one already holds its BR01 remark. Passing the rows
+         through is what puts a line with no booking number back in front of
+         Finance instead of quietly shortening the file. */
+      accept(kind, f, m.rows, (m.problems || []).map((p) => p.line),
+        (m.problems || []).map((p) => p.row).filter(Boolean),
+        m.columns || [], m.format || 'csv');
       return;
     }
     if (m.type === 'recon_row') {
@@ -1000,12 +1292,14 @@ header.top { display: none !important }
       needLogin = m.message;
       note(m.message, false);
       render();
+    } else if (m.type === 'recon_started') {
+      lastRunId = m.runId || '';
     } else if (m.type === 'recon_done') {
+      if (m.runId) lastRunId = m.runId;
       running = false;
       needLogin = null;
       $('#startRun').disabled = false;
       stopped = m.error || null;
-      lastRunId = m.runId || lastRunId;
       // The run is in runs.json now, whether it worked or not, so the overview
       // is stale the moment this frame lands — and so is the run picker, which
       // has just gained the run that finished.
@@ -1036,48 +1330,83 @@ header.top { display: none !important }
     }
   }
 
-  function exportCsv() {
-    /* A BPAY run's working file comes from the SERVER, not from here.
-     *
-     * Steps 34–35 want the spreadsheet Finance sent back with Consultant, Shop
-     * and Remarks filled in and the rows sorted by Shop then Consultant. All
-     * three of those live in runs.json, written as each row was decided — this
-     * page only has whatever frames arrived while it was open, so a reloaded
-     * tab would download a file with three empty columns and no way to tell
-     * that they were ever meant to be full. The sort is recon-core's too
-     * (BR14), tested offline, rather than a second implementation here that
-     * would drift from it.
-     *
-     * Mint keeps the client-side build below: it has no such columns, no
-     * spreadsheet to hand back, and nothing that outlives the page. */
-    if (runWrites() && lastRunId) {
-      const a = document.createElement('a');
-      a.href = '/api/runs/' + encodeURIComponent(lastRunId) + '/export.csv';
-      a.download = '';
-      a.click();
-      return;
-    }
+  /**
+   * The working file — built by the SERVER, in the format the upload arrived in.
+   *
+   * It used to be assembled here out of a fixed column list and a Blob. Three
+   * things were wrong with that and all three are fixed by asking the server:
+   * an .xlsx is impossible in the page (there is no workbook writer in it), the
+   * file only ever existed for as long as the tab, and the columns were this
+   * code's rather than the ones Finance actually sent.
+   *
+   * So: the rows on screen — INCLUDING any Consultant or Shop somebody just
+   * corrected by hand — go up, and the file comes back. Finance sent a
+   * workbook, Finance gets a workbook.
+   */
+  async function exportCsv() {
+    const btn = $('#rcExport');
+    const all = viewRows();
+    if (!all.length) return;
 
-    const q = (v) => {
-      const s = v == null ? '' : String(v);
-      return /[",\n]/.test(s) || /^[\s+=@-]/.test(s) || /^0\d/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-    };
-    // The working file carries the report's OWN columns. A Mint export with an
-    // empty Booking No and Allocation column reads as data that went missing.
-    const mint = !runWrites();
-    const head = mint
-      ? ['Transaction Reference', 'Amount', 'To Company', 'Reconciled', 'Difference', 'Why']
-      : ['Date', 'Reference', 'Rec/Pay Type', 'Amount', 'Booking No', 'Receipt No', 'Allocation', 'Reconciled', 'Why'];
-    const line = (r) => (mint
-      ? [r.transNo, r.amount, r.toCompany, r.reconciliation, r.mismatch || '', r.why || '']
-      : [r.date, r.reference, r.recPayType, r.amount, r.bookingNo, r.receiptNo || '',
-         r.allocation, r.reconciliation, r.why || '']).map(q).join(',');
-    const csv = [head.join(',')].concat(results.map(line)).join('\n') + '\n';
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-    a.download = (mint ? 'mint' : 'bpay') + '-reconciliation-result.csv';
-    a.click();
-    URL.revokeObjectURL(a.href);
+    /* BR14 — Shop, then Consultant. A check-only report has neither column, so
+       it keeps the order it was uploaded in rather than being shuffled by two
+       columns of blanks. */
+    const mint = !viewWrites();
+    const rows = mint ? all.slice() : sortForFinance(all);
+
+    const columns = fullColumns() ||
+      (viewing ? (viewing.columns || []) : ((source[active] || {}).columns || []));
+    const format = viewing ? (viewing.format || 'csv')
+      : ((source[active] || {}).format || 'csv');
+    const name = viewing ? ((viewing.file || {}).name || 'reconciliation')
+      : (((source[active] || {}).file || {}).name || 'reconciliation');
+
+    if (btn) { btn.disabled = true; btn.textContent = 'Building…'; }
+    try {
+      const res = await fetch('/api/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows: rows, columns: columns, format: format, name: name }),
+      });
+      if (!res.ok) {
+        const why = await res.json().catch(() => ({}));
+        note('The working file could not be built' + (why.error ? ' — ' + why.error : '.'), false);
+        return;
+      }
+      /* The file name is the server's, off Content-Disposition, so the
+         extension always matches what was actually built. Guessing it here is
+         how you end up with an .xlsx called .csv that Excel refuses. */
+      const cd = res.headers.get('Content-Disposition') || '';
+      const m = cd.match(/filename="([^"]+)"/);
+      const blob = await res.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = m ? m[1] : 'reconciliation.' + (format === 'xlsx' ? 'xlsx' : 'csv');
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e) {
+      note('The working file could not be built — ' + (e && e.message ? e.message : 'no answer from the server.'), false);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Export working file'; }
+    }
+  }
+
+  /* BR14. The same rule as recon-core's sortForFinance, and deliberately kept
+     in step with it: the file Finance opens is assembled here, in the browser,
+     so the ordering rule has to exist here as well as on the server. Blanks
+     sink to the bottom rather than sorting above ADL, and a tie keeps the
+     order the file was uploaded in. */
+  function sortForFinance(rows) {
+    const key = (v) => String(v == null ? '' : v).trim().toLowerCase();
+    return (rows || []).map((r, i) => ({ r, i })).sort((a, b) => {
+      const as = key(a.r.shop), bs = key(b.r.shop);
+      if (!as !== !bs) return as ? -1 : 1;
+      if (as !== bs) return as < bs ? -1 : 1;
+      const ac = key(a.r.consultant), bc = key(b.r.consultant);
+      if (!ac !== !bc) return ac ? -1 : 1;
+      if (ac !== bc) return ac < bc ? -1 : 1;
+      return a.i - b.i;
+    }).map((x) => x.r);
   }
 
   /* ── the Run overview, from runs.json ──

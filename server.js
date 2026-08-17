@@ -31,6 +31,7 @@ const { WebSocketServer } = require("ws");
 
 const reconCore = require("./recon-core");
 const xlsxLite = require("./xlsx-lite");
+const xlsxWrite = require("./xlsx-write");
 const store = require("./run-store");
 const { runReconciliation, runMintReconciliation, runCombinedReconciliation } = require("./recon-run");
 const { runIpsiReconciliation } = require("./tramada-ipsi");
@@ -55,28 +56,57 @@ app.get("/api/runs/:id", (req, res) => {
   res.json(run);
 });
 
+/* ── the working file ────────────────────────────────────────────────────── */
+
 /**
- * The updated BPAY spreadsheet, built server-side (steps 34–35).
+ * The updated spreadsheet, built HERE rather than in the browser.
  *
- * SERVER-SIDE, not from whatever the page happens to be holding. The browser's
- * copy is one socket's worth of frames: reload the page, or open the run from
- * the overview screen a day later, and the Consultant, Shop and Remarks it
- * would have put in the file are gone. `runs.json` still has them, because
- * every row was written as its verdict became known (§6b).
+ * It used to be assembled client-side out of an in-memory array, which meant
+ * three things: an .xlsx was impossible (there is no workbook writer in the
+ * page), the file existed only for as long as the tab did, and the columns came
+ * from whichever cards happened to be loaded rather than from the run being
+ * looked at. All three go away by doing it on the server, where the same
+ * `buildExportGrid` serves both formats.
  *
- * Built fresh on each request rather than cached, so a row patched after the
- * last download is in the next one.
+ * The FORMAT FOLLOWS THE UPLOAD. Finance sent a workbook, Finance gets a
+ * workbook back; they sent a CSV, they get a CSV. Nobody should have to convert
+ * a file to send it on.
  */
-app.get("/api/runs/:id/export.csv", (req, res) => {
-  const run = store.getRun(req.params.id);
-  if (!run) return res.status(404).json({ error: "no such run" });
-  if (run.source !== "bpay") {
-    return res.status(400).json({ error: "only a BPAY run has a spreadsheet to send back" });
+app.post("/api/export", express.json({ limit: "12mb" }), (req, res) => {
+  try {
+    const body = req.body || {};
+    const rows = Array.isArray(body.rows) ? body.rows : [];
+    if (!rows.length) return res.status(400).json({ error: "there are no rows to export" });
+
+    const columns = Array.isArray(body.columns) ? body.columns.filter(Boolean) : [];
+    const grid = reconCore.buildExportGrid(rows, columns, {
+      inputColumns: reconCore.inputColumnsOf(columns),
+    });
+
+    // Their own file name, with what happened to it on the end — so a folder of
+    // these still says which day each one was.
+    const stem = String(body.name || "bpay-reconciliation")
+      .replace(/\.(csv|xlsx?|txt)$/i, "").replace(/[^\w.\- ]+/g, "").slice(0, 80) || "bpay";
+    const wantXlsx = String(body.format || "").toLowerCase() === "xlsx";
+
+    if (wantXlsx) {
+      const buf = xlsxWrite.writeSheet(grid, "Reconciliation", {
+        moneyColumns: reconCore.moneyColumnsOf(grid.headings),
+      });
+      res.setHeader("Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="${stem}-reconciled.xlsx"`);
+      return res.send(buf);
+    }
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${stem}-reconciled.csv"`);
+    // A BOM, so Excel on Windows opens a UTF-8 CSV without mangling a name like
+    // "Ní Bhriain" into mojibake.
+    res.send("﻿" + reconCore.gridToCsv(grid));
+  } catch (err) {
+    res.status(500).json({ error: reconCore.tidyError(err.message) });
   }
-  const name = reconCore.bpayExportName(run.statementDate);
-  res.setHeader("Content-Type", "text/csv; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="${name}"`);
-  res.send(reconCore.bpayExportCsv(run.rows || []));
 });
 
 const server = http.createServer(app);
@@ -94,6 +124,7 @@ wss.on("connection", (ws) => {
     try {
       if (msg.type === "recon_parse") handleReconParse(session, msg);
       else if (msg.type === "recon_upload") handleReconUpload(session, msg);
+      else if (msg.type === "recon_edit") handleReconEdit(session, msg);
       else if (msg.type === "recon_run") await handleReconRun(session, msg);
     } catch (err) {
       // A throw here would take the socket down mid-run and the page would show
@@ -109,6 +140,48 @@ function send(session, m) {
   if (session.active && session.ws.readyState === 1) session.ws.send(JSON.stringify(m));
 }
 
+/**
+ * A cell somebody corrected by hand.
+ *
+ * Consultant and Shop are filled in from the booking, and the booking is not
+ * always right — a consultant leaves, a booking was made under the wrong shop.
+ * Remarks is the agent's reading of a business rule, and the person sending the
+ * file to Finance is the one who knows whether it holds. So all three are
+ * editable, and the correction is written where the run's own verdicts are
+ * written, which is what makes it survive the tab being closed.
+ *
+ * ONLY those three fields. A patch is arriving from a browser and there is no
+ * reason for it to be able to rewrite a receipt number, an allocation verdict
+ * or an amount — those are the run's record of what it did to a finance system,
+ * and nothing typed into a table cell should be able to disagree with them.
+ */
+const EDITABLE = ["consultant", "shop", "remark"];
+
+function handleReconEdit(session, msg) {
+  const runId = String(msg.runId || "");
+  const n = Number(msg.n);
+  if (!runId || !Number.isFinite(n)) return;
+
+  const patch = {};
+  for (const k of EDITABLE) {
+    if (msg.patch && Object.prototype.hasOwnProperty.call(msg.patch, k)) {
+      patch[k] = String(msg.patch[k] == null ? "" : msg.patch[k]).slice(0, 200);
+    }
+  }
+  if (!Object.keys(patch).length) return;
+
+  try {
+    const row = store.patchRow(runId, n, patch);
+    // Told, rather than assumed. A silent failure here looks exactly like a
+    // successful edit until the page is reloaded and the correction is gone.
+    if (!row) send(session, { type: "recon_progress", ok: false,
+      message: `Could not save the edit to row ${n} — no such row in ${runId}.` });
+  } catch (err) {
+    send(session, { type: "recon_progress", ok: false,
+      message: `Could not save the edit to row ${n}: ${reconCore.tidyError(err.message)}` });
+  }
+}
+
 /* ── reading an uploaded report ──────────────────────────────────────────── */
 
 /**
@@ -120,13 +193,12 @@ function send(session, m) {
  */
 function handleReconParse(session, msg) {
   const name = String(msg.name || "the file");
-  /* Every report is read here now, by the parser the run itself uses.
-   *
-   * BPay used to be excluded and forced to "mint" — its file was parsed in the
-   * browser and had to be a CSV, so the .xlsx Finance actually sends (step 1
-   * says "prepares BPAY transaction into a spreadsheet") could not be uploaded
-   * at all. `parseReconRows` reads a grid, and a grid comes from either
-   * container. */
+  /* Every report is read here, by the parser the run itself uses — BPay
+     included since 17-Aug-2026. It used to be excluded, so a BPay workbook was
+     read as text in the browser and refused with "the header is missing", while
+     the identical container from Mint went straight through. That is a
+     distinction nobody outside this file could have predicted, on a file the
+     guide only ever calls "a spreadsheet". */
   const source = reconCore.REPORTS[msg.source] ? msg.source : "mint";
   const reply = (extra) => send(session, { type: "recon_parsed", source, name, ...extra });
 
@@ -151,8 +223,16 @@ function handleReconParse(session, msg) {
       travelpay: reconCore.parseTravelPayRows,
       ipsi: reconCore.parseIpsiRows,
     }[source] || reconCore.parseMintRows;
-    const { rows, problems, settlement } = parse(sheet.headers, sheet.rows);
-    reply({ rows, problems, settlement, headers: sheet.headers, sheetRows: sheet.rows.length });
+    const { rows, problems, settlement, columns } = parse(sheet.headers, sheet.rows);
+    /* `columns` is the file's own headings, in its own order. It goes back to
+       the page so the inbox can show the spreadsheet as Finance wrote it, and
+       so the export can hand back that same spreadsheet with the run's columns
+       filled in rather than a new file of this code's own devising. */
+    reply({
+      rows, problems, settlement, columns: columns || sheet.headers,
+      format: isZip ? "xlsx" : "csv",
+      headers: sheet.headers, sheetRows: sheet.rows.length,
+    });
   } catch (err) {
     reply({ error: reconCore.tidyError(err.message) });
   }
@@ -425,15 +505,26 @@ async function handleIpsiRun(session, msg) {
  */
 function openRun(session, source, msg, rows) {
   try {
-    return store.startRun({
+    const run = store.startRun({
       source,
       file: (session.files && session.files[source]) || null,
       statementDate: msg.statementDate,
       openingBalance: msg.openingBalance,
       closingBalance: msg.closingBalance,
       dryRun: !!msg.dryRun,
+      /* The uploaded file's own headings, kept with the run. This is what lets
+         the inbox show the spreadsheet as it was, and the export hand back
+         THEIR file rather than a new one — including for a run reopened from
+         the picker a week later, when the upload itself is long gone from the
+         page. */
+      columns: Array.isArray(msg.columns) ? msg.columns.filter(Boolean) : [],
+      format: msg.format === "xlsx" ? "xlsx" : "csv",
       rows,
     });
+    // The page needs the id before the run ends: an edited Consultant cell has
+    // to be able to say which run it belongs to while the run is still going.
+    if (run) send(session, { type: "recon_started", runId: run.id });
+    return run;
   } catch (err) {
     console.error(`  ⚠ could not open the run record: ${err.message}`);
     return null;

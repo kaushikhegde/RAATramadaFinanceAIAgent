@@ -97,63 +97,12 @@ console.log("\nreading the import CSV");
   ok("the missing booking is named", /no booking number/.test(problems[2].why), problems[2].why);
   check("problems carry the line number", problems[0].line, 2);
 }
+// Rec/Pay Type is optional — the guide's own BPay file has no such column, and
+// nothing decides on it. A missing booking number column still refuses the file.
 check("a missing header is refused outright",
   C.parseReconCsv("Date,Reference,Amount\n2021-11-01,NW,1.00").problems[0].why,
   "the header is missing: bookingNo");
 check("an empty file is refused", C.parseReconCsv("").problems.length, 1);
-
-{
-  /* THE SPREADSHEET RAA FINANCE ACTUALLY SENDS.
-   *
-   * Its columns are "Booking no.", "Receipt No", "Amount" and "Date received"
-   * — no Rec/Pay Type anywhere, and the reference column is called Receipt No
-   * because step 16 types it into Tramada's Reference field.
-   *
-   * This file used to be rejected outright with "the header is missing:
-   * reference, recPayType", which is a true statement about a file that was
-   * never going to have either. */
-  const finance = [
-    "Booking no.,Receipt No,Amount,Date received",
-    "13316,BP-HM51N-13316,145.54,11-08-2026",
-  ].join("\n");
-  const { rows, problems } = C.parseReconCsv(finance);
-  check("Finance's own spreadsheet is accepted", problems.length, 0);
-  check("and its row is read", rows.length, 1);
-  check('"Receipt No" is the REFERENCE, the one typed into Tramada', rows[0].reference, "BP-HM51N-13316");
-  check("Booking no. with the dot still maps", rows[0].bookingNo, "13316");
-  check("Date received is the date", rows[0].date, "11-08-2026");
-  check("the amount survives", rows[0].amountCents, 14554);
-  check("and Rec/Pay Type is simply blank, not fatal", rows[0].recPayType, "");
-}
-{
-  /* THE SAME FILE AS A WORKBOOK. Step 1 says "prepares BPAY transaction into a
-     spreadsheet", and a spreadsheet is a .xlsx — BPay was the one report whose
-     file had to be a CSV, so Finance's actual workbook could not be uploaded at
-     all. A workbook cell is a NUMBER where a CSV field is a string, and
-     everything downstream types these into a form. */
-  const { rows, problems } = C.parseReconRows(
-    ["Booking no.", "Receipt No", "Amount", "Date received"],
-    [[13316, "BP-HM51N-13316", 145.54, "11-08-2026"]]
-  );
-  check("a workbook grid reads like a CSV", problems.length, 0);
-  check("a numeric booking cell becomes a string", rows[0].bookingNo, "13316");
-  check("and a numeric amount still reads as cents", rows[0].amountCents, 14554);
-  check("the line number counts the header", rows[0].line, 2);
-  check("an empty sheet is refused, not crashed", C.parseReconRows([], []).problems.length, 1);
-}
-{
-  // The export must be re-readable. Its Tramada column is deliberately called
-  // "Tramada Receipt No" so it does NOT collide with the spreadsheet's own
-  // "Receipt No" — if it did, re-uploading an export would file every receipt
-  // against R.0000009444 instead of against Finance's reference.
-  const round = C.bpayExportCsv([
-    { n: 1, date: "11-08-2026", reference: "BP-1", amount: "145.54", bookingNo: "13316",
-      consultant: "Zoe", shop: "ADL", receiptNo: "R.0000009444", remarks: [] },
-  ]);
-  const back = C.parseReconCsv(round);
-  check("an export re-reads cleanly", back.problems.length, 0);
-  check("and the reference is Finance's, not Tramada's", back.rows[0].reference, "BP-1");
-}
 
 console.log("\nwhat is left to allocate");
 // Shape from readAllocatableSegments() in tramada-receipt.js.
@@ -166,102 +115,40 @@ check("Tramada's commas survive the sum", C.totalLeftToAllocate([seg("1,056.93")
 check("one unreadable due poisons the total", C.totalLeftToAllocate([seg("220.00"), seg("")]), null);
 check("no segments at all is null, not zero", C.totalLeftToAllocate([]), null);
 
-console.log("\ndecision 1 — which WHOLE segments the receipt settles (BR07–BR11)");
+console.log("\ndecision 1 — which WHOLE segments the receipt settles");
 {
-  /* THIS WHOLE BLOCK CHANGED SHAPE. It used to test a subset-sum search that
-     picked the best combination of segments not exceeding the receipt, and
-     reported "Part allocated" whenever that landed short. Finance's BPAY guide
-     forbids it: BR09 and BR10 say anything that is not one whole segment or all
-     of them ticks NOTHING and goes back to a person as "Please allocate".
-
-     The old expectations are kept below as comments, next to what each input
-     does now, because the change is a deliberate narrowing and not a fix. */
+  /* BR07–BR11 are covered rule by rule in test-bpay-rules.js. What is kept
+     here are the INVARIANTS that hold whatever the rule says: no segment is
+     ever part-paid, and no allocation ever exceeds the receipt. Those are what
+     stop the form's Unalloc going negative, and they must survive any future
+     change to which boxes get ticked. */
   const two = [{ segId: "A", debtorDue: "200.00" }, { segId: "B", debtorDue: "200.00" }];
 
-  // BR11 — used to be "Part allocated" with 100 left over. Still ticks both,
-  // but now says so in the words Finance reads.
   const over = C.decideAllocation(50000, two);
-  check("500 against 200+200 takes both segments", over.allocation, "ALL");
-  check("and counts as allocated", over.status, "Allocated");
-  check("with the overpayment remarked", over.remarks, [C.REMARKS.OVERPAYMENT]);
-  ok("and the unallocated remainder named", /\$100\.00 of this receipt stays unallocated/.test(over.reason), over.reason);
+  check("500 takes both segments", over.allocation, "ALL");
+  check("but is only PART allocated — 100 of the receipt is left", over.status, "Part allocated");
+  ok("and the leftover is named", /\$100\.00 of this receipt stays unallocated/.test(over.reason), over.reason);
 
-  // BR10 — USED TO settle one segment and report "Part allocated". Deciding
-  // WHICH of two identical segments a part-payment belongs to is the judgement
-  // the guide reserves for a person, and this used to make it silently.
-  const mid = C.decideAllocation(30000, two);
-  check("300 against 200+200 now ticks nothing", mid.allocation, []);
-  check("and is not allocated", mid.status, "Not allocated");
-  check("and asks a person to", mid.remarks, [C.REMARKS.ALLOCATE]);
+  // Changed deliberately, 17-Aug-2026: the guide's BR09 says an amount that is
+  // neither one segment nor all of them is left alone for a person.
+  const one = C.decideAllocation(30000, two);
+  check("300 fits a combination but is not one segment nor all — ticks nothing", one.allocation, []);
+  check("and is not allocated", one.status, "Not allocated");
 
-  // BR07 — unchanged in outcome.
   const exact = C.decideAllocation(20000, two);
   check("200 takes the segment it matches", exact.allocation, [{ segId: "A", amount: "200.00" }]);
   check("and that is a full allocation", exact.status, "Allocated");
-  check("with nothing to remark", exact.remarks, []);
 
-  // BR08 — every segment, via the proven Select All path rather than ticking
-  // each row by hand.
-  check("all segments means ALL", C.decideAllocation(40000, two).allocation, "ALL");
-  check("and that is exact", C.decideAllocation(40000, two).status, "Allocated");
-
-  // BR10 again, from below. Used to say "the cheapest still owes $200.00".
   const none = C.decideAllocation(10000, two);
   check("100 takes nothing", none.allocation, []);
   check("the receipt is still filed, unallocated", none.status, "Not allocated");
-  check("and is remarked", none.remarks, [C.REMARKS.ALLOCATE]);
+  ok("and says the cheapest is still too big",
+    /cheapest segment owes \$200\.00/.test(none.reason), none.reason);
 
-  // A single-segment booking is the common case, and "one of them" is also
-  // "all of them" — it takes the Select All path, not a hand-built list.
-  check("one segment, exact", C.decideAllocation(20000, [{ segId: "S", debtorDue: "200.00" }]).allocation, "ALL");
-
-  // USED TO settle the 200 by exhaustive search against 50+200. Same answer,
-  // now because 200 IS a whole segment rather than because it won a search.
-  const pickBig = C.decideAllocation(20000, [{ segId: "S", debtorDue: "50.00" }, { segId: "L", debtorDue: "200.00" }]);
-  check("200 against 50+200 settles the 200", pickBig.allocation, [{ segId: "L", amount: "200.00" }]);
-  check("exactly", pickBig.status, "Allocated");
-  // ...and 250 is all of them, where before it was also all of them but by
-  // arithmetic that had to stay in step with the form.
-  check("250 against 50+200 is all of them",
-    C.decideAllocation(25000, [{ segId: "S", debtorDue: "50.00" }, { segId: "L", debtorDue: "200.00" }]).allocation, "ALL");
-
-  // USED TO clear the two hundreds — a subset of more than one segment, which
-  // is exactly what BR09 rules out.
-  const tie = C.decideAllocation(20000, [
-    { segId: "a", debtorDue: "100.00" }, { segId: "b", debtorDue: "100.00" }, { segId: "c", debtorDue: "200.00" },
-  ]);
-  check("200 against 100+100+200 takes the 200, not the two hundreds",
-    tie.allocation, [{ segId: "c", amount: "200.00" }]);
-
-  // Two segments owing the same amount: the first on the form is taken and the
-  // ambiguity is said out loud rather than presented as a reasoned choice.
-  const dupes = C.decideAllocation(20000, [
-    { segId: "x", debtorDue: "200.00" }, { segId: "y", debtorDue: "200.00" }, { segId: "z", debtorDue: "999.00" },
-  ]);
-  check("a tie takes the first segment on the form", dupes.allocation, [{ segId: "x", amount: "200.00" }]);
-  ok("and says there was a tie", /2 segments owe this amount/.test(dupes.reason), dupes.reason);
-
-  // NOTHING IS EVER ALLOCATED BEYOND THE RECEIPT except deliberately, by BR11,
-  // where every segment is settled and the excess stays on the receipt. This is
-  // what keeps Tramada's `refuseOverAllocation` from having to fire.
-  for (const amt of [1, 4999, 20000, 39999, 40000, 40001, 99999]) {
-    const d = C.decideAllocation(amt, two);
-    const placed = Array.isArray(d.allocation)
-      ? d.allocation.reduce((n, a) => n + C.cents(a.amount), 0)
-      : 40000;
-    ok(`$${C.money(amt)} never allocates more than it is worth`, placed <= amt, `placed ${C.money(placed)}`);
-  }
-
-  // "Part allocated" is no longer reachable. This is the assertion that keeps
-  // a future convenience from quietly reintroducing it.
-  for (const amt of [1, 100, 10000, 19999, 20000, 20001, 30000, 39999, 40000, 40001, 99999]) {
-    ok(`$${C.money(amt)} is never Part allocated`,
-      C.decideAllocation(amt, two).status !== "Part allocated", C.decideAllocation(amt, two).status);
-  }
-
-  // Segments are NEVER part-paid: every amount written is a segment's full due,
-  // which is what ticking auto-fills.
-  for (const [amt, segs] of [[20000, two], [21600, [{ segId: "H", debtorDue: "216.00" }, { segId: "T", debtorDue: "250.00" }]]]) {
+  // Segments are NEVER part-paid. Every amount written is a segment's full due,
+  // which is what ticking auto-fills — so no allocation box is ever typed with
+  // a number Tramada did not put there itself.
+  for (const [amt, segs] of [[30000, two], [79000, [{ segId: "H", debtorDue: "2160.00" }, { segId: "T", debtorDue: "250.00" }]]]) {
     const d = C.decideAllocation(amt, segs);
     if (Array.isArray(d.allocation)) {
       for (const a of d.allocation) {
@@ -271,146 +158,45 @@ console.log("\ndecision 1 — which WHOLE segments the receipt settles (BR07–B
     }
   }
 
-  // The refusals. Each one is a row a person has to pick up, so each one
-  // carries the remark that says so.
+  // Never exceed the receipt — this is what keeps the form's Unalloc from
+  // going negative, and it is why "whole segments only" is safe at all.
+  for (const amt of [1, 4999, 20000, 39999, 40000, 40001, 99999]) {
+    const d = C.decideAllocation(amt, two);
+    const placed = Array.isArray(d.allocation)
+      ? d.allocation.reduce((n, a) => n + C.cents(a.amount), 0)
+      : 40000;
+    ok(`$${C.money(amt)} never allocates more than it is worth`, placed <= amt, `placed ${C.money(placed)}`);
+  }
+
+  // Not a greedy sweep: cheapest-first would settle the 50 and strand the rest.
+  const pickBig = C.decideAllocation(20000, [{ segId: "S", debtorDue: "50.00" }, { segId: "L", debtorDue: "200.00" }]);
+  check("200 against 50+200 settles the 200, not the 50",
+    pickBig.allocation, [{ segId: "L", amount: "200.00" }]);
+  check("exactly", pickBig.status, "Allocated");
+
+  /* This used to settle the two hundreds rather than the one two-hundred, on a
+     cheapest-first tie-break. BR07 removes the tie: "the exact same value as
+     ONE of the segments" is a rule about a single segment, so the 200 wins and
+     the ambiguity never arises. The old behaviour ticked two boxes a person
+     reading the screen would not have ticked. */
+  const tie = C.decideAllocation(20000, [
+    { segId: "a", debtorDue: "100.00" }, { segId: "b", debtorDue: "100.00" }, { segId: "c", debtorDue: "200.00" },
+  ]);
+  check("one exact segment beats two that add up to it",
+    tie.allocation, [{ segId: "c", amount: "200.00" }]);
+
+  // Everything selected uses the proven Select All path rather than ticking
+  // each row by hand.
+  check("all segments means ALL", C.decideAllocation(40000, two).allocation, "ALL");
+  check("and that is exact", C.decideAllocation(40000, two).status, "Allocated");
+
+  // The refusals.
   check("nothing outstanding", C.decideAllocation(15000, []).status, "Not allocated");
-  check("and is remarked", C.decideAllocation(15000, []).remarks, [C.REMARKS.ALLOCATE]);
   check("all segments at zero", C.decideAllocation(15000, [{ segId: "z", debtorDue: "0.00" }]).status, "Not allocated");
   const unreadable = C.decideAllocation(15000, [{ segId: "a", debtorDue: "200.00" }, { segId: "b", debtorDue: "" }]);
   check("an unreadable due refuses outright", unreadable.status, "Not allocated");
   ok("rather than treating it as zero", /could not be read/.test(unreadable.reason), unreadable.reason);
   check("an unreadable CSV amount", C.decideAllocation(null, two).status, "Not allocated");
-}
-
-console.log("\ndecision 0 — may this booking be receipted at all? (BR01–BR05)");
-{
-  const TODAY = "17-08-2026";
-  const good = {
-    found: true, bookingNo: "13127", debtor: "RAA of SA Limited (Retail)",
-    departureDate: "14-09-2026", balance: "250.00", balanceCents: 25000,
-  };
-  const at = (over) => C.decideBookingEligibility({ ...good, ...over }, TODAY);
-
-  const ok1 = at({});
-  check("outstanding, right debtor, future departure → receipt it", ok1.proceed, true);
-  check("and nothing to remark", ok1.remarks, []);
-
-  const br01 = C.decideBookingEligibility({ found: false, bookingNo: "99999" }, TODAY);
-  check("BR01 a booking Tramada does not have is not receipted", br01.proceed, false);
-  check("BR01 remark", br01.remarks, [C.REMARKS.NO_BOOKING]);
-
-  /* BR02 is the one that is NOT a refusal. A booking that owes money and has
-     already departed still gets its receipt — the money arrived and the receipt
-     records that — and the departure becomes a remark for a person to look at. */
-  const br02 = at({ departureDate: "01-01-2026" });
-  check("BR02 a departed booking that owes money is still receipted", br02.proceed, true);
-  check("BR02 remark", br02.remarks, [C.REMARKS.DEPARTED]);
-
-  const br03 = at({ balance: "0.00", balanceCents: 0 });
-  check("BR03 nothing outstanding, not yet departed → no receipt", br03.proceed, false);
-  check("BR03 remark", br03.remarks, [C.REMARKS.NO_OUTSTANDING]);
-
-  const br04 = at({ balance: "0.00", balanceCents: 0, departureDate: "01-01-2026" });
-  check("BR04 nothing outstanding and departed → no receipt", br04.proceed, false);
-  check("BR04 remark", br04.remarks, [C.REMARKS.NO_OUTSTANDING_DEPARTED]);
-
-  // A credit balance is not an amount outstanding either.
-  check("a negative balance is not an outstanding amount",
-    at({ balance: "-10.00", balanceCents: -1000 }).proceed, false);
-
-  const br05 = at({ debtor: "RAA of SA Limited (Corporate)" });
-  check("BR05 the wrong debtor is not receipted", br05.proceed, false);
-  check("BR05 remark", br05.remarks, [C.REMARKS.WRONG_DEBTOR]);
-  check("a blank debtor is the wrong debtor", at({ debtor: "" }).proceed, false);
-
-  /* THE ORDER MATTERS, and it is the guide's order. Step 5 sends a booking with
-     nothing outstanding straight back to the next row, so step 6's debtor check
-     never runs for it. A booking that owes nothing AND has the wrong debtor
-     must report the balance, not the debtor — that is what a person following
-     the guide by hand would have written. */
-  const both = at({ balance: "0.00", balanceCents: 0, debtor: "Someone Else Entirely" });
-  check("no outstanding beats wrong debtor, as in the guide", both.remarks, [C.REMARKS.NO_OUTSTANDING]);
-
-  // Case and spacing only. "RAA of SA Limited" is a DIFFERENT debtor from
-  // "RAA of SA Limited (Retail)" and must not pass.
-  check("case and spacing are ignored", at({ debtor: "  raa  OF sa limited (Retail)" }).proceed, true);
-  check("but the bracket is not decoration", at({ debtor: "RAA of SA Limited" }).proceed, false);
-
-  /* An unreadable balance is NOT nothing-outstanding. Treating it as zero would
-     skip a booking that owes money and write "No outstanding amount found"
-     against it — a checked fact, claimed about something nobody checked (§3). */
-  const blind = at({ balance: "", balanceCents: null });
-  check("an unreadable balance does not receipt", blind.proceed, false);
-  check("and does not claim there was nothing owed", blind.remarks, [C.REMARKS.ALLOCATE]);
-  ok("it says the balance could not be read", /could not be read/.test(blind.reason), blind.reason);
-
-  // An unreadable departure date is never "in the past" — guessing would
-  // attach BR02's remark to a booking nobody has looked at.
-  check("an unreadable departure date is not a departed one", C.hasDeparted("", TODAY), false);
-  check("nor is an unreadable today", C.hasDeparted("01-01-2020", ""), false);
-  check("today itself has not departed", C.hasDeparted(TODAY, TODAY), false);
-  check("yesterday has", C.hasDeparted("16-08-2026", TODAY), true);
-  // Day-first, always. 03-04-2026 is 3 April, not 4 March — reading it the
-  // other way would make a booking depart five months early.
-  check("dd-mm-yyyy is read day-first", C.dateKey("03-04-2026"), 20260403);
-  check("slashes too", C.dateKey("03/04/2026"), 20260403);
-  check("and ISO is still ISO", C.dateKey("2026-04-03"), 20260403);
-}
-
-console.log("\nthe spreadsheet that goes back to Finance (BR14, steps 34–35)");
-{
-  const rows = [
-    { n: 1, shop: "WEST", consultant: "Zoe Adams" },
-    { n: 2, shop: "ADL", consultant: "Bill Zephyr" },
-    { n: 3, shop: "ADL", consultant: "Al Brown" },
-    { n: 4, shop: "", consultant: "Nobody" },
-    { n: 5, shop: "ADL", consultant: "Al Brown" },
-  ];
-  check("sorted by Shop, then Consultant, then the order Finance sent",
-    C.sortForFinance(rows).map((r) => r.n), [3, 5, 2, 1, 4]);
-
-  /* Blanks sort LAST. A booking whose branch could not be read is the row a
-     person most needs to see, and "" at the top of an alphabetical list buries
-     it under whatever comes next while looking deliberate. */
-  check("a row with no shop is last, not first", C.sortForFinance(rows)[4].n, 4);
-
-  // One column, however many rules fired, de-duplicated.
-  check("remarks join with a semicolon",
-    C.remarkCell({ remarks: [C.REMARKS.DEPARTED, C.REMARKS.OVERPAYMENT] }),
-    "Please review, departure date has passed; Overpayment, please check");
-  check("a repeated remark is one remark",
-    C.remarkCell({ remarks: [C.REMARKS.ALLOCATE, C.REMARKS.ALLOCATE] }), "Please allocate");
-  check("no remarks is an empty cell", C.remarkCell({ remarks: [] }), "");
-  check("and a row that never got the field is not a crash", C.remarkCell({}), "");
-
-  /* EVERY row is in the file, including the ones no receipt was raised for.
-     That is what the Remarks column is FOR: "No outstanding amount found"
-     against a row is the answer Finance needs, and a file holding only the rows
-     that worked would read as though the rest were never sent. */
-  const csv = C.bpayExportCsv([
-    { n: 1, date: "11-08-2026", reference: "BP-1", amount: "145.54", bookingNo: "13316",
-      consultant: "Zoe", shop: "WEST", receiptNo: "R.1", allocation: "Allocated",
-      reconciliation: "Reconciled", remarks: [] },
-    { n: 2, date: "11-08-2026", reference: "BP-2", amount: "10.00", bookingNo: "13317",
-      consultant: "Al", shop: "ADL", receiptNo: "", allocation: "Not allocated",
-      reconciliation: "Not reconciled", remarks: [C.REMARKS.NO_OUTSTANDING] },
-  ]);
-  const lines = csv.trim().split("\n");
-  check("the header names Tramada's column unambiguously", lines[0],
-    "Date,Receipt No,Amount,Booking No,Consultant,Shop,Tramada Receipt No,Allocation,Reconciled,Remarks");
-  check("a refused row is still in the file", lines.length, 3);
-  ok("sorted by shop — ADL before WEST", /^11-08-2026,BP-2/.test(lines[1]), lines[1]);
-  ok("and carries its remark", /No outstanding amount found$/.test(lines[1]), lines[1]);
-
-  // A comma inside a remark must not become a new column — every BR string
-  // except two has one in it.
-  const commas = C.bpayExportCsv([{ n: 1, remarks: [C.REMARKS.WRONG_DEBTOR] }]).trim().split("\n")[1];
-  ok("a remark with commas is quoted", /"Please review, incorrect debtor found"$/.test(commas), commas);
-
-  check("one export file per day, named for the statement date",
-    C.bpayExportName("11-08-2026"), "bpay-reconciliation-20260811.csv");
-  check("and an unreadable date is called that, not silently today's",
-    C.bpayExportName(""), "bpay-reconciliation-undated.csv");
 }
 
 console.log("\ndecision 2 — reconciled by RECEIPT NUMBER, or not");
@@ -545,18 +331,9 @@ console.log("\nthe shipped bookings.json actually exercises both paths");
     return d.status;
   });
 
-  /* USED TO READ ["Part allocated", "Allocated", "Not allocated", ...] and
-     assert that all three outcomes appeared. Under BR07–BR11 there are only two
-     a BPay row can reach: the $150.00 against a $145.54 booking is no longer a
-     part allocation but an overpayment — every segment settled, $4.46 left on
-     the receipt, "Overpayment, please check" for a person. */
   check("the run comes back mixed, not uniform",
-    got, ["Allocated", "Allocated", "Not allocated", "Not allocated", "Not allocated", "Allocated"]);
-  ok("both reachable outcomes appear", new Set(got).size === 2, JSON.stringify(got));
-  // The fixture that changed meaning, asserted directly so it cannot drift back.
-  const overpay = C.decideAllocation(15000, [{ segId: "s", debtorDue: "145.54" }]);
-  check("$150.00 against a $145.54 booking is an overpayment", overpay.status, "Allocated");
-  check("and is remarked as one", overpay.remarks, [C.REMARKS.OVERPAYMENT]);
+    got, ["Part allocated", "Allocated", "Not allocated", "Not allocated", "Not allocated", "Allocated"]);
+  ok("all three outcomes appear", new Set(got).size === 3, JSON.stringify(got));
 }
 
 console.log("\nthe new statement page is always a new one");

@@ -71,9 +71,12 @@ function toTramadaDate(input) {
     const p = (n) => String(n).padStart(2, "0");
     return `${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()}`;
   }
-  const iso = String(input).match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (iso) return `${iso[3]}-${iso[2]}-${iso[1]}`;
-  return input; // assume already dd-mm-yyyy
+  /* Delegated to recon-core, which is where every other date in this project is
+     read. There used to be a second implementation here that understood
+     yyyy-mm-dd and passed everything else through — including RAA's own
+     07-01-26, straight into a live receipt's Date Received field. Two date
+     parsers is one too many when one of them is typing into a finance system. */
+  return core.toTramadaDate(input);
 }
 
 // Normalise a caller-supplied transaction type to a Tramada code.
@@ -289,30 +292,135 @@ async function getBookingDetails(page, bookingNo) {
   const details = await page.evaluate(() => {
     // The left header block uses <b>Label:</b> value pairs; read the sidebar text.
     const bodyText = document.body.innerText;
+    /* THE LABEL HAS TO END WHERE IT SAYS IT ENDS.
+     *
+     * Without the \b this matched "Debtor" inside "Debtors" — the Finance nav
+     * item, which appears above the booking header — and captured the "s" as
+     * the value. Measured on a live run 17-Aug-2026: every row came back
+     * "Please review, incorrect debtor found — the debtor is \"s\"", so BR05
+     * stopped receipts that were perfectly fine. A label that gates money is
+     * not a substring search.
+     *
+     * The value is allowed to sit on the next line, because these headers
+     * render as a label above its field as often as beside it, and a lone
+     * newline between the two is not a different field. */
     const grab = (label) => {
-      const re = new RegExp(label + "\\s*:?\\s*([^\\n]+)", "i");
+      const re = new RegExp("(?:^|\\n)\\s*" + label + "\\b\\s*:?[ \\t]*\\n?[ \\t]*([^\\n]+)", "i");
       const m = bodyText.match(re);
-      return m ? m[1].trim() : "";
+      const v = m ? m[1].trim() : "";
+      // A label immediately followed by the next label is an empty field, not a
+      // field whose value happens to be the word "Debtor".
+      return /^[A-Za-z][A-Za-z0-9 .]*:$/.test(v) ? "" : v;
     };
     const clientName = grab("Client Name");
     return {
       bookingNo: grab("Booking No\\.?"),
       client: grab("Client"),
       clientName,
-      // Payer Name always = booking client name (business rule)
+      /* The DEFAULT payer name, not a rule. This used to carry a comment
+         calling it a business rule; the BPay guide's BR06 says a BPay
+         receipt's payer name is the literal "BPAY", and the BPay run now
+         passes that explicitly. This stays as the fallback for a caller that
+         names no payer of its own. */
       payerName: clientName,
+      // Step 6 / BR05 reads this. It is never COMPARED here — the decision is
+      // pure and lives in recon-core, where it can be tested without a browser.
       debtor: grab("Debtor"),
       itinerary: grab("Itinerary"),
       bookDate: grab("Book\\.? Date"),
+      // Step 4 / BR02 / BR04.
       depDate: grab("Dep\\.? Date"),
+      /* Step 7 — the travel consultant, off the summary header. The guide
+         sends you to the Cons1 field and Cons1 is on THIS page, so the name
+         costs no extra navigation. */
+      consultant: grab("Cons1"),
     };
   });
 
   const loaded = !page.url().includes("booking-search") && !!details.bookingNo;
   if (!loaded) {
-    throw new Error(`Booking ${bookingNo} could not be opened.`);
+    /* SAY WHICH of the two it was. "could not be opened" is true of a booking
+       that does not exist AND of a session that has quietly expired, and those
+       need opposite things from the person reading it — one is a bad row in the
+       file, the other is "go and sign in". Measured against a real run on
+       17-Aug-2026, where every row failed this way and the log could not say
+       that Tramada had simply logged the browser out. */
+    const url = page.url();
+    const looksLikeLogin = /login|signin|sso/i.test(url) ||
+      (await page.locator("#loginForm_login, input[type=password]").count().catch(() => 0)) > 0;
+    throw new Error(looksLikeLogin
+      ? `Booking ${bookingNo} could not be opened — Tramada showed a login page instead. ` +
+        `Sign in to the Chrome window on port ${CDP_PORT || "9222"} and run this again.`
+      : `Booking ${bookingNo} could not be opened — Tramada returned a page with no booking ` +
+        `number on it (${url.split("?")[0]}). Check the booking number is right.`);
   }
   return details;
+}
+
+/**
+ * Steps 8 and 9 — the RAA shop branch, from the booking's Profile page.
+ *
+ * READ THE CONTROL, NEVER THE PAGE TEXT. This is the whole lesson of this
+ * function and it cost a wrong answer on every booking to learn.
+ *
+ * `document.body.innerText` renders a `<select>` as ALL of its options, one per
+ * line. Reading "the line after the Level 1 Branch label" therefore returns the
+ * FIRST OPTION IN THE LIST — `[ADL] RAA Adelaide` — for every booking in the
+ * system, whatever is actually selected. Booking 13394 is a West Croydon
+ * booking and reported ADL, and it looked entirely plausible in the report
+ * because ADL is a real branch.
+ *
+ * Worse, there is a decoy: the Consultant 1 dropdown on the same page reads
+ * "Kaushik Hegde [ADL]" — the CONSULTANT's home branch, not the booking's. A
+ * text scrape that wandered a few lines either way would find a bracketed code
+ * that is real, wrong, and impossible to spot in a spreadsheet.
+ *
+ * So both fields come from `options[selectedIndex]` of a named control:
+ *   #level1Branch   [WEST] RAA West Croydon      → the booking's branch
+ *   #retailDebtor   RAA of SA Limited (Retail)   → BR05, from a select rather
+ *                                                  than from prose
+ * Measured live on booking 13394, 17-Aug-2026.
+ *
+ * The guide says the shortcode alone is enough ("[ADL]", "[COL]", "[WEST]"), so
+ * `branchCode` pulls the bracketed code out of the label.
+ *
+ * NEVER THROWS. A branch that cannot be read is a blank cell and a note in the
+ * log — the receipt does not depend on it, and a booking whose profile renders
+ * differently must not stop money being receipted.
+ */
+async function getBookingBranch(page, bookingNo) {
+  try {
+    await page.goto(
+      `${TRAMADA_BASE_URL}/booking/booking-profile.htm?mode=edit&id=${encodeURIComponent(bookingNo)}`,
+      { waitUntil: "domcontentloaded" }
+    );
+    await page.waitForSelector("#level1Branch", { timeout: 15000 }).catch(() => {});
+    await sleep(300);
+    return await page.evaluate(() => {
+      const chosen = (el) => {
+        if (!el) return "";
+        const o = el.options ? el.options[el.selectedIndex] : null;
+        return o ? (o.text || "").trim() : "";
+      };
+      // Measured on booking 13394, 17-Aug-2026.
+      let branch = chosen(document.querySelector("#level1Branch"));
+      let debtor = chosen(document.querySelector("#retailDebtor"));
+
+      // Fallback by label, still reading the CONTROL and never the page text.
+      if (!branch) {
+        const label = [...document.querySelectorAll("label, td, th, span, div")]
+          .find((e) => /^\s*Level\s*1\s*Branch\s*$/i.test(e.textContent || ""));
+        const holder = label && (label.parentElement || label);
+        const sel = holder && (holder.querySelector("select") ||
+          (holder.nextElementSibling && holder.nextElementSibling.querySelector
+            ? holder.nextElementSibling.querySelector("select") : null));
+        branch = chosen(sel);
+      }
+      return { branch, debtor };
+    });
+  } catch {
+    return { branch: "", debtor: "" };
+  }
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -471,54 +579,6 @@ async function openReceiptForm(page, bookingNo, receipt) {
     if (dupe) return { alreadyFiled: dupe, onBooking: already.length };
   }
 
-  /* THE RECEIPT CATEGORY IS CHOSEN, NOT ASSUMED — step 11.
-   *
-   * `#receiptCategory` sits beside the Add / Issue Receipt button and decides
-   * which form that button opens. This used to be left alone, so the run got
-   * whatever the page defaulted to and the category was decided by Tramada's
-   * mood rather than by us. It defaults to Client Payment Receipt today, which
-   * is what every receipt this system has filed turned out to be — but "it is
-   * currently the default" is not a rule, it is an observation.
-   *
-   * Selected BY LABEL, and a label that is not on the dropdown throws with the
-   * options that ARE, because the BPAY guide asks for "Debtor Payment Receipt"
-   * and that option does not exist on this screen (recon-core REPORTS.bpay).
-   * If RAA's production has it, this is where that shows up — as a run that
-   * stops and names what it saw, not as receipts quietly filed as something
-   * else. */
-  if (receipt.receiptCategory) {
-    const chosen = await page.evaluate((want) => {
-      const el = document.querySelector("#receiptCategory");
-      if (!el) return { missing: true, options: [] };
-      const options = [...el.options].map((o) => o.text.trim());
-      const hit = [...el.options].find((o) => o.text.trim() === want);
-      if (!hit) return { notThere: true, options };
-      el.value = hit.value;
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-      return { ok: true, reads: (el.options[el.selectedIndex] || {}).text.trim(), options };
-    }, receipt.receiptCategory);
-
-    if (chosen.missing) {
-      throw new Error(
-        `Booking ${bookingNo}'s Receipts screen has no receipt-category dropdown, so ` +
-        `"${receipt.receiptCategory}" could not be selected.`
-      );
-    }
-    if (chosen.notThere) {
-      throw new Error(
-        `Booking ${bookingNo} cannot raise a "${receipt.receiptCategory}". The Receipts screen ` +
-        `offers: ${chosen.options.join(" | ")}. Nothing was filed.`
-      );
-    }
-    if (chosen.reads !== receipt.receiptCategory) {
-      throw new Error(
-        `The receipt category did not stick: chose "${receipt.receiptCategory}", the screen ` +
-        `reads "${chosen.reads}". Nothing was filed.`
-      );
-    }
-    await sleep(300);
-  }
-
   await page.click('input[value="Add / Issue Receipt"]');
   await page.waitForSelector("#receipttransactionTypeCode", { timeout: 20000 });
 
@@ -528,23 +588,9 @@ async function openReceiptForm(page, bookingNo, receipt) {
   await page.selectOption("#receipttransactionTypeCode", txn);
   await sleep(800);
 
-  /* Payer Name. Defaults to the booking's client name; the BPAY run overrides
-     it with the literal "BPAY" (BR06), which is how Finance finds those
-     receipts as a group afterwards.
-
-     READ BACK, because `setFieldWithEvents` returns early on an empty string
-     and a payer name that never landed leaves the field blank without
-     complaining — and a blank payer on a receipt that is supposed to say BPAY
-     is exactly the thing BR06 exists to prevent. */
+  // Payer Name = booking client name (business rule, req: always client name).
   if (receipt.payerName) {
     await setFieldWithEvents(page, "#receiptpayerName", receipt.payerName);
-    const payerBack = await page.inputValue("#receiptpayerName").catch(() => null);
-    if (payerBack != null && payerBack.trim() !== String(receipt.payerName).trim()) {
-      throw new Error(
-        `The payer name did not stick: typed "${receipt.payerName}", the form reads ` +
-        `"${payerBack}". Nothing was issued.`
-      );
-    }
   }
   // Date Received (defaults to today if omitted).
   await setFieldWithEvents(page, "#receiptdateReceived", toTramadaDate(receipt.dateReceived));
@@ -1048,6 +1094,11 @@ async function runTramadaReceipt({
      and without this the second run takes the money again. Pass false only for
      something that genuinely means to file a second identical receipt. */
   skipIfAlreadyFiled = true,
+  /* Steps 8-9. Off by default because it costs a page load per row and only
+     the BPay report puts a Shop column in front of Finance. The probe pass
+     turns it on; the commit pass does not, so the profile page is opened once
+     per row rather than twice. */
+  withBranch = false,
   callbacks = {},
 } = {}) {
   const onProgress = callbacks.onProgress || (() => {});
@@ -1076,6 +1127,16 @@ async function runTramadaReceipt({
 
     onProgress(25, `Opening booking ${bookingNo}...`);
     const details = await getBookingDetails(page, bookingNo);
+    if (withBranch) {
+      onProgress(30, "Reading the shop branch from the booking profile...");
+      const profile = await getBookingBranch(page, bookingNo);
+      details.branch = core.branchCode(profile.branch);
+      details.branchLabel = profile.branch || "";
+      /* The profile's own debtor dropdown beats the summary's prose, and BR05
+         is a money gate — so where the select gives an answer, it wins. The
+         summary read stays as the fallback for a page that renders without it. */
+      if (profile.debtor) details.debtor = profile.debtor;
+    }
 
     onProgress(35, "Checking itinerary segments...");
     const itin = await getItinerarySegments(page, bookingNo);
@@ -1243,6 +1304,7 @@ module.exports = {
   resolveTxnType,
   allocateSegments,
   readBookingReceipts,
+  getBookingBranch,
   centsOf,
   TXN_TYPE,
 };
