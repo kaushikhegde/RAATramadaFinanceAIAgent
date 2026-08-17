@@ -1,0 +1,51 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#   docker compose up --build
+#
+#     app     http://127.0.0.1:3000
+#     screen  http://127.0.0.1:6080/vnc.html    ← sign into Tramada here
+#
+# Both are published to 127.0.0.1 ONLY. That screen is a browser signed into a
+# live finance system with no VNC password, so it is reachable from this machine
+# and nowhere else. From another machine, tunnel it:
+#
+#     ssh -L 6080:localhost:6080 -L 3000:localhost:3000 you@thishost
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  recon:
+    build: .
+    image: raa-recon:latest
+    container_name: raa-recon
+    restart: unless-stopped
+
+    # PID 1 reaps zombies. Chromium forks a lot of children and a container
+    # without this collects them until it runs out of process slots.
+    init: true
+
+    # Chrome uses far more than the default 64MB of /dev/shm on a statement page
+    # of a few thousand rows, and what it does when it runs out is crash a
+    # renderer mid-run rather than say anything.
+    shm_size: 1gb
+
+    ports:
+      - "127.0.0.1:3000:3000"     # the app
+      - "127.0.0.1:6080:6080"     # the screen
+      # 9222 is deliberately absent. Anything that can reach the debugging port
+      # drives a browser signed into Tramada; the app reaches it inside the
+      # container on 127.0.0.1 without it being published to anything.
+
+    volumes:
+      # The Tramada login lives in the Chrome profile under here, along with
+      # runs.json and uploads/. Bind-mounted rather than a named volume so you
+      # can look at what a run recorded without going through docker cp.
+      - ./data:/data
+      # Where make-fixtures writes. Bound to the repo folder so a CSV generated
+      # in the container is a file you can pick up and upload.
+      - ./csv_uploads:/app/csv_uploads
+
+    environment:
+      PORT: 3000
+      TRAMADA_URL: ${TRAMADA_URL:-https://asp.tramada.com.au/ttms/raatravelsandbox}
+      SCREEN: 1600x1000x24
+      # Everything else has a sensible default in the Dockerfile. Anything you
+      # put in a .env file beside this one lands here too.
+      DEBUG: ${DEBUG:-false}

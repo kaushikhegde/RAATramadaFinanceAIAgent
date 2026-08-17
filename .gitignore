@@ -8,3 +8,7 @@ csv_uploads/
 uploads/
 runs.json
 runs.json.corrupt-*
+
+# The Docker volume: runs.json, uploads/ and the Chrome profile the Tramada
+# login lives in. Bind-mounted so you can read it; never committed.
+data/

@@ -1,0 +1,20 @@
+# The build context is the repo. These would either bloat the image, break it,
+# or put something in it that has no business being in an image.
+
+node_modules          # reinstalled inside, for the image's own platform
+.git
+.env                  # secrets do not go in a layer
+data                  # runs.json, uploads, the Chrome profile — the volume's job
+.jetstar-profile-cdp  # a local Chrome profile from start-chrome.sh
+
+# Screenshots the shot-* tools write. None of them is input to anything.
+*.png
+
+# Records of local runs; the container keeps its own under /data.
+runs.json
+uploads
+created-bookings-*.json
+
+# Docs and scratch that never run inside the image.
+*.md
+!README.md
