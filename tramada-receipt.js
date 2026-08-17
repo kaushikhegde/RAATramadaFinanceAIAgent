@@ -471,6 +471,54 @@ async function openReceiptForm(page, bookingNo, receipt) {
     if (dupe) return { alreadyFiled: dupe, onBooking: already.length };
   }
 
+  /* THE RECEIPT CATEGORY IS CHOSEN, NOT ASSUMED — step 11.
+   *
+   * `#receiptCategory` sits beside the Add / Issue Receipt button and decides
+   * which form that button opens. This used to be left alone, so the run got
+   * whatever the page defaulted to and the category was decided by Tramada's
+   * mood rather than by us. It defaults to Client Payment Receipt today, which
+   * is what every receipt this system has filed turned out to be — but "it is
+   * currently the default" is not a rule, it is an observation.
+   *
+   * Selected BY LABEL, and a label that is not on the dropdown throws with the
+   * options that ARE, because the BPAY guide asks for "Debtor Payment Receipt"
+   * and that option does not exist on this screen (recon-core REPORTS.bpay).
+   * If RAA's production has it, this is where that shows up — as a run that
+   * stops and names what it saw, not as receipts quietly filed as something
+   * else. */
+  if (receipt.receiptCategory) {
+    const chosen = await page.evaluate((want) => {
+      const el = document.querySelector("#receiptCategory");
+      if (!el) return { missing: true, options: [] };
+      const options = [...el.options].map((o) => o.text.trim());
+      const hit = [...el.options].find((o) => o.text.trim() === want);
+      if (!hit) return { notThere: true, options };
+      el.value = hit.value;
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return { ok: true, reads: (el.options[el.selectedIndex] || {}).text.trim(), options };
+    }, receipt.receiptCategory);
+
+    if (chosen.missing) {
+      throw new Error(
+        `Booking ${bookingNo}'s Receipts screen has no receipt-category dropdown, so ` +
+        `"${receipt.receiptCategory}" could not be selected.`
+      );
+    }
+    if (chosen.notThere) {
+      throw new Error(
+        `Booking ${bookingNo} cannot raise a "${receipt.receiptCategory}". The Receipts screen ` +
+        `offers: ${chosen.options.join(" | ")}. Nothing was filed.`
+      );
+    }
+    if (chosen.reads !== receipt.receiptCategory) {
+      throw new Error(
+        `The receipt category did not stick: chose "${receipt.receiptCategory}", the screen ` +
+        `reads "${chosen.reads}". Nothing was filed.`
+      );
+    }
+    await sleep(300);
+  }
+
   await page.click('input[value="Add / Issue Receipt"]');
   await page.waitForSelector("#receipttransactionTypeCode", { timeout: 20000 });
 
@@ -480,9 +528,23 @@ async function openReceiptForm(page, bookingNo, receipt) {
   await page.selectOption("#receipttransactionTypeCode", txn);
   await sleep(800);
 
-  // Payer Name = booking client name (business rule, req: always client name).
+  /* Payer Name. Defaults to the booking's client name; the BPAY run overrides
+     it with the literal "BPAY" (BR06), which is how Finance finds those
+     receipts as a group afterwards.
+
+     READ BACK, because `setFieldWithEvents` returns early on an empty string
+     and a payer name that never landed leaves the field blank without
+     complaining — and a blank payer on a receipt that is supposed to say BPAY
+     is exactly the thing BR06 exists to prevent. */
   if (receipt.payerName) {
     await setFieldWithEvents(page, "#receiptpayerName", receipt.payerName);
+    const payerBack = await page.inputValue("#receiptpayerName").catch(() => null);
+    if (payerBack != null && payerBack.trim() !== String(receipt.payerName).trim()) {
+      throw new Error(
+        `The payer name did not stick: typed "${receipt.payerName}", the form reads ` +
+        `"${payerBack}". Nothing was issued.`
+      );
+    }
   }
   // Date Received (defaults to today if omitted).
   await setFieldWithEvents(page, "#receiptdateReceived", toTramadaDate(receipt.dateReceived));

@@ -55,6 +55,30 @@ app.get("/api/runs/:id", (req, res) => {
   res.json(run);
 });
 
+/**
+ * The updated BPAY spreadsheet, built server-side (steps 34–35).
+ *
+ * SERVER-SIDE, not from whatever the page happens to be holding. The browser's
+ * copy is one socket's worth of frames: reload the page, or open the run from
+ * the overview screen a day later, and the Consultant, Shop and Remarks it
+ * would have put in the file are gone. `runs.json` still has them, because
+ * every row was written as its verdict became known (§6b).
+ *
+ * Built fresh on each request rather than cached, so a row patched after the
+ * last download is in the next one.
+ */
+app.get("/api/runs/:id/export.csv", (req, res) => {
+  const run = store.getRun(req.params.id);
+  if (!run) return res.status(404).json({ error: "no such run" });
+  if (run.source !== "bpay") {
+    return res.status(400).json({ error: "only a BPAY run has a spreadsheet to send back" });
+  }
+  const name = reconCore.bpayExportName(run.statementDate);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${name}"`);
+  res.send(reconCore.bpayExportCsv(run.rows || []));
+});
+
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 
@@ -96,8 +120,14 @@ function send(session, m) {
  */
 function handleReconParse(session, msg) {
   const name = String(msg.name || "the file");
-  // Mint and TravelPay are both read here, by the parser the run itself uses.
-  const source = reconCore.REPORTS[msg.source] && msg.source !== "bpay" ? msg.source : "mint";
+  /* Every report is read here now, by the parser the run itself uses.
+   *
+   * BPay used to be excluded and forced to "mint" — its file was parsed in the
+   * browser and had to be a CSV, so the .xlsx Finance actually sends (step 1
+   * says "prepares BPAY transaction into a spreadsheet") could not be uploaded
+   * at all. `parseReconRows` reads a grid, and a grid comes from either
+   * container. */
+  const source = reconCore.REPORTS[msg.source] ? msg.source : "mint";
   const reply = (extra) => send(session, { type: "recon_parsed", source, name, ...extra });
 
   // ~8 MB of base64 is ~6 MB of file. A daily settlement is tens of kilobytes.
@@ -117,6 +147,7 @@ function handleReconParse(session, msg) {
     const isZip = buf.length > 1 && buf[0] === 0x50 && buf[1] === 0x4b;
     const sheet = isZip ? xlsxLite.readSheet(buf) : reconCore.csvGrid(buf.toString("utf8"));
     const parse = {
+      bpay: reconCore.parseReconRows,
       travelpay: reconCore.parseTravelPayRows,
       ipsi: reconCore.parseIpsiRows,
     }[source] || reconCore.parseMintRows;

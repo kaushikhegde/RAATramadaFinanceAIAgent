@@ -190,6 +190,78 @@ Payment Receipt`, `Creditor Refund Receipt` and nothing else. There is **no
 Debtor Payment Receipt** here, so receipts raised against bookings never appear
 under that type on the reconcile screen.
 
+**Re-checked live 17-Aug-2026 on booking 13127 — unchanged, and it matters.**
+Finance's BPAY reconciliation guide asks at steps 11 and 30 for a *Debtor
+Payment Receipt*, and its screenshot shows this very dropdown holding an option
+this screen does not have. Confirmed from the other end too: the receipts this
+system has already filed (`R.0000009444`–`R.0000009446`, references
+`BP-HM51N-133xx`) sit on Trust statement page 13 as **Client Payment Receipt**,
+trans type `ET`.
+
+Debtor Payment Receipt *is* a real Rec/Pay Type — it is in the reconcile
+screen's filter list below — but it is raised in the **Debtors** module against
+a debtor account. It has no booking and therefore no *Segments to Allocate*,
+which is the guide's step 17 and the reason this run exists at all.
+
+`openReceiptForm` now selects `#receiptCategory` **by label** and throws
+listing what the page really offers, so if RAA's production differs from the
+sandbox the first run there says so, rather than filing under whatever the page
+happened to default to.
+
+Reconcile screen `#recPayType` filter options, read live 17-Aug-2026:
+
+```
+Client Payment Receipt | Client Refund Payment | Creditor Payment |
+Creditor Refund Receipt | Debtor Payment Receipt | Debtor Refund Payment |
+Deposit | Finance Client Payment Receipt |
+Finance Comm. Release Transfer Payment | Finance Merchant Payment Receipt |
+Finance Merchant Refund Payment | Finance Rounding Ledger Transfer |
+Finance Trust PD Comm. Transfer Payment | Override Receipt |
+Pay Direct Comm. Receipt
+```
+
+## 4c. What the BPAY run reads off a booking — measured 17-Aug-2026
+
+The left-hand panel is on **every** booking screen, so `Debtor`, `Dep. Date`
+and `Cons1` come free wherever the run happens to be:
+
+```
+booking-summary.htm?mode=edit&id={n}
+  left panel   Booking No. | Client | Client Name | No. of Pax | Debtor |
+               Itinerary | Book. Date | Dep. Date | Cons1
+  body         Departure Date | Return Date |
+               Total Client/Debtor Due | Client/Debtor Receipted |
+               Client/Debtor Balance | Client/Debtor Unallocated Receipt Amount
+
+booking-profile.htm?mode=edit&id={n}
+  #level1Branch        "[WEST] RAA West Croydon"   ← the SHOP (shortcode in [])
+  #form_prefConsultant1 "Kaushik Hegde [ADL]"      ← NOT the shop; different branch
+  #retailDebtor         "RAA of SA Limited (Retail)"
+  #bankAccount          "[TRUST] Trust Account"
+```
+
+`#level1Branch` options, read live 17-Aug-2026:
+
+```
+[ADL] RAA Adelaide | [BROKENHILL] RAA Broken Hill | [COL] RAA Colonnades |
+[ELIZ] RAA Elizabeth | [MAR] RAA Marion | [MBA] RAA Mt Barker |
+[MGB] RAA Mount Gambier | [MOD] RAA Modbury | [PLO] Port Lincoln |
+[TCC] RAA TCC | [VIBE] RAA VIBE | [VIC] RAA Victor Harbor |
+[WEST] RAA West Croydon | [WLK] RAA West Lakes
+```
+
+**Read the shop off the `<select>`, not off the page text.** The preferred
+consultant carries a branch tag of their own — `Kaushik Hegde [ADL]` on a
+booking whose Level 1 Branch is `[WEST]` — and a text scrape for `[XXX]` finds
+whichever comes first. That is a wrong shop on every booking that consultant
+made, in a column Finance sorts the returned spreadsheet by.
+
+**Match label lines whole, never as substrings.** `text.match(/Debtor\s*:?\s*(.+)/)`
+finds the word **Debtors** in the top navigation bar before it reaches the
+booking's Debtor, and returns `"s"`. Every booking then fails BR05 as the wrong
+debtor. `readBookingFacts` matches the line that *is* the label and takes the
+next non-empty line.
+
 ```
 #receipttransactionTypeCode   Cash | Cheque | Credit Card CCCF | Credit Card Swipe | EFT
 #receiptagencyBankAccount     [TRUST] Trust Account
