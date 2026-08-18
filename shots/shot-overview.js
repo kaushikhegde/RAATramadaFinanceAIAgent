@@ -8,11 +8,18 @@
  * before this showed $7.2m of the mockup's invented balances and nobody
  * noticed for weeks.
  *
- *   node shot-overview.js        → overview.png
+ *   node shots/shot-overview.js  → shots/out/overview.png
  */
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+
+/* Screenshots land in shots/out/, never the repo root. A bare relative path in
+   page.screenshot() resolves against cwd, not against this file, which is how a
+   dozen PNGs ended up sitting beside server.js. */
+const OUT = path.join(__dirname, "out");
+fs.mkdirSync(OUT, { recursive: true });
+const shot = (name) => path.join(OUT, name);
 
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), "recon-shot-"));
 process.env.RECON_STORE_DIR = DIR;
@@ -75,7 +82,7 @@ fs.writeFileSync(path.join(DIR, "runs.json"), JSON.stringify({
   ],
 }, null, 2));
 
-require("./server");
+require("../server");
 const { chromium } = require("playwright");
 
 (async () => {
@@ -338,11 +345,11 @@ const { chromium } = require("playwright");
   ok("nothing invented in the reaction table", !/118299|MT BARKER/.test(blank.body), blank.body.slice(0, 120));
   ok("nothing invented in the timeline", !/Princess Cruises|Jill S/.test(blank.tl), blank.tl.slice(0, 120));
   ok("and the rest of the markup is still all there", blank.structure === "4/0/4", blank.structure);
-  await fresh.screenshot({ path: path.join(__dirname, "overview-empty.png"), fullPage: false });
+  await fresh.screenshot({ path: shot("overview-empty.png"), fullPage: false });
   await fresh.close();
 
-  await page.screenshot({ path: path.join(__dirname, "overview.png"), fullPage: false });
-  console.log(`\n  overview.png written${bad ? " (with failures above)" : ""}\n`);
+  await page.screenshot({ path: shot("overview.png"), fullPage: false });
+  console.log(`\n  shots/out/overview.png written${bad ? " (with failures above)" : ""}\n`);
   await browser.close();
   fs.rmSync(DIR, { recursive: true, force: true });
   process.exit(bad ? 1 : 0);

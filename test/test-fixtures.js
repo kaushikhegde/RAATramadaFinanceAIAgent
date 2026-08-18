@@ -32,7 +32,7 @@ const { execFileSync } = require("child_process");
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), "recon-fixtures-"));
 process.argv = [process.argv[0], "test-fixtures", "bpay", "--out-dir", DIR];
 
-const F = require("./make-fixtures");
+const F = require("../tools/make-fixtures");
 
 let pass = 0, fail = 0;
 const ok = (name, cond, detail) => {
@@ -45,7 +45,7 @@ const check = (name, got, want) =>
 // A run tag from a separate process is a genuinely separate roll of the dice —
 // asking this one for a second tag would only prove the module was loaded once.
 const tagOf = (...extra) => execFileSync(process.execPath, [
-  "-e", `process.argv=[];console.log(require(${JSON.stringify(path.join(__dirname, "make-fixtures.js"))}).RUN)`,
+  "-e", `process.argv=[];console.log(require(${JSON.stringify(path.join(__dirname, "..", "tools", "make-fixtures.js"))}).RUN)`,
   ...extra,
 ], { encoding: "utf8" }).trim();
 
@@ -149,7 +149,7 @@ console.log("\nthe report file exists from the first row, not the last");
   w3.add({ A: 'say "hi", loudly', B: "plain" });
   check("commas and quotes survive", lines(w3)[1], '"say ""hi"", loudly",plain');
   check("and read back as one field",
-    require("./recon-core").csvGrid(read(w3)).rows[0][0], 'say "hi", loudly');
+    require("../recon-core").csvGrid(read(w3)).rows[0][0], 'say "hi", loudly');
 
   const w4 = F.csvWriter("probe-d.csv", ["A"], []);
   ok("a writer with no rows leaves no half-written file", !fs.existsSync(w4.path));

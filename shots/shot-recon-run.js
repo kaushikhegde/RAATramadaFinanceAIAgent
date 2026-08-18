@@ -22,11 +22,18 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+
+/* Screenshots land in shots/out/, never the repo root. A bare relative path in
+   page.screenshot() resolves against cwd, not against this file, which is how a
+   dozen PNGs ended up sitting beside server.js. */
+const OUT = path.join(__dirname, "out");
+fs.mkdirSync(OUT, { recursive: true });
+const shot = (name) => path.join(OUT, name);
 const { WebSocketServer } = require("ws");
 const { chromium } = require("playwright");
 
 const PORT = 3899;
-const PAGE = fs.readFileSync(path.join(__dirname, "public", "index.html"), "utf8");
+const PAGE = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
 
 /* The CSV the harness "uploads" — the three-booking set from bookings.json, so
    the picture shows all three allocation outcomes side by side. */
@@ -120,33 +127,33 @@ const SCRIPT = [
   await page.evaluate(() => document.querySelector('.nav-item[data-go="sources"]').click());
   await page.locator("#rcOpening").fill("12500.00");
   await page.locator("#rcClosing").fill("13010.00");
-  await page.screenshot({ path: "recon-run-0-ready.png" });
+  await page.screenshot({ path: shot("recon-run-0-ready.png") });
 
   // The source card, with its preview open. This is the screen the agent is
   // looking at when they decide whether to start a run that files receipts, so
   // it is worth a picture of its own.
   await page.locator('[data-preview="bpay"]').click();
   await page.waitForTimeout(250);
-  await page.screenshot({ path: "recon-run-0b-preview.png" });
-  console.log("wrote recon-run-0b-preview.png");
+  await page.screenshot({ path: shot("recon-run-0b-preview.png") });
+  console.log("wrote shots/out/recon-run-0b-preview.png");
   await page.locator('[data-preview="bpay"]').click();
 
   await page.locator("#startRun").click();
   await midway;
   await page.waitForTimeout(200);
-  await page.screenshot({ path: "recon-run-1-midway.png" });
-  console.log("wrote recon-run-1-midway.png");
+  await page.screenshot({ path: shot("recon-run-1-midway.png") });
+  console.log("wrote shots/out/recon-run-1-midway.png");
 
   await finished;
   await page.waitForTimeout(500);
-  await page.screenshot({ path: "recon-run-2-finished.png" });
-  console.log("wrote recon-run-2-finished.png");
+  await page.screenshot({ path: shot("recon-run-2-finished.png") });
+  console.log("wrote shots/out/recon-run-2-finished.png");
 
   // …and the source card once it is over: "processed", not "not run yet".
   await page.evaluate(() => document.querySelector('.nav-item[data-go="sources"]').click());
   await page.waitForTimeout(250);
-  await page.screenshot({ path: "recon-run-3-source-after.png" });
-  console.log("wrote recon-run-3-source-after.png");
+  await page.screenshot({ path: shot("recon-run-3-source-after.png") });
+  console.log("wrote shots/out/recon-run-3-source-after.png");
   console.log("card:", (await page.locator('#tileGrid .dz[data-kind="bpay"]').textContent()).replace(/\s+/g, " ").trim());
   await page.evaluate(() => document.querySelector('.nav-item[data-go="inbox"]').click());
   await page.waitForTimeout(200);

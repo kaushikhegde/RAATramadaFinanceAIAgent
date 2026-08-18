@@ -7,7 +7,7 @@
  * counts this column, and "No outstanding amount" where the guide says "No
  * outstanding amount found" is a different value to anything reading the file.
  */
-const C = require("./recon-core");
+const C = require("../recon-core");
 
 let pass = 0, fail = 0;
 function check(name, got, want) {

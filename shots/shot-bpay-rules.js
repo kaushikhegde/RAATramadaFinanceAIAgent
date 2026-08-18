@@ -11,17 +11,24 @@
  * So this drives the built page, feeds a run's worth of verdicts through the
  * socket the way the server does, and reads back the file the button produces.
  *
- *   node shot-bpay-rules.js      → bpay-remarks.png
+ *   node shots/shot-bpay-rules.js → shots/out/bpay-remarks.png
  */
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
+/* Screenshots land in shots/out/, never the repo root. A bare relative path in
+   page.screenshot() resolves against cwd, not against this file, which is how a
+   dozen PNGs ended up sitting beside server.js. */
+const OUT = path.join(__dirname, "out");
+fs.mkdirSync(OUT, { recursive: true });
+const shot = (name) => path.join(OUT, name);
+
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), "recon-bpay-"));
 process.env.RECON_STORE_DIR = DIR;
 process.env.PORT = process.env.PORT || "3155";
 
-require("./server");
+require("../server");
 const { chromium } = require("playwright");
 
 let bad = 0;
@@ -166,7 +173,7 @@ const CSV = [
     if (nav) nav.click();
   });
   await page.waitForTimeout(350);
-  await page.screenshot({ path: path.join(__dirname, "bpay-remarks.png"), fullPage: false });
+  await page.screenshot({ path: shot("bpay-remarks.png"), fullPage: false });
 
   /* ── the inbox shows the file's own columns ────────────────────────────── */
   const sheetTable = await page.evaluate(() => {
@@ -310,7 +317,7 @@ const CSV = [
 
   ok("no page errors", problems.length === 0, problems.join(" | "));
 
-  console.log(`\n  bpay-remarks.png written${bad ? " (with failures above)" : ""}\n`);
+  console.log(`\n  shots/out/bpay-remarks.png written${bad ? " (with failures above)" : ""}\n`);
   await browser.close();
   fs.rmSync(DIR, { recursive: true, force: true });
   process.exit(bad ? 1 : 0);

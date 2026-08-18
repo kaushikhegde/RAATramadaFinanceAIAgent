@@ -22,7 +22,7 @@ const ok = (name, cond, detail) => {
   else { fail++; console.log(`  ✗ ${name}${detail ? `\n      ${detail}` : ""}`); }
 };
 
-require("./server");
+require("../server");
 const WebSocket = require("ws");
 
 const get = (p) => fetch(`http://127.0.0.1:3111${p}`).then((r) => r.json());
@@ -37,7 +37,7 @@ const get = (p) => fetch(`http://127.0.0.1:3111${p}`).then((r) => r.json());
   ok("and no money", empty.amountCents === 0);
 
   console.log("\na BPay CSV arriving on the socket");
-  const csv = fs.readFileSync(path.join(__dirname, "tramada-statement-lines.csv"));
+  const csv = fs.readFileSync(path.join(__dirname, "..", "fixtures", "tramada-statement-lines.csv"));
   const ws = new WebSocket("ws://127.0.0.1:3111/ws");
   await new Promise((r) => ws.on("open", r));
 

@@ -65,7 +65,7 @@ const line = (p) => [
 
 const write = (name, payments) => {
   const csv = [HEADERS.map(q).join(",")].concat(payments.map(line)).join("\n") + "\n";
-  const out = path.join(__dirname, name);
+  const out = path.join(__dirname, "..", "fixtures", name);
   fs.writeFileSync(out, csv);
   console.log(`  ${name}  ${payments.length} row${payments.length === 1 ? "" : "s"}`);
   return out;

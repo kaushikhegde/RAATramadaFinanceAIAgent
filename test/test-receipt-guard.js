@@ -28,8 +28,8 @@
  * the page would, so what is pinned is the arithmetic, the boundary, and the
  * message — the parts that decide whether real money gets filed.
  */
-const R = require("./tramada-receipt");
-const P = require("./tramada-payment");
+const R = require("../tramada-receipt");
+const P = require("../tramada-payment");
 
 let pass = 0, fail = 0;
 const ok = (name, cond, detail) => {
@@ -180,7 +180,7 @@ const thrown = async (fn) => {
        AND amount both have to match: a booking can legitimately take two
        receipts for the same amount on different references, and one reference
        can be followed by a correcting receipt for a different figure. */
-    const core = require("./recon-core");
+    const core = require("../recon-core");
     const onBooking = [
       { receiptNo: "R.0000009429", reference: "BP-ONQ3Y-13262", amount: "394.00", allocated: "0.00" },
       { receiptNo: "R.0000009430", reference: "BP-ONQ3Y-13265", amount: "394.00", allocated: "394.00" },
@@ -219,7 +219,7 @@ const thrown = async (fn) => {
        showing it is what the screen is for. Several at once meant swapping the
        filter per pass and re-reading the grid each time; unfiltered, one read
        serves them all. Matching is unaffected either way. */
-    const { filterFor } = require("./recon-run");
+    const { filterFor } = require("../recon-run");
     check("one report on its own is filtered", filterFor(false), true);
     check("several together are not", filterFor(true), false);
   }

@@ -26,7 +26,7 @@
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
-const { runFullBooking } = require("./tramada-segments");
+const { runFullBooking } = require("../tramada-segments");
 
 const args = process.argv.slice(2);
 const has = (f) => args.includes(f);
@@ -40,8 +40,8 @@ const valueOf = (f, dflt) => {
 // against a single booking's two segments, and a run that goes wrong has left
 // one booking behind instead of three.
 const LIMIT = valueOf("--limit", null) ? parseInt(valueOf("--limit"), 10) : null;
-const IN = path.resolve(valueOf("--file", path.join(__dirname, "bookings.json")));
-const OUT = path.resolve(valueOf("--out", path.join(__dirname, "created-bookings.json")));
+const IN = path.resolve(valueOf("--file", path.join(__dirname, "..", "fixtures", "bookings.json")));
+const OUT = path.resolve(valueOf("--out", path.join(__dirname, "..", "created-bookings.json")));
 const DRY = has("--dry-run");
 
 function load() {

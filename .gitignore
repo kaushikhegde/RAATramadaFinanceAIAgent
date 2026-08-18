@@ -8,3 +8,4 @@ csv_uploads/
 uploads/
 runs.json
 runs.json.corrupt-*
+.DS_Store

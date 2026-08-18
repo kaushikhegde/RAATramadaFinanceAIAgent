@@ -12,8 +12,8 @@
  */
 const fs = require("fs");
 const path = require("path");
-const C = require("./recon-core");
-const XL = require("./xlsx-lite");
+const C = require("../recon-core");
+const XL = require("../xlsx-lite");
 
 let pass = 0, fail = 0;
 function check(name, got, want) {
@@ -26,7 +26,7 @@ function ok(name, cond, detail) {
   else { fail++; console.log(`  ✗ ${name}${detail ? `\n      ${detail}` : ""}`); }
 }
 
-const sheet = XL.readSheet(fs.readFileSync(path.join(__dirname, "ipsi.xlsx")));
+const sheet = XL.readSheet(fs.readFileSync(path.join(__dirname, "..", "fixtures", "ipsi.xlsx")));
 const real = C.parseIpsiRows(sheet.headers, sheet.rows);
 
 console.log("\nthe client's own export");
@@ -160,7 +160,7 @@ console.log("\nleaving the popup behind");
 
      The decision is pure so it can be checked here. The navigation itself needs
      Tramada, and the popup is kept until the form is confirmed in the tab. */
-  const { popupTarget } = require("./tramada-ipsi");
+  const { popupTarget } = require("../tramada-ipsi");
   const real = "https://asp.tramada.com.au/ttms/raatravelsandbox/finance/" +
     "finance-merchant-payment-receipt.htm?mode=add&dataContainerId=161&isPxIssue=false";
 
@@ -200,7 +200,7 @@ console.log("\nwhich window Go opened, and how long it is given to open it");
      so the answer is to wait properly, and to pick the right window when more
      than one has appeared. This runs against the human's own Chrome, so a tab
      they opened while waiting is a new window too. */
-  const { chooseWindow, POPUP_TIMEOUT_MS } = require("./tramada-ipsi");
+  const { chooseWindow, POPUP_TIMEOUT_MS } = require("../tramada-ipsi");
   const FORM = "https://asp.tramada.com.au/ttms/x/finance/finance-merchant-payment-receipt.htm?dataContainerId=161";
 
   check("nothing opened yet", chooseWindow([]), -1);

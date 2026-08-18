@@ -31,7 +31,7 @@
  * whatever it reports is what the run saw.
  */
 
-const P = require("./tramada-payment");
+const P = require("../tramada-payment");
 
 const args = process.argv.slice(2);
 const bookingNo = args.find((a) => !a.startsWith("--"));

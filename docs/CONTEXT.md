@@ -153,7 +153,7 @@ cents and keeps the original in `rawAmount`. The comparison was never affected ‚
 The client wants their mockup verbatim, and the mockup keeps changing. So the
 page is reassembled rather than patched:
 
-    node build-recon.js
+    node tools/build-recon.js
     # public/index.html ‚Üê recon-ui-mockup.html + recon-wire.html
 
 `recon-wire.html` holds the only three additions, split by `<!--@CSS-->`,

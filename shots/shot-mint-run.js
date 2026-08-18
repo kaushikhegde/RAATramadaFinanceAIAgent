@@ -16,14 +16,21 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+
+/* Screenshots land in shots/out/, never the repo root. A bare relative path in
+   page.screenshot() resolves against cwd, not against this file, which is how a
+   dozen PNGs ended up sitting beside server.js. */
+const OUT = path.join(__dirname, "out");
+fs.mkdirSync(OUT, { recursive: true });
+const shot = (name) => path.join(OUT, name);
 const { WebSocketServer } = require("ws");
 const { chromium } = require("playwright");
-const core = require("./recon-core");
-const xlsx = require("./xlsx-lite");
+const core = require("../recon-core");
+const xlsx = require("../xlsx-lite");
 
 const PORT = 3902;
-const PAGE = fs.readFileSync(path.join(__dirname, "public", "index.html"), "utf8");
-const BOOK = path.join(__dirname, "mint.xlsx");
+const PAGE = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+const BOOK = path.join(__dirname, "..", "fixtures", "mint.xlsx");
 
 /* A transaction list that produces one of each outcome:
    - most references present and agreeing            → Reconciled
@@ -118,14 +125,14 @@ function makeStatement(rows) {
   await page.waitForTimeout(900);
   await page.locator("#rcOpening").fill("1300000.00");
   await page.locator("#rcClosing").fill("1300000.00");
-  await page.screenshot({ path: "mint-run-0-loaded.png" });
-  console.log("wrote mint-run-0-loaded.png");
+  await page.screenshot({ path: shot("mint-run-0-loaded.png") });
+  console.log("wrote shots/out/mint-run-0-loaded.png");
 
   await page.locator("#startRun").click();
   await finished;
   await page.waitForTimeout(600);
-  await page.screenshot({ path: "mint-run-1-finished.png" });
-  console.log("wrote mint-run-1-finished.png");
+  await page.screenshot({ path: shot("mint-run-1-finished.png") });
+  console.log("wrote shots/out/mint-run-1-finished.png");
 
   console.log("lede:", (await page.locator("#ibLede").textContent()).trim());
   const cells = await page.evaluate(() =>

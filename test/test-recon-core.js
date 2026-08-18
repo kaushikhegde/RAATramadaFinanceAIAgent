@@ -6,7 +6,7 @@
  * of logic in this feature. It is pure, and it is tested here against the
  * values the live pages actually produce.
  */
-const C = require("./recon-core");
+const C = require("../recon-core");
 const ESC = String.fromCharCode(27);
 
 let pass = 0, fail = 0;
@@ -263,7 +263,7 @@ console.log("\ndecision 2 — reconciled by RECEIPT NUMBER, or not");
 console.log("\nthe shipped bookings.json actually exercises both paths");
 {
   const fs = require("fs"), path = require("path");
-  const doc = JSON.parse(fs.readFileSync(path.join(__dirname, "bookings.json"), "utf8"));
+  const doc = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "fixtures", "bookings.json"), "utf8"));
 
   /* ONE SEGMENT, ONE COSTING — asserted, because a live run died of the
      alternative.
@@ -313,7 +313,7 @@ console.log("\nthe shipped bookings.json actually exercises both paths");
   // From statement-rows.json, not the CSV: the CSV's Booking No column is empty
   // until run-bookings.js has run, and parseReconCsv correctly refuses a row it
   // cannot act on — reading the CSV here would assert against zero rows.
-  const scraped = JSON.parse(fs.readFileSync(path.join(__dirname, "statement-rows.json"), "utf8"));
+  const scraped = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "fixtures", "statement-rows.json"), "utf8"));
   const amounts = scraped.map((r) => C.cents(r.amount));
   check("six statement rows", amounts.length, 6);
 

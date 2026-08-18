@@ -5,7 +5,7 @@
  * mocks of Playwright — CLAUDE.md §7). Everything AFTER the scrape can be, and
  * it is the part that decides what a finance system imports, so it is.
  */
-const C = require("./statement-csv");
+const C = require("../tools/statement-csv");
 
 let pass = 0, fail = 0;
 function check(name, got, want) {

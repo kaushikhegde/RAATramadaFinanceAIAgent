@@ -13,11 +13,18 @@
  */
 const fs = require("fs");
 const path = require("path");
+
+/* Screenshots land in shots/out/, never the repo root. A bare relative path in
+   page.screenshot() resolves against cwd, not against this file, which is how a
+   dozen PNGs ended up sitting beside server.js. */
+const OUT = path.join(__dirname, "out");
+fs.mkdirSync(OUT, { recursive: true });
+const shot = (name) => path.join(OUT, name);
 const { chromium } = require("playwright");
 
 // The sample statement lines, with a booking number filled in so every row
 // parses. The file ships with that column blank on purpose.
-const CSV = fs.readFileSync(path.join(__dirname, "tramada-statement-lines.csv"), "utf8")
+const CSV = fs.readFileSync(path.join(__dirname, "..", "fixtures", "tramada-statement-lines.csv"), "utf8")
   .replace(/,\s*$/gm, ",13201");
 
 (async () => {
@@ -25,7 +32,7 @@ const CSV = fs.readFileSync(path.join(__dirname, "tramada-statement-lines.csv"),
   const page = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
   page.on("pageerror", (e) => console.error("PAGE ERROR:", e.message));
 
-  await page.goto("file://" + path.join(__dirname, "public/index.html"));
+  await page.goto("file://" + path.join(__dirname, "..", "public/index.html"));
   await page.waitForTimeout(500);
 
   const csvPath = path.join(require("os").tmpdir(), "shot-recon.csv");
@@ -37,8 +44,8 @@ const CSV = fs.readFileSync(path.join(__dirname, "tramada-statement-lines.csv"),
   for (const [screen, file] of [["inbox", "recon-inbox.png"], ["sources", "recon-sources.png"], ["overview", "recon-overview.png"]]) {
     await page.evaluate((s) => document.querySelector(`.nav-item[data-go="${s}"]`).click(), screen);
     await page.waitForTimeout(350);
-    await page.screenshot({ path: file });
-    console.log("wrote " + file);
+    await page.screenshot({ path: shot(file) });
+    console.log("wrote shots/out/" + file);
   }
 
   // The header is hidden in this project and the unwired screens are marked.

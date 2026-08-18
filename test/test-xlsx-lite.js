@@ -8,7 +8,7 @@
  */
 const fs = require("fs");
 const path = require("path");
-const X = require("./xlsx-lite");
+const X = require("../xlsx-lite");
 
 let pass = 0, fail = 0;
 function check(name, got, want) {
@@ -28,7 +28,7 @@ function throws(name, fn, re) {
   }
 }
 
-const FIXTURE = path.join(__dirname, "mint.xlsx");
+const FIXTURE = path.join(__dirname, "..", "fixtures", "mint.xlsx");
 const haveFixture = fs.existsSync(FIXTURE);
 
 console.log("\ncolumn references");

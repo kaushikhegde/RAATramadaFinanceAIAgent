@@ -16,8 +16,8 @@ const path = require("path");
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), "recon-store-"));
 process.env.RECON_STORE_DIR = DIR;
 
-const C = require("./recon-core");
-const S = require("./run-store");
+const C = require("../recon-core");
+const S = require("../run-store");
 
 let pass = 0, fail = 0;
 function check(name, got, want) {

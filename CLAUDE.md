@@ -55,6 +55,25 @@ captured page values instead of against a live financial form.
 Run it: `npm run start:chrome` in one terminal, `npm start` in another, then
 http://localhost:3000. See README.md.
 
+**Where a new file goes.** Everything `npm start` loads sits at the root —
+`server.js`, `recon-core.js`, `recon-run.js`, `run-store.js`, `xlsx-*.js`,
+`tramada-*.js` — and everything else is in a folder:
+
+| | |
+|---|---|
+| `test/` | `npm test`. Offline, no browser. New test goes here. |
+| `shots/` | `npm run shots`. Render checks; their PNGs go to `shots/out/`. |
+| `tools/` | The build and the one-off CLIs — `build-recon.js`, `make-fixtures.js`, `run-bookings.js`, `statement-csv.js`, `probe-payment-form.js`. Nothing the server requires. |
+| `fixtures/` | Sample reports and workbooks the tests and tools read. |
+| `design/` | `recon-ui-mockup.html` + `recon-wire.html`, the build's two sources. |
+| `docs/` | The field map, the BPay conformance notes, the history. |
+| `public/` | The built page. Generated — see §"never hand-edit" in README. |
+
+`uploads/`, `runs.json` and `csv_uploads/` are written by a run and stay at the
+root, because `run-store.js` resolves them from its own `__dirname`. **A module
+the server requires does not move into a folder** without every `require` in
+`server.js` and the `tramada-*` chain moving with it.
+
 ---
 
 ## 3. Money and consequences

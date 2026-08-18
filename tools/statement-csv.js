@@ -173,7 +173,7 @@ if (require.main === module) {
 
   const rowsPath = valueOf("--rows", null);
   const bookingsPath = valueOf("--bookings", null);
-  const outPath = path.resolve(valueOf("--out", path.join(__dirname, "tramada-statement-lines.csv")));
+  const outPath = path.resolve(valueOf("--out", path.join(__dirname, "..", "fixtures", "tramada-statement-lines.csv")));
   const limit = valueOf("--limit", null) ? parseInt(valueOf("--limit"), 10) : null;
   const seed = parseInt(valueOf("--seed", "1"), 10);
 

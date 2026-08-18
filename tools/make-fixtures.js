@@ -98,10 +98,10 @@
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
-const core = require("./recon-core");
-const { runFullBooking } = require("./tramada-segments");
-const { runTramadaReceipt } = require("./tramada-receipt");
-const { runCreditorPayment } = require("./tramada-payment");
+const core = require("../recon-core");
+const { runFullBooking } = require("../tramada-segments");
+const { runTramadaReceipt } = require("../tramada-receipt");
+const { runCreditorPayment } = require("../tramada-payment");
 /* No playwright here any more. Every browser step goes through one of the
    tramada-* modules, which each open and close their own CDP connection. The
    IPSI fixture used to reach for chromium directly to drive the Finance
@@ -117,7 +117,7 @@ const DRY = has("--dry-run");
 // truthy and the number 0 is falsy so the limit silently vanished.
 const rawLimit = valueOf("--limit", null);
 const LIMIT = rawLimit == null ? null : parseInt(rawLimit, 10);
-const IN = path.resolve(valueOf("--file", path.join(__dirname, "bookings.json")));
+const IN = path.resolve(valueOf("--file", path.join(__dirname, "..", "fixtures", "bookings.json")));
 /* The CSVs land in csv_uploads/, not the repo root.
    Two reasons. It is the folder you open when you go to upload something, so
    the three files you need are the only things in it. And the root already
@@ -125,9 +125,9 @@ const IN = path.resolve(valueOf("--file", path.join(__dirname, "bookings.json"))
    travelpay-payments.csv as CHECKED-IN SAMPLES — real captured data the tests
    run against — which a fixture run used to overwrite. Generated files and
    sample files are different things and no longer share a name. */
-const CSV_DIR = path.resolve(valueOf("--out-dir", path.join(__dirname, "csv_uploads")));
+const CSV_DIR = path.resolve(valueOf("--out-dir", path.join(__dirname, "..", "csv_uploads")));
 // The booking records are not something you upload, so they stay out of it.
-const OUT_DIR = __dirname;
+const OUT_DIR = path.join(__dirname, "..");
 
 function csvOut(name) {
   fs.mkdirSync(CSV_DIR, { recursive: true });
@@ -202,7 +202,7 @@ function reportUnfilled(csv, column, whereFrom) {
   }
   say(`  The rest of ${path.basename(csv.path)} is already correct.`);
 }
-const shortPath = (p) => path.relative(__dirname, p) || path.basename(p);
+const shortPath = (p) => path.relative(path.join(__dirname, ".."), p) || path.basename(p);
 // The creditor the Mint fixture pays. Only creditors with something payable
 // on the booking are offered by the form, so this has to match what the
 // bookings are costed to.

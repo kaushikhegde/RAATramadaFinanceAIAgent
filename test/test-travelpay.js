@@ -8,8 +8,8 @@
  */
 const fs = require("fs");
 const path = require("path");
-const C = require("./recon-core");
-const XL = require("./xlsx-lite");
+const C = require("../recon-core");
+const XL = require("../xlsx-lite");
 
 let pass = 0, fail = 0;
 function check(name, got, want) {
@@ -42,7 +42,7 @@ check("nothing to find is blank", C.bookingFromReference("Client Name"), "");
 check("blank is blank", C.bookingFromReference(""), "");
 
 console.log("\nthe client's own export");
-const wb = XL.readSheet(fs.readFileSync(path.join(__dirname, "travelpay.xlsx")));
+const wb = XL.readSheet(fs.readFileSync(path.join(__dirname, "..", "fixtures", "travelpay.xlsx")));
 check("21 columns", wb.headers.length, 21);
 check("both rows read", wb.rows.length, 2);
 const fromXlsx = C.parseTravelPayRows(wb.headers, wb.rows);
@@ -63,7 +63,7 @@ check("and so is the settlement date", fromXlsx.rows[0].settlementDate, "2026-07
 check("the booking is pulled out for a person to see", fromXlsx.rows.map((r) => r.bookingNo), ["128380", "B128297"]);
 
 console.log("\nthe same file as a CSV");
-const csv = C.csvGrid(fs.readFileSync(path.join(__dirname, "travelpay-payments.csv"), "utf8"));
+const csv = C.csvGrid(fs.readFileSync(path.join(__dirname, "..", "fixtures", "travelpay-payments.csv"), "utf8"));
 const fromCsv = C.parseTravelPayRows(csv.headers, csv.rows);
 // Which parser runs is decided by the file's own container, never its name —
 // so the two have to come out the same or the card lies about one of them.

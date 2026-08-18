@@ -256,6 +256,26 @@ that filed them. Writes are atomic, and a `runs.json` that will not parse is
 moved aside rather than overwritten — it is still somebody's record of money
 that moved.
 
+## Layout
+
+```
+server.js  recon-core.js  recon-run.js  run-store.js     the app itself: what
+xlsx-lite.js  xlsx-write.js  tramada-*.js                 `npm start` needs
+
+public/       the built page — generated, never hand-edited
+design/       the client's mockup + this project's wiring, which build fuses
+test/         npm test — offline, no browser, no network
+shots/        npm run shots — render checks; PNGs land in shots/out/
+tools/        the build, the fixture makers, the one-off CLIs
+fixtures/     the sample reports and workbooks tests and tools read
+docs/         the field map, the BPay conformance notes, the history
+
+uploads/  runs.json  csv_uploads/     written by a run, not checked in
+```
+
+Everything the running app loads is at the root; everything else is in a
+folder. A file's folder is the answer to "do I need this to reconcile?".
+
 ## The code
 
 | | |
@@ -266,8 +286,8 @@ that moved.
 | `tramada-receipt.js` | The booking receipt form. |
 | `server.js` | One page, one socket, and the run history over HTTP. |
 | `run-store.js` | `uploads/` and `runs.json` — where a run is written down. |
-| `recon-wire.html` | The live wiring added to the client's mockup. |
-| `build-recon.js` | `public/index.html` ← `recon-ui-mockup.html` + `recon-wire.html`, plus the tab title and favicon |
+| `design/recon-wire.html` | The live wiring added to the client's mockup. |
+| `tools/build-recon.js` | `public/index.html` ← `design/recon-ui-mockup.html` + `design/recon-wire.html`, plus the tab title and favicon |
 
 ### The page is generated — never hand-edit `public/index.html`
 
@@ -275,11 +295,11 @@ that moved.
 npm run build
 ```
 
-The client's mockup arrives as `recon-ui-mockup.html` and changes. It is not a
+The client's mockup arrives as `design/recon-ui-mockup.html` and changes. It is not a
 styling prototype: it carries ~90 KB of its own demo JavaScript with
 `document`-level click and change handlers, so **the build disables its script**
 and the wiring reimplements the one thing the page needs from it (screen
-navigation). Put your changes in `recon-wire.html`; anything typed straight into
+navigation). Put your changes in `design/recon-wire.html`; anything typed straight into
 `public/index.html` is lost on the next mockup.
 
 Screens the wiring does not drive keep the mockup's invented figures and are
@@ -288,13 +308,14 @@ marked *sample data*.
 ## Tests
 
 ```bash
-npm test        # 524 assertions, all offline — no network, no browser
-npm run shots   # 74 render checks — the page, a BPay run, a Mint run, the overview
+npm test        # 694 assertions, all offline — no network, no browser
+npm run shots   # 109 render checks — the page, a BPay run, a Mint run, the overview
+                #   the PNGs it writes go to shots/out/
 ```
 
 The tests never open Tramada and never launch Playwright. The rules are checked
-against values captured from the live pages; `test-xlsx-lite.js` runs against
-the client's actual `mint.xlsx`, which is how it caught a parser bug that a
+against values captured from the live pages; `test/test-xlsx-lite.js` runs
+against the client's actual `fixtures/mint.xlsx`, which is how it caught a parser bug that a
 hand-written fixture would have agreed with.
 
 The screenshot tools are not tests — they replay invented frames and prove
@@ -307,17 +328,18 @@ table cell. None of those show up in a node test.
 
 | | |
 |---|---|
-| `tramada-statement-lines.csv` | Six real statement lines, for BPay |
-| `mint.xlsx` | The client's own Mint export |
-| `mint-payments.csv` | Three real creditor payments, all correct |
-| `mint-payments-varied.csv` | The same three distorted, plus one that does not exist — one run, every outcome |
-| `bookings.json` + `run-bookings.js` | Builds bookings for a BPay run to reconcile against |
+| `fixtures/tramada-statement-lines.csv` | Six real statement lines, for BPay |
+| `fixtures/mint.xlsx` | The client's own Mint export |
+| `fixtures/mint-payments.csv` | Three real creditor payments, all correct |
+| `fixtures/mint-payments-varied.csv` | The same three distorted, plus one that does not exist — one run, every outcome |
+| `fixtures/bookings.json` + `tools/run-bookings.js` | Builds bookings for a BPay run to reconcile against |
 
 ## Building something to reconcile against
 
 ```bash
 npm run start:chrome        # once, and sign into Tramada in that window
-node make-fixtures.js all   # or: bpay | travelpay | mint
+npm run fixtures            # or: fixtures:bpay | fixtures:travelpay | fixtures:mint
+#   long form: node tools/make-fixtures.js all
 ```
 
 Creates REAL bookings, and then whatever that report needs to exist before its
@@ -380,7 +402,8 @@ receipt is found again *by* its reference, so a repeat lets a run read back an
 earlier attempt's transaction and report the wrong number. `--tag X8KGJ` pins
 it when you want a second run findable beside the first.
 
-One booking, one segment, one costing — see `bookings.json`'s own comment.
+One booking, one segment, one costing — see `fixtures/bookings.json`'s own
+comment.
 A receipt allocated with `"ALL"` clicks Tramada's Select All, which ticks
 *every* row on the form, so a second row is a receipt that gets refused.
 

@@ -16,9 +16,9 @@
 const fs = require("fs");
 const path = require("path");
 
-const MOCKUP = path.join(__dirname, "recon-ui-mockup.html");
-const WIRE = path.join(__dirname, "recon-wire.html");
-const OUT = path.join(__dirname, "public", "index.html");
+const MOCKUP = path.join(__dirname, "..", "design", "recon-ui-mockup.html");
+const WIRE = path.join(__dirname, "..", "design", "recon-wire.html");
+const OUT = path.join(__dirname, "..", "public", "index.html");
 
 const die = (m) => { console.error(`\n  ${m}\n`); process.exit(1); };
 

@@ -8,17 +8,24 @@
  *
  * The socket is stubbed, so nothing reaches Tramada.
  *
- *   node shot-both.js        → both-loaded.png
+ *   node shots/shot-both.js  → shots/out/both-loaded.png
  */
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
+/* Screenshots land in shots/out/, never the repo root. A bare relative path in
+   page.screenshot() resolves against cwd, not against this file, which is how a
+   dozen PNGs ended up sitting beside server.js. */
+const OUT = path.join(__dirname, "out");
+fs.mkdirSync(OUT, { recursive: true });
+const shot = (name) => path.join(OUT, name);
+
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), "recon-both-"));
 process.env.RECON_STORE_DIR = DIR;
 process.env.PORT = process.env.PORT || "3144";
 
-require("./server");
+require("../server");
 const { chromium } = require("playwright");
 
 let bad = 0;
@@ -56,7 +63,7 @@ const ok = (name, cond, detail) => {
       page.waitForEvent("filechooser"),
       page.click(`[data-choose="${kind}"]`),
     ]);
-    await chooser.setFiles(path.join(__dirname, file));
+    await chooser.setFiles(path.join(__dirname, "..", "fixtures", file));
     await page.waitForTimeout(700);
   };
 
@@ -215,12 +222,12 @@ const ok = (name, cond, detail) => {
 
   ok("no page errors", problems.length === 0, problems.join(" | "));
 
-  await page.screenshot({ path: path.join(__dirname, "both-loaded.png"), fullPage: false });
+  await page.screenshot({ path: shot("both-loaded.png"), fullPage: false });
 
   // Last, because it reloads the page out from under everything above.
   await checksOnlyReachesTheWire();
 
-  console.log(`\n  both-loaded.png written${bad ? " (with failures above)" : ""}\n`);
+  console.log(`\n  shots/out/both-loaded.png written${bad ? " (with failures above)" : ""}\n`);
   await browser.close();
   fs.rmSync(DIR, { recursive: true, force: true });
   process.exit(bad ? 1 : 0);

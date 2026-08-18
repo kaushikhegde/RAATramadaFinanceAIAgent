@@ -11,9 +11,9 @@
  *     and the XML are written by hand — so the container is checked as a
  *     container, not just as a string.
  */
-const C = require("./recon-core");
-const W = require("./xlsx-write");
-const R = require("./xlsx-lite");
+const C = require("../recon-core");
+const W = require("../xlsx-write");
+const R = require("../xlsx-lite");
 
 let pass = 0, fail = 0;
 function check(name, got, want) {
