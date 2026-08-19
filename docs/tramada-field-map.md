@@ -184,11 +184,11 @@ Corporate clients whose debtor is the retail entity.
 Reached from `booking-receipts.htm?mode=edit&id={bookingNo}` → **Add / Issue
 Receipt**. Measured live 06-Aug-2026 on booking 13127.
 
-A booking can only raise a **Client Payment Receipt** — `#receiptCategory`
-offers `Client Payment Receipt`, `Agency CC Client Receipt`, `Migration Client
-Payment Receipt`, `Creditor Refund Receipt` and nothing else. There is **no
-Debtor Payment Receipt** here, so receipts raised against bookings never appear
-under that type on the reconcile screen.
+~~A booking can only raise a **Client Payment Receipt**.~~ **CORRECTED
+17-Aug-2026 — see §4d.** Booking 13127's client is a retail account, and that
+is what decides the list. A debtor-account client (`GRAY/MEGAN DR`) offers
+`Debtor Payment Receipt` and no Client variant at all. What was measured here
+was true of this booking and false as a rule.
 
 ```
 #receipttransactionTypeCode   Cash | Cheque | Credit Card CCCF | Credit Card Swipe | EFT
@@ -274,6 +274,46 @@ the filled boxes up and refuses before Issue rather than after; see
 CODE-REVIEW.md §4, which is guarded but not yet fixed at the source.
 
 ---
+
+## 4d. `#receiptCategory` — the type depends on the CLIENT
+
+On `booking/booking-receipts.htm?mode=edit&id={no}`, above the receipts grid.
+This is step 11's "top right dropdown", and it decides which form **Add / Issue
+Receipt** opens — so it is set *before* the button is clicked, not on the form.
+
+Measured 17-Aug-2026, same debtor on both bookings
+(`RAA of SA Limited (Retail)`):
+
+| booking | client | `#receiptCategory` offers |
+|---|---|---|
+| 13115 | `GRAY/MEGAN DR` | **Debtor Payment Receipt** `DEBTOR_PAYMENT_RECEIPT` · Agency CC Debtor Receipt `AGENCY_CC_DEBTOR_PAYMENT_RECEIPT` · Migration Debtor Payment Receipt `MIGRATION_DEBTOR_PAYMENT_RECEIPT` · Creditor Refund Receipt `CREDITOR_REFUND_RECEIPT` |
+| 13394 | `GRAY/SPIDER MS` | **Client Payment Receipt** `CLIENT_PAYMENT_RECEIPT` · Agency CC Client Receipt `AGENCY_CC_CLIENT_PAYMENT_RECEIPT` · Migration Client Payment Receipt `MIGRATION_CLIENT_PAYMENT_RECEIPT` · Creditor Refund Receipt `CREDITOR_REFUND_RECEIPT` |
+
+**The two lists never overlap**, and the one you get is decided by the CLIENT's
+account type — not the debtor, which is identical on both. Each booking's
+correct option is already selected by default; the run selects it explicitly
+anyway, because a default is not a guarantee.
+
+### What this corrects
+
+This file used to record, from booking 13127, that a booking "can only ever
+raise a Client Payment Receipt" and that there is "no Debtor Payment Receipt
+here". The observation was right; the generalisation was wrong. Every booking
+measured at the time happened to belong to a retail-account client, so the
+Debtor half of the vocabulary was invisible — and the guide's step 11 and step
+30 were written off as describing a different screen.
+
+A BPay payment belongs on a debtor-account booking. So:
+
+* the receipt is filed as `DEBTOR_PAYMENT_RECEIPT` (step 11);
+* the reconcile page is filtered to `Debtor Payment Receipt` (step 30) — already
+  in `#recPayType`'s fifteen values, §5;
+* both come from one constant, `core.BPAY_RECEIPT`, because filing under one
+  name and searching under another reconciles nothing while looking like it
+  worked;
+* a booking that offers no Debtor variant stops the row with *"Please review,
+  Debtor Payment Receipt not available"* rather than filing under whatever type
+  happens to be there.
 
 ## 4c. The booking profile — `booking/booking-profile.htm?mode=edit&id={no}`
 

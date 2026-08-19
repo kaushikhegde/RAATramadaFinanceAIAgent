@@ -138,13 +138,29 @@ async function openBrowser(onProgress) {
  * If the session is already warm (attached CDP Chrome), it just returns —
  * so a browser a human already signed into (past OTP) is reused as-is.
  */
-// Reliable auth check via a PROTECTED page (login.htm serves the form even when
-// authenticated, which false-alarms as "not logged in").
+/**
+ * Signed in? Asked of a PROTECTED page, and answered by what is ON it.
+ *
+ * The URL alone is not enough in either direction. `login.htm` serves the form
+ * even when authenticated, which reads as logged out; and — measured
+ * 17-Aug-2026 — an expired session serves the LOGIN FORM at the protected URL
+ * you asked for, with the address bar still saying `booking-search.htm`. A
+ * URL-only check answers "signed in" to that, `ensureLoggedIn` returns
+ * immediately, and every row of the run then fails with "could not be opened"
+ * while nothing ever asks the human to sign in. That is exactly what a whole
+ * run did before this was tightened.
+ *
+ * So: the presence of a password field is the answer.
+ */
 async function tramadaIsAuthed(page) {
   await page
     .goto(`${TRAMADA_BASE_URL}/home/home.htm`, { waitUntil: "domcontentloaded" })
     .catch(() => {});
-  return !page.url().includes("login.htm");
+  if (page.url().includes("login.htm")) return false;
+  const showingLogin = await page
+    .evaluate(() => !!document.querySelector("input[type=password], #loginForm_login"))
+    .catch(() => false);
+  return !showingLogin;
 }
 
 async function ensureLoggedIn(page, { username, password, onNeedLogin } = {}) {
@@ -556,6 +572,60 @@ async function openReceiptForm(page, bookingNo, receipt) {
     { waitUntil: "domcontentloaded" }
   );
   await page.waitForSelector('input[value="Add / Issue Receipt"]', { timeout: 15000 });
+
+  /* STEP 11 — THE RECEIPT CATEGORY, CHOSEN BEFORE Add / Issue IS CLICKED.
+   *
+   * `#receiptCategory` is on the RECEIPTS LIST, not on the form, which is
+   * exactly where the guide puts it ("Selects top right dropdown 'Debtor
+   * Payment Receipt', click on 'Add/Issue Receipt'"). It decides which form
+   * opens, so it has to be set first.
+   *
+   * WHAT IT OFFERS DEPENDS ON THE CLIENT, and that is the whole answer to a
+   * question this project carried unresolved for a week. Measured
+   * 17-Aug-2026:
+   *
+   *   13115  client GRAY/MEGAN DR   → Debtor Payment Receipt, Agency CC Debtor
+   *                                   Receipt, Migration Debtor Payment
+   *                                   Receipt, Creditor Refund Receipt
+   *   13394  client GRAY/SPIDER MS  → Client Payment Receipt, Agency CC Client
+   *                                   Receipt, Migration Client Payment
+   *                                   Receipt, Creditor Refund Receipt
+   *
+   * Same debtor on both (RAA of SA Limited (Retail)); it is the CLIENT's
+   * account type that swaps Debtor for Client throughout the list. A BPay
+   * payment belongs on a debtor-account booking, so a booking that cannot offer
+   * Debtor Payment Receipt is an exception to raise, not a receipt to file
+   * under whatever type happens to be there.
+   */
+  if (receipt.receiptCategory) {
+    const want = String(receipt.receiptCategory);
+    const offered = await page.evaluate(() => {
+      const el = document.querySelector("#receiptCategory");
+      return el ? [...el.options].map((o) => ({ text: (o.text || "").trim(), value: o.value })) : null;
+    });
+    if (offered === null) {
+      return { categoryUnavailable: true, wanted: want, offered: [] };
+    }
+    const match = offered.find((o) => o.value === want) ||
+      offered.find((o) => o.text.toLowerCase() === want.toLowerCase());
+    if (!match) {
+      return { categoryUnavailable: true, wanted: want, offered: offered.map((o) => o.text) };
+    }
+    await page.selectOption("#receiptCategory", match.value);
+    await sleep(400);
+    // Read back: a select that silently reset would open the wrong form, and
+    // the receipt would be filed under a type the reconcile filter never shows.
+    const took = await page.evaluate(() => {
+      const el = document.querySelector("#receiptCategory");
+      return el ? el.value : "";
+    });
+    if (took !== match.value) {
+      throw new Error(
+        `The receipt category did not take on booking ${bookingNo}: asked for ` +
+        `"${match.text}" and the screen reads "${took}".`
+      );
+    }
+  }
 
   /* ALREADY FILED? THEN NOTHING IS FILED AGAIN.
    *
@@ -1099,6 +1169,10 @@ async function runTramadaReceipt({
      turns it on; the commit pass does not, so the profile page is opened once
      per row rather than twice. */
   withBranch = false,
+  /* Step 11. The value of `#receiptCategory` on the booking's Receipts list —
+     `DEBTOR_PAYMENT_RECEIPT` for BPay. Left unset, the list's own default is
+     used, which is what every caller did before this existed. */
+  receiptCategory = "",
   callbacks = {},
 } = {}) {
   const onProgress = callbacks.onProgress || (() => {});
@@ -1154,8 +1228,26 @@ async function runTramadaReceipt({
     const opened = await openReceiptForm(page, bookingNo, {
       ...receipt,
       payerName,
+      receiptCategory,
       skipIfAlreadyFiled: skipIfAlreadyFiled !== false,
     });
+
+    /* THE BOOKING CANNOT TAKE THIS KIND OF RECEIPT.
+       `#receiptCategory` offers Debtor variants on a debtor-account client and
+       Client variants on a retail one, so a BPay payment landing on a booking
+       that offers no Debtor Payment Receipt is a booking set up differently to
+       what the guide assumes. Nothing is filed and nothing is guessed at: the
+       row comes back saying what was wanted and what was on offer. */
+    if (opened.categoryUnavailable) {
+      onProgress(100,
+        `Booking ${bookingNo} does not offer "${opened.wanted}" — no receipt raised.`);
+      _ok = true;
+      return {
+        details, itinerary: itin, segments: [], committed: false,
+        skipped: true, reason: "receipt category unavailable",
+        wanted: opened.wanted, offered: opened.offered,
+      };
+    }
 
     /* This receipt is already on the booking — same reference, same amount.
        Nothing was opened, nothing was typed, and the run gets the receipt that

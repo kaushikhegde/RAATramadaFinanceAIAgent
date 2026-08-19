@@ -395,6 +395,30 @@ const REMARKS = {
   // give us something a rule needs, so the rule cannot be applied and a person
   // has to look. Never used to paper over a rule that DID apply.
   review: "Please review",
+  /* Also not in the guide, and deliberately its own string rather than a plain
+     "Please review". The guide assumes every BPay booking can take a Debtor
+     Payment Receipt; one that cannot is a booking whose CLIENT is a retail
+     account rather than a debtor account, and that is a specific thing for
+     somebody to go and look at — not a general "something was odd here". */
+  noDebtorReceipt: "Please review, Debtor Payment Receipt not available",
+};
+
+/*
+ * Step 11 — the receipt category a BPay payment is raised under.
+ *
+ * `#receiptCategory` sits on the booking's Receipts list and decides which form
+ * Add / Issue opens. What it OFFERS depends on the client's account type:
+ * a debtor-account client gets the Debtor variants, a retail one gets the
+ * Client variants, and the two lists never overlap. Measured 17-Aug-2026 on
+ * bookings 13115 (GRAY/MEGAN DR) and 13394 (GRAY/SPIDER MS).
+ *
+ * `label` is what the reconcile screen's Rec/Pay Type filter calls the same
+ * thing — step 30 — and they have to agree or the run files under one name and
+ * searches under another.
+ */
+const BPAY_RECEIPT = {
+  value: "DEBTOR_PAYMENT_RECEIPT",
+  label: "Debtor Payment Receipt",
 };
 
 /**
@@ -1604,7 +1628,13 @@ const REPORTS = {
   bpay: {
     key: "bpay",
     title: "BPay receipts",
-    recPayType: "Client Payment Receipt",
+    /* Step 30, and the same name the receipt is FILED under (step 11) — they
+       have to agree, or the run raises a receipt under one type and searches
+       the statement page under another. `BPAY_RECEIPT.label` is that one name.
+       Was "Client Payment Receipt" until 17-Aug-2026, when it turned out the
+       type on offer depends on the client's account and a BPay booking's
+       client is a debtor account. */
+    recPayType: BPAY_RECEIPT.label,
     files: true,                          // one real receipt per row
   },
   mint: {
@@ -1627,10 +1657,13 @@ const REPORTS = {
   travelpay: {
     key: "travelpay",
     title: "TravelPay merchant settlement",
-    // Client Payment Receipt, confirmed 10-08-2026 — the same type the BPay
-    // receipts land under, NOT the Finance Merchant Payment Receipt its name
-    // suggests. On a combined run that means BPay and TravelPay share one
-    // filter pass and Mint gets its own.
+    /* Client Payment Receipt, confirmed 10-08-2026 — NOT the Finance Merchant
+       Payment Receipt its name suggests. These are receipts that ALREADY EXIST
+       on Tramada; nothing here files one, so the type is whatever Tramada gave
+       them and is unaffected by BPay's move to Debtor Payment Receipt. (This
+       comment used to say "the same type the BPay receipts land under", which
+       stopped being true on 17-Aug-2026 — a shared filter pass is no longer the
+       reason to keep them together.) */
     recPayType: "Client Payment Receipt",
     files: false,
   },
@@ -1900,7 +1933,7 @@ module.exports = {
   uploadName, stampOf, runTotals, needsReaction, overviewFrom,
   splitCsvLine, parseReconCsv, parseReconRows,
   normaliseHeading, buildExportGrid, inputColumnsOf, moneyColumnsOf, gridToCsv, EXPORT_FIELDS,
-  REMARKS, RETAIL_DEBTOR, branchCode, isPastDate, toIsoDate, decidePreReceipt, sortForFinance, pageForDate,
+  REMARKS, RETAIL_DEBTOR, BPAY_RECEIPT, branchCode, isPastDate, toIsoDate, decidePreReceipt, sortForFinance, pageForDate,
   outstandingFrom, totalLeftToAllocate, chooseSegments, decideAllocation,
   matchAgainstStatement,
   nextPageNumber, toTramadaDate,

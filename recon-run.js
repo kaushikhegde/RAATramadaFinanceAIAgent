@@ -454,13 +454,20 @@ async function createStatement(page, { pageNumber, statementDate, openingBalance
  * Filter and sort the open reconciliation page, then read what it leaves
  * showing.
  *
- * **Client Payment Receipt, not Debtor Payment Receipt.** A receipt raised on a
- * booking can only ever be a Client Payment Receipt — that is the only relevant
- * option the booking's receipt form offers. So the receipts this run just
- * created appear under that type, and filtering to it turns the reconciliation
- * step into a check that our own work actually reached the bank statement.
- * Filtering to Debtor Payment Receipt would match the pre-existing lines the CSV
- * was scraped from and never look at what we filed.
+ * **Debtor Payment Receipt, which is what the guide said all along.**
+ *
+ * This used to read "Client Payment Receipt, not Debtor Payment Receipt", on
+ * the evidence that a booking's receipt form offered nothing else. That
+ * evidence was real and the conclusion was wrong: `#receiptCategory` offers the
+ * DEBTOR variants when the booking's client is a debtor account and the CLIENT
+ * variants when it is a retail one, and every booking measured at the time
+ * happened to be the latter. A BPay payment belongs on a debtor-account
+ * booking, so the receipts this run raises are Debtor Payment Receipts and this
+ * is the type they appear under.
+ *
+ * The filter and the receipt category come from the SAME constant
+ * (`core.BPAY_RECEIPT`), because filing under one name and searching under
+ * another reconciles nothing while looking like it worked.
  *
  * **SORT FIRST, THEN FILTER — sorting clears the filter.** Doing it the other
  * way round leaves the screen showing every transaction on the page again,
@@ -547,7 +554,7 @@ async function applyFilter(page, recPayType) {
   }
 }
 
-async function filterAndRead(page, recPayType = "Client Payment Receipt", say = () => {}, doFilter = true) {
+async function filterAndRead(page, recPayType = core.BPAY_RECEIPT.label, say = () => {}, doFilter = true) {
   await sortPage(page);
   if (doFilter) {
     await applyFilter(page, recPayType);
@@ -1054,6 +1061,9 @@ async function fileReceipts(results, { auth, cb, say, row }) {
           allocation: [],
           payerName: BPAY_PAYER,
         },
+        // Step 11 — the type the guide names, chosen on the receipts list before
+        // Add / Issue is clicked.
+        receiptCategory: core.BPAY_RECEIPT.value,
         dryRun: true,
         skipIfNoAllocatable: true,
         // Steps 8-9, on the read pass only, so the profile page is opened once
@@ -1077,6 +1087,24 @@ async function fileReceipts(results, { auth, cb, say, row }) {
           " — nothing was filed again";
         row(r.n, { receiptNo: r.receiptNo, allocation: r.allocation, why: r.why });
         say(`Row ${r.n}: ${r.why}`, true);
+        continue;
+      }
+
+      /* THE BOOKING CANNOT TAKE A DEBTOR PAYMENT RECEIPT.
+         Its client is a retail account, not a debtor one, so `#receiptCategory`
+         offers the Client variants and nothing else. A BPay payment does not
+         belong there, so nothing is filed and the row says what was on offer
+         instead — filing it under whatever type happened to be available would
+         put the money somewhere the reconcile filter never looks. */
+      if (probe && probe.skipped && probe.reason === "receipt category unavailable") {
+        r.allocation = "Not allocated";
+        r.remark = core.REMARKS.noDebtorReceipt;
+        r.why = `no receipt raised — booking ${r.bookingNo} offers ` +
+          `${(probe.offered || []).map((x) => `"${x}"`).join(", ") || "no receipt types"} ` +
+          `but not "${core.BPAY_RECEIPT.label}"`;
+        r.noReceipt = true;
+        row(r.n, { allocation: r.allocation, remark: r.remark, why: r.why });
+        say(`Row ${r.n}: ${r.remark}`, false);
         continue;
       }
 
@@ -1135,6 +1163,9 @@ async function fileReceipts(results, { auth, cb, say, row }) {
           // the Payer Name on a BPay receipt reads "BPAY".
           payerName: BPAY_PAYER,
         },
+        // Step 11 — the type the guide names, chosen on the receipts list before
+        // Add / Issue is clicked.
+        receiptCategory: core.BPAY_RECEIPT.value,
         /* Filed for real even on a dry run. Dry run holds back the two
            FINANCE screens — the bank statement page's Done and the Finance
            Receipts merchant receipt's Issue — and nothing else. A booking
@@ -1239,7 +1270,7 @@ async function runReconciliation(o = {}) {
     });
 
     /* 3 — sort, filter, read, match. Nothing else is clicked here. */
-    say("Sorting by date descending, then filtering to Client Payment Receipt…");
+    say(`Sorting by date descending, then filtering to ${core.BPAY_RECEIPT.label}…`);
     const statement = await filterAndRead(page, undefined, say, filterFor(false));
     say(`${statement.length} transaction${statement.length === 1 ? "" : "s"} showing after the filter.`);
 
@@ -1414,8 +1445,8 @@ async function runMintReconciliation(o = {}) {
  *   2. SORT ONCE. `#sortButton` submits and comes back with every tick gone.
  *   3. THEN SWAP THE FILTER PER REPORT. `#filterButton` only hides rows in the
  *      page already on screen, so ticks made under the first filter survive the
- *      second. Client Payment Receipt for the BPay rows, Creditor Payment for
- *      the Mint ones.
+ *      second. Debtor Payment Receipt for the BPay rows, Creditor Payment for
+ *      the Mint ones, Client Payment Receipt for TravelPay.
  *   4. Balances, then ONE Done for both.
  *
  * A failure in one report does not stop the other, and Done still commits what
@@ -1554,11 +1585,14 @@ async function runCombinedReconciliation(o = {}) {
 
     /* ONE PASS PER FILTER, not per report.
      *
-     * BPay and TravelPay both sit under Client Payment Receipt, so grouping by
-     * report would filter to the same thing twice and read the same grid twice
-     * — and worse, the second read would happen after the first pass had
-     * ticked rows, which reorders the table. Group by the filter itself and
-     * every report that uses it is matched against one read.
+     * Two reports can share a Rec/Pay Type — and did, until BPay moved to
+     * Debtor Payment Receipt on 17-Aug-2026 and left TravelPay alone under
+     * Client Payment Receipt. Grouping by REPORT would then filter to the same
+     * thing twice and read the same grid twice; worse, the second read would
+     * happen after the first pass had ticked rows, which reorders the table.
+     * Grouping by the filter itself is right whether or not any two reports
+     * currently share one, which is why it did not need changing when they
+     * stopped.
      *
      * Ticking happens inside the pass rather than at the end because a row
      * hidden by the NEXT filter cannot be clicked, and Playwright will not
