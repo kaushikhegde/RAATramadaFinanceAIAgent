@@ -25,6 +25,7 @@
 require("dotenv").config();
 
 const express = require("express");
+const fs = require("fs");
 const http = require("http");
 const path = require("path");
 const { WebSocketServer } = require("ws");
@@ -112,31 +113,48 @@ app.post("/api/export", express.json({ limit: "12mb" }), (req, res) => {
 /* ── the supplier name cheat sheet ───────────────────────────────────────── */
 
 /**
- * One cheat sheet per report, kept where the runs are kept.
+ * ONE cheat sheet, used by MINT and TravelPay alike.
  *
- * Both guides ask for the same thing: upload a CSV, it replaces the previous
- * one, and the dashboard shows when it was last uploaded. It exists because
- * MINT names companies by their LEGAL ENTITY — "Viva Holidays II Limited T/A
- * Ready Rooms" — and Tramada names creditors by their TRADING NAME —
- * "READY ROOMS". BR05's third gate compares those two strings, so without a
- * mapping the row fails on a naming difference rather than on the money.
+ * The two guides each name their own — "MINT Supplier Name Cheat Sheet",
+ * "TravelPay Supplier Name Cheat Sheet" — as though there were two. RAA's actual
+ * sheet is headed "SUPPLIER NAME IN MINT / TRAVELPAY" and is one file covering
+ * both, and that is how it is kept here: upload it once, both reports use it.
+ *
+ * It exists because the spreadsheets name companies by their LEGAL ENTITY —
+ * "Viva Holidays II Limited T/A Ready Rooms" — and Tramada names creditors by
+ * their TRADING NAME — "READY ROOMS". BR05's third gate compares those two
+ * strings, so without a mapping the row fails on a naming difference rather than
+ * on the money.
  *
  * On disk rather than in the session: it is maintained once and used every day
  * by whoever happens to be at the screen.
  */
+const CHEAT_SHEET_KEY = "suppliers";
+const SHIPPED_CHEAT_SHEET = path.join(__dirname, "cheat-sheets", "supplier-names.xlsx");
+
+/** Excel or CSV, both guides' "Other features", and the sheet arrives as .xlsx. */
+function parseUploadedCheatSheet(name, base64) {
+  const buf = Buffer.from(String(base64 || ""), "base64");
+  // The extension if there is one, the ZIP magic if there isn't — a workbook
+  // read as UTF-8 turns into one nonsense line and a baffling error message.
+  const isXlsx = /\.xlsx$/i.test(String(name || "")) ||
+    (buf.length > 1 && buf[0] === 0x50 && buf[1] === 0x4b);
+  return isXlsx
+    ? reconCore.parseCheatSheet(xlsxLite.readSheet(buf))
+    : reconCore.parseCheatSheet(buf.toString("utf8"));
+}
+
 function handleCheatSheet(session, msg) {
-  const source = reconCore.REPORTS[msg.source] ? msg.source : "mint";
-  const reply = (extra) => send(session, { type: "cheat_sheet", source, ...extra });
+  const reply = (extra) => send(session, { type: "cheat_sheet", source: CHEAT_SHEET_KEY, ...extra });
   try {
-    const text = Buffer.from(String(msg.base64 || ""), "base64").toString("utf8");
-    const parsed = reconCore.parseCheatSheet(text);
+    const parsed = parseUploadedCheatSheet(msg.name, msg.base64);
     if (!parsed.pairs.length) {
       reply({ error: (parsed.problems[0] && parsed.problems[0].why) || "nothing in it could be read" });
       return;
     }
     reply({
-      ...store.saveCheatSheet(source, {
-        name: String(msg.name || "cheat-sheet.csv"),
+      ...store.saveCheatSheet(CHEAT_SHEET_KEY, {
+        name: String(msg.name || "supplier-cheat-sheet"),
         pairs: parsed.pairs,
         problems: parsed.problems,
       }),
@@ -147,15 +165,36 @@ function handleCheatSheet(session, msg) {
   }
 }
 
-/** Whatever is on file for this report, or an empty mapping. */
-function cheatSheetFor(source) {
-  try { return store.getCheatSheet(source) || { pairs: [] }; }
-  catch { return { pairs: [] }; }
+/* The sheet RAA supplied, shipped with the app so a fresh install reconciles
+   correctly before anybody has uploaded anything. An upload replaces it. */
+let shippedSheet = null;
+function shippedCheatSheet() {
+  if (shippedSheet) return shippedSheet;
+  try {
+    const parsed = reconCore.parseCheatSheet(xlsxLite.readSheet(fs.readFileSync(SHIPPED_CHEAT_SHEET)));
+    shippedSheet = {
+      name: path.basename(SHIPPED_CHEAT_SHEET),
+      pairs: parsed.pairs,
+      problems: parsed.problems,
+      shipped: true,
+    };
+  } catch { shippedSheet = { pairs: [], shipped: true }; }
+  return shippedSheet;
 }
 
+/** Whatever is on file, or the sheet that shipped with the app. */
+function cheatSheetFor() {
+  try {
+    const saved = store.getCheatSheet(CHEAT_SHEET_KEY);
+    if (saved && saved.pairs && saved.pairs.length) return saved;
+  } catch { /* fall through to the shipped one */ }
+  return shippedCheatSheet();
+}
+
+// `:source` is ignored — there is one sheet. The parameter stays so an older
+// page asking for /api/cheat-sheet/mint still gets the right answer.
 app.get("/api/cheat-sheet/:source", (req, res) => {
-  const source = reconCore.REPORTS[req.params.source] ? req.params.source : "mint";
-  res.json(store.getCheatSheet(source) || { source, pairs: [] });
+  res.json({ source: CHEAT_SHEET_KEY, ...cheatSheetFor() });
 });
 
 const server = http.createServer(app);
@@ -638,9 +677,9 @@ async function handleMintRun(session, msg) {
       transactionTotal: msg.transactionTotal,
       /* BR05's supplier gate. MINT names companies by legal entity and Tramada
          names creditors by trading name, so without this a perfectly good row
-         reads "Supplier does not match". Kept per report, because the two
-         reports pay different sets of people. */
-      cheatSheet: cheatSheetFor(source),
+         reads "Supplier does not match". ONE sheet for both reports — RAA's is
+         headed "SUPPLIER NAME IN MINT / TRAVELPAY". */
+      cheatSheet: cheatSheetFor(),
       // Checks only: the run does everything except press Issue and Done.
       dryRun: !!msg.dryRun,
       callbacks: callbacks(session, run),

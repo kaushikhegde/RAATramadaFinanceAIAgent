@@ -126,8 +126,57 @@ const IN = path.resolve(valueOf("--file", path.join(__dirname, "..", "fixtures",
    run against — which a fixture run used to overwrite. Generated files and
    sample files are different things and no longer share a name. */
 const CSV_DIR = path.resolve(valueOf("--out-dir", path.join(__dirname, "..", "csv_uploads")));
+
+/*
+ * WHICH CLIENT EACH REPORT'S FIXTURES ARE BUILT UNDER, and this is not a
+ * cosmetic choice — it decides which receipts the booking can take at all.
+ *
+ * `#receiptCategory` on a booking's Receipts page offers the DEBTOR variants
+ * when the client is a debtor account and the CLIENT variants when it is a
+ * retail one, and the two lists never overlap (docs/tramada-field-map.md §4d).
+ * So the client has to match what the report expects to find on the statement
+ * page afterwards:
+ *
+ *   bpay       files Debtor Payment Receipts, and filters to them   → GRAY/MEGAN
+ *   travelpay  CHECKS receipts that already exist, filtered to
+ *              Client Payment Receipt                               → GRAY/SPIDER
+ *   mint       receipts only so the creditor becomes payable; it
+ *              filters on Creditor Payment and never looks at the
+ *              receipt's own type                                   → GRAY/SPIDER
+ *   ipsi       card receipts a human raises by hand                 → GRAY/SPIDER
+ *
+ * Set globally to GRAY/MEGAN once, on 17-Aug-2026, and that quietly broke
+ * TravelPay: its fixtures were then raised as Debtor Payment Receipts while its
+ * run filtered to Client Payment Receipt, so the run would have found nothing
+ * and reported every row unreconciled — against receipts that were really
+ * there. Per report, not per repo.
+ *
+ * `--client X` overrides it for whatever is being generated.
+ */
+const CLIENT_FOR = {
+  bpay: "GRAY/MEGAN",
+  travelpay: "GRAY/SPIDER",
+  mint: "GRAY/SPIDER",
+  ipsi: "GRAY/SPIDER",
+};
+const CLIENT_OVERRIDE = valueOf("--client", null);
+
+/*
+ * And the receipt category each report's fixtures are raised under.
+ *
+ * Kept beside CLIENT_FOR because the two have to agree — a debtor client can
+ * only raise DEBTOR_*, a retail one only CLIENT_* — and because a fixture that
+ * seeds the wrong type produces receipts the run cannot find while everything
+ * looks like it worked. test-fixtures.js asserts this table against
+ * `core.REPORTS`, which is what the run filters by.
+ */
+const CATEGORY_FOR = {
+  bpay: core.BPAY_RECEIPT.value,           // DEBTOR_PAYMENT_RECEIPT
+  travelpay: "CLIENT_PAYMENT_RECEIPT",
+  mint: "CLIENT_PAYMENT_RECEIPT",
+};
 // The booking records are not something you upload, so they stay out of it.
-const OUT_DIR = path.join(__dirname, "..");
+const OUT_DIR = __dirname;
 
 function csvOut(name) {
   fs.mkdirSync(CSV_DIR, { recursive: true });
@@ -202,7 +251,7 @@ function reportUnfilled(csv, column, whereFrom) {
   }
   say(`  The rest of ${path.basename(csv.path)} is already correct.`);
 }
-const shortPath = (p) => path.relative(path.join(__dirname, ".."), p) || path.basename(p);
+const shortPath = (p) => path.relative(__dirname, p) || path.basename(p);
 // The creditor the Mint fixture pays. Only creditors with something payable
 // on the booking are offered by the form, so this has to match what the
 // bookings are costed to.
@@ -248,13 +297,34 @@ const ref = (kind, bookingNo) => `${kind}-${RUN}-${bookingNo}`;
 const die = (m) => { console.error(`\n  ${m}\n`); process.exit(1); };
 const say = (m) => console.log(`  ${m}`);
 
+/**
+ * Which client and which receipt type this report is about to use.
+ *
+ * Printed BEFORE anything is created, and printed on a dry run, because it is
+ * the fact that decides whether the fixtures are usable at all — a BPay booking
+ * under a retail client cannot take a Debtor Payment Receipt, and a TravelPay
+ * booking under a debtor client seeds receipts its own run never filters to.
+ * Both are invisible until a whole run comes back reconciling nothing.
+ */
+function sayPlan(what) {
+  const client = CLIENT_OVERRIDE || CLIENT_FOR[what];
+  const cat = CATEGORY_FOR[what];
+  say(`client ${client}${CLIENT_OVERRIDE ? " (--client)" : ""}` +
+    (cat ? `, receipts raised as ${cat}` : ", receipts are raised by hand"));
+}
+
 function loadBookings() {
   let doc;
   try { doc = JSON.parse(fs.readFileSync(IN, "utf8")); }
   catch (e) { die(`Can't read ${path.basename(IN)}: ${e.message}`); }
   const list = Array.isArray(doc) ? doc : doc.bookings;
   if (!Array.isArray(list) || !list.length) die(`${path.basename(IN)} has no "bookings" array.`);
-  return LIMIT == null ? list : list.slice(0, LIMIT);
+  // The client comes from the REPORT being generated, not from the file — see
+  // CLIENT_FOR. The file's own clientCode is the fallback for a report nobody
+  // has an opinion about yet.
+  const client = CLIENT_OVERRIDE || CLIENT_FOR[WHAT] || null;
+  const chosen = client ? list.map((b) => ({ ...b, clientCode: client })) : list;
+  return LIMIT == null ? chosen : chosen.slice(0, LIMIT);
 }
 
 /**
@@ -405,6 +475,7 @@ async function createBookings(list, onEach) {
 async function makeBpay() {
   const list = loadBookings();
   say(`${list.length} booking${list.length === 1 ? "" : "s"} → bookings + costings, no receipts.\n`);
+  sayPlan("bpay");
   if (DRY) return say("Dry run — Tramada was never opened.\n");
 
   // A BPay row needs nothing but the booking and an amount, so it is written
@@ -470,7 +541,8 @@ async function makeBpay() {
  */
 async function makeTravelPay() {
   const list = loadBookings();
-  say(`${list.length} booking${list.length === 1 ? "" : "s"} → bookings + costings + receipts.\n`);
+  say(`${list.length} booking${list.length === 1 ? "" : "s"} → bookings + costings + receipts + creditor payments to ${CREDITOR}.\n`);
+  sayPlan("travelpay");
   if (DRY) return say("Dry run — Tramada was never opened.\n");
 
   const TP_COLS = ["Processing Date", "Merchant Settlement Date", "MerchantCompanyName",
@@ -488,7 +560,11 @@ async function makeTravelPay() {
     csv.add({
       "Processing Date": today,
       "Merchant Settlement Date": today,
-      MerchantCompanyName: "Monarto Resort Pty Ltd",
+      /* The creditor this booking will actually be paid to. It used to be a
+         hardcoded "Monarto Resort Pty Ltd" copied from RAA's dummy file, which
+         no Tramada statement here would ever say — and BR05's supplier gate
+         compares this column against the page. */
+      MerchantCompanyName: CREDITOR,
       "Base Amount": core.money(b.dueCents || 148088),
       "Customer Fee": "0",
       "Processed Amount": core.money(b.dueCents || 148088),
@@ -520,6 +596,13 @@ async function makeTravelPay() {
           dateReceived: new Date().toISOString().slice(0, 10),
           allocation: "ALL",
         },
+        /* SAID, not inherited. The receipts list defaults to whatever the
+           client's account type offers, so leaving this out makes the fixture's
+           receipt type depend on a booking's client — which is exactly how
+           TravelPay's fixtures silently became Debtor Payment Receipts while
+           its run filtered to Client Payment Receipt. What the run looks for is
+           what the fixture asks for, from the same table. */
+        receiptCategory: CATEGORY_FOR.travelpay,
         dryRun: false,
         callbacks: { onNeedLogin: () => say("     Sign into Tramada in the Chrome on port 9222.") },
       });
@@ -537,12 +620,42 @@ async function makeTravelPay() {
          real TravelPay file, whose Payment Reference can never be a Tramada
          receipt number. */
       const paymentRef = ref("TP", b.bookingNo);
-      say(`     ✓ ${receiptNo} → Payment Reference ${paymentRef}`);
+      say(`     ✓ ${receiptNo} received — the booking can now pay its creditor`);
+
+      /* AND THEN THE PAYMENT OUT — because a TravelPay settlement is money
+         going TO a merchant, and that is what appears on the statement page as
+         a CREDITOR PAYMENT. Its guide's step 9 filters to exactly that.
+         Until 17-Aug-2026 this fixture stopped at the receipt above and the run
+         filtered to Client Payment Receipt, so the file matched a receipt this
+         repo had created — which proved the matcher could find its own homework
+         and nothing about a real TravelPay file. The receipt is now only the
+         enabler: without money in, nothing is payable out. */
+      const paid = await runCreditorPayment({
+        bookingNo: b.bookingNo,
+        creditor: CREDITOR,
+        payment: {
+          transactionType: "EFT",
+          // "AUTO" for the same reason Mint uses it: the payment allocates
+          // "ALL", so the amount has to BE what the form says is payable.
+          amount: "AUTO",
+          reference: paymentRef,
+          paymentDate: new Date().toISOString().slice(0, 10),
+          allocation: "ALL",
+        },
+        callbacks: {
+          onProgress: (pc, m) => console.log(`       [${String(pc).padStart(3)}%] ${m}`),
+          onNeedLogin: () => say("     Sign into Tramada in the Chrome on port 9222."),
+        },
+      });
+      const paymentNo = (paid && (paid.paymentNo || paid.transNo)) || "";
+      say(`     ✓ paid ${CREDITOR} → Payment Reference ${paymentRef}` +
+        (paymentNo ? ` (${paymentNo})` : ""));
       row["Payment Reference"] = paymentRef;
-      // The processor's own id in the real file (`PR.46nyrd`). Tramada's
-      // receipt number is the only second id a fixture has, and nothing
-      // matches on this column, so it is the traceable thing to put here.
-      row["Processor Reference"] = receiptNo;
+      row["MerchantCompanyName"] = CREDITOR;
+      // The processor's own id in the real file (`PR.46nyrd`). Tramada's own
+      // number is the only second id a fixture has, and nothing matches on this
+      // column, so it is the traceable thing to put here.
+      row["Processor Reference"] = paymentNo || receiptNo;
       csv.update();
     } catch (err) {
       console.error(`     ✗ ${core.tidyError(err.message)}`);
@@ -591,6 +704,7 @@ async function makeTravelPay() {
 async function makeMint() {
   const list = loadBookings();
   say(`${list.length} booking${list.length === 1 ? "" : "s"} → bookings + costings + receipts + creditor payments to ${CREDITOR}.\n`);
+  sayPlan("mint");
   if (DRY) return say("Dry run — Tramada was never opened.\n");
 
   const MINT_COLS = ["From Company", "From Company Number", "To Company ", "To Company Number",
@@ -649,6 +763,10 @@ async function makeMint() {
           dateReceived: new Date().toISOString().slice(0, 10),
           allocation: "ALL",
         },
+        // Mint filters on Creditor Payment and never looks at this receipt's
+        // own type — it exists so the creditor becomes payable. Named anyway,
+        // so the fixture does not change shape when a client does.
+        receiptCategory: CATEGORY_FOR.mint,
         dryRun: false,
         callbacks: { onNeedLogin: () => say("     Sign into Tramada in the Chrome on port 9222.") },
       });
@@ -757,6 +875,7 @@ async function makeMint() {
 async function makeIpsi() {
   const list = loadBookings();
   say(`${list.length} booking${list.length === 1 ? "" : "s"} → bookings + costings, then the file.`);
+  sayPlan("ipsi");
   say("The receipts are yours to raise: an IPSI settlement covers Credit Card Swipe");
   say("receipts, and that form wants a real card number.\n");
   if (DRY) return say("Dry run — Tramada was never opened.\n");
@@ -863,7 +982,7 @@ const JOBS = { bpay: makeBpay, travelpay: makeTravelPay, mint: makeMint, ipsi: m
 
 /* Exported so the reference scheme can be tested without opening Tramada. The
    run below is behind `require.main`, so requiring this file creates nothing. */
-module.exports = { RUN, ref, costedCents, bpayCents, csvWriter, csvField, csvOut };
+module.exports = { RUN, ref, costedCents, bpayCents, csvWriter, csvField, csvOut, CLIENT_FOR, CATEGORY_FOR };
 
 if (require.main === module) (async () => {
   if (!JOBS[WHAT]) {
@@ -880,6 +999,8 @@ if (require.main === module) (async () => {
       "  --creditor  who the Mint payments go to (default READY ROOMS)\n" +
       "  --out-dir   where the CSVs land (default csv_uploads/)\n" +
       "  --debtor    whose card receipts the IPSI file covers (default MASTER)\n" +
+      "  --client C  the Tramada client to book under (default: per report,\n" +
+      "              GRAY/MEGAN for bpay, GRAY/SPIDER for the rest)\n" +
       "  --tag XXXXX pin this run's reference tag instead of a random one"
     );
   }

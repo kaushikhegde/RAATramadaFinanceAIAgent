@@ -10,6 +10,31 @@ appear in it.
 
 ---
 
+## 0. WHERE FILES GO
+
+The root holds **the app and nothing else**. A new file belongs in a folder:
+
+| folder | what lives there | how it reaches the root |
+|---|---|---|
+| `design/` | `recon-ui-mockup.html` (client-supplied, never edited) and `recon-wire.html` | — |
+| `fixtures/` | sample workbooks, CSVs, scraped rows the tests read | `path.join(__dirname, "..", "fixtures", …)` |
+| `shots/` | render checks; screenshots into `shots/out/` | `require("../server")` |
+| `test/` | the offline suite | `require("../recon-core")` |
+| `tools/` | build and fixture-making scripts | `require("../recon-core")` |
+| `docs/` | everything except `README.md` and this file | — |
+| `cheat-sheets/` | the supplier name sheet | — |
+
+At the root: `server.js`, `recon-core.js`, `recon-run.js`, `run-store.js`,
+`xlsx-lite.js`, `xlsx-write.js`, `tramada-*.js`, and the config.
+
+**Do not put a test, a shot or a tool in the root**, even if a `package.json`
+script would still find it there. It was flat once, the folders were added
+afterwards, and for a while both copies existed and drifted — the newer one at
+the root, the correctly-pathed one in the folder. Every script in
+`package.json` names its folder. Keep it that way.
+
+---
+
 ## 1. NEVER USE JETSTAR. EVER.
 
 **Do not write, restore, reference, import, suggest, or "helpfully" reinstate any
@@ -54,25 +79,6 @@ captured page values instead of against a live financial form.
 
 Run it: `npm run start:chrome` in one terminal, `npm start` in another, then
 http://localhost:3000. See README.md.
-
-**Where a new file goes.** Everything `npm start` loads sits at the root —
-`server.js`, `recon-core.js`, `recon-run.js`, `run-store.js`, `xlsx-*.js`,
-`tramada-*.js` — and everything else is in a folder:
-
-| | |
-|---|---|
-| `test/` | `npm test`. Offline, no browser. New test goes here. |
-| `shots/` | `npm run shots`. Render checks; their PNGs go to `shots/out/`. |
-| `tools/` | The build and the one-off CLIs — `build-recon.js`, `make-fixtures.js`, `run-bookings.js`, `statement-csv.js`, `probe-payment-form.js`. Nothing the server requires. |
-| `fixtures/` | Sample reports and workbooks the tests and tools read. |
-| `design/` | `recon-ui-mockup.html` + `recon-wire.html`, the build's two sources. |
-| `docs/` | The field map, the BPay conformance notes, the history. |
-| `public/` | The built page. Generated — see §"never hand-edit" in README. |
-
-`uploads/`, `runs.json` and `csv_uploads/` are written by a run and stay at the
-root, because `run-store.js` resolves them from its own `__dirname`. **A module
-the server requires does not move into a folder** without every `require` in
-`server.js` and the `tramada-*` chain moving with it.
 
 ---
 
@@ -178,51 +184,6 @@ Read what the page says; never encode today's answer as tomorrow's bug.
   before Done; nothing matched means Done is not pressed. If you are relaxing
   any of those three, you are removing the only thing between this and
   committing a page it never read.
-- **The closing balance is Westpac's, not a copy of the opening one.** It used
-  to be `typeInto("#closingBalance", carried)` — the same figure in both boxes,
-  so the variance was $0.00 by construction and the one check a bank statement
-  exists to perform could not fail. It comes from the dashboard now, and a run
-  without one stops rather than inventing one.
-- **A label is a whole line, not a substring.** `grab("Debtor")` finds the word
-  **Debtors** in the navigation bar and comes back with `"s"` — and then every
-  booking in the file is reported as the wrong debtor. Match the line that IS
-  the label, and take the next non-empty line.
-- **Read a dropdown's value off the `<select>`.** `Level 1 Branch` reads
-  `[WEST] RAA West Croydon`; the preferred consultant three fields above it
-  reads `Kaushik Hegde [ADL]`. A text scrape for `[XXX]` takes whichever comes
-  first, which is a wrong shop on every booking that consultant made.
-
----
-
-## 6c. The BPAY guide is the specification, and it is not always right
-
-`Reconciliation Guide — BPAY` (RAA Finance) is what the BPay half of this repo
-implements: 35 steps and BR01–BR14. Three things follow.
-
-**Its exact words go in the Remarks column.** `recon-core.REMARKS` holds them
-once. "Please allocate" retyped as "please allocate" is a remark that stops
-grouping with its own kind on a spreadsheet somebody sorts by hand.
-
-**No partial allocation.** BR07–BR11 allow three ticks — one whole segment, all
-of them, or all of them on an overpayment — and nothing else. `decideAllocation`
-used to run a subset-sum search and report "Part allocated"; choosing which of
-two identical segments a part-payment belongs to is the judgement the guide
-reserves for a person, and the old code made it silently and filed it.
-
-**Where it disagrees with the screen, the screen wins — loudly.** Steps 11 and
-30 ask for a *Debtor Payment Receipt*; the booking Receipts screen has never
-offered one (`docs/tramada-field-map.md` §4b, measured 06-08-2026 and again
-17-08-2026) and every receipt this system has filed is a Client Payment Receipt.
-The code files what the screen can file, selects it **by label**, and throws
-with the real option list when it is missing — so an instance that genuinely
-differs stops the run instead of filing under something else. Raise the
-disagreement with Finance; do not settle it by guessing.
-
-**Not implemented yet, deliberately:** BR12 (one bank statement per day — today
-each run creates its own page, see §6 above) and step 35 (emailing the
-spreadsheet to TAccounts@raa.com.au — nothing here sends mail, and putting an
-SMTP credential in a service with no redaction on its socket is the §4 mistake
-in a different costume).
 
 ---
 

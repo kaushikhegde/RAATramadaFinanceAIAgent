@@ -16,17 +16,16 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-
-/* Screenshots land in shots/out/, never the repo root. A bare relative path in
-   page.screenshot() resolves against cwd, not against this file, which is how a
-   dozen PNGs ended up sitting beside server.js. */
-const OUT = path.join(__dirname, "out");
-fs.mkdirSync(OUT, { recursive: true });
-const shot = (name) => path.join(OUT, name);
 const { WebSocketServer } = require("ws");
 const { chromium } = require("playwright");
 const core = require("../recon-core");
 const xlsx = require("../xlsx-lite");
+
+/* Screenshots go to shots/out/, not to whatever directory npm was run from. */
+const SHOT_OUT = require("path").join(__dirname, "out");
+require("fs").mkdirSync(SHOT_OUT, { recursive: true });
+const shotPath = (n) => require("path").join(SHOT_OUT, n);
+
 
 const PORT = 3902;
 const PAGE = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
@@ -53,7 +52,18 @@ function makeStatement(rows) {
   const parsed = core.parseMintRows(sheet.headers, sheet.rows);
   const statement = makeStatement(parsed.rows);
 
+  /* The real sheet, served the way the real server serves it — ONE sheet, and
+     the same one whichever report asks for it. */
+  const cheat = core.parseCheatSheet(
+    xlsx.readSheet(fs.readFileSync(path.join(__dirname, "..", "cheat-sheets", "supplier-names.xlsx"))));
   const server = http.createServer((q, s) => {
+    if ((q.url || "").startsWith("/api/cheat-sheet/")) {
+      s.writeHead(200, { "Content-Type": "application/json" });
+      s.end(JSON.stringify({
+        source: "suppliers", name: "supplier-names.xlsx", pairs: cheat.pairs, shipped: true,
+      }));
+      return;
+    }
     s.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     s.end(PAGE);
   });
@@ -123,16 +133,52 @@ function makeStatement(rows) {
   await page.evaluate(() => document.querySelector('[data-choose="mint"]').click());
   await page.locator("#filePicker").setInputFiles(BOOK);
   await page.waitForTimeout(900);
+  /* The cheat sheet panel. ONE of them, not one per report — the guides name a
+     sheet each, RAA's file is headed "SUPPLIER NAME IN MINT / TRAVELPAY" and
+     covers both. A second panel here would mean somebody has to upload the same
+     file twice and wonder which one a run used. */
+  let pass = 0, fail = 0;
+  const check = (name, got, want) => {
+    const g = JSON.stringify(got), w = JSON.stringify(want);
+    if (g === w) { pass++; console.log(`  ✓ ${name}`); }
+    else { fail++; console.log(`  ✗ ${name}\n      got:  ${g}\n      want: ${w}`); }
+  };
+  const panel = await page.evaluate(() => {
+    const host = document.querySelector("#cheatSheets");
+    if (!host) return { cards: 0 };
+    const picker = document.querySelector("#cheatPicker");
+    return {
+      cards: host.querySelectorAll(".card").length,
+      buttons: host.querySelectorAll("[data-cheat]").length,
+      shown: host.style.display !== "none",
+      text: host.innerText.replace(/\s+/g, " ").trim(),
+      accept: picker ? picker.accept : null,
+    };
+  });
+  console.log("\nthe supplier cheat sheet panel");
+  check("one panel, not one per report", panel.cards, 1);
+  check("with one upload button", panel.buttons, 1);
+  check("and it is on screen once a file is loaded", panel.shown, true);
+  check("it says the sheet serves both reports",
+    /MINT and TravelPay/.test(panel.text), true);
+  check("it names the file and counts the suppliers",
+    /supplier-names\.xlsx/.test(panel.text) && /28 suppliers/.test(panel.text), true);
+  check("and says where it came from", /supplied with the app/.test(panel.text), true);
+  check("the picker takes a workbook as well as a CSV",
+    /\.xlsx/.test(panel.accept || ""), true);
+  if (fail) { console.log(`\n❌ ${pass} passed, ${fail} failed`); process.exitCode = 1; }
+  else console.log(`  ${pass} passed`);
+
   await page.locator("#rcOpening").fill("1300000.00");
   await page.locator("#rcClosing").fill("1300000.00");
-  await page.screenshot({ path: shot("mint-run-0-loaded.png") });
-  console.log("wrote shots/out/mint-run-0-loaded.png");
+  await page.screenshot({ path: shotPath("mint-run-0-loaded.png") });
+  console.log("wrote mint-run-0-loaded.png");
 
   await page.locator("#startRun").click();
   await finished;
   await page.waitForTimeout(600);
-  await page.screenshot({ path: shot("mint-run-1-finished.png") });
-  console.log("wrote shots/out/mint-run-1-finished.png");
+  await page.screenshot({ path: shotPath("mint-run-1-finished.png") });
+  console.log("wrote mint-run-1-finished.png");
 
   console.log("lede:", (await page.locator("#ibLede").textContent()).trim());
   const cells = await page.evaluate(() =>

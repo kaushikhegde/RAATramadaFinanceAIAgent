@@ -41,7 +41,7 @@ const valueOf = (f, dflt) => {
 // one booking behind instead of three.
 const LIMIT = valueOf("--limit", null) ? parseInt(valueOf("--limit"), 10) : null;
 const IN = path.resolve(valueOf("--file", path.join(__dirname, "..", "fixtures", "bookings.json")));
-const OUT = path.resolve(valueOf("--out", path.join(__dirname, "..", "created-bookings.json")));
+const OUT = path.resolve(valueOf("--out", path.join(__dirname, "..", "fixtures", "created-bookings.json")));
 const DRY = has("--dry-run");
 
 function load() {

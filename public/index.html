@@ -3334,17 +3334,19 @@ function askMarkStale(){
   /* ── the supplier name cheat sheet ──
      Both guides: "A section to show [the] supplier name cheat sheet .CSV file
      and the date and time when it was uploaded", and "if there is an existing
-     one, it will get replaced". One panel per report that needs one, under the
-     cards, because that is where the file it belongs to was dropped. */
-  const cheatSheets = {};                  // report → what the server has on file
+     one, it will get replaced".
+
+     ONE panel, not one per report. The guides each name their own sheet as
+     though there were two; RAA's actual file is headed "SUPPLIER NAME IN MINT /
+     TRAVELPAY" and covers both, so it is uploaded once and both reports use it.
+     Excel or CSV, like every other upload here. */
+  let cheatSheet = null;                   // what the server has on file
 
   function loadCheatSheets() {
-    for (const kind of WANTS_TOTAL) {
-      fetch('/api/cheat-sheet/' + kind)
-        .then((r) => r.json())
-        .then((d) => { cheatSheets[kind] = d && d.pairs ? d : null; renderCheatSheets(); })
-        .catch(() => {});
-    }
+    fetch('/api/cheat-sheet/suppliers')
+      .then((r) => r.json())
+      .then((d) => { cheatSheet = d && d.pairs && d.pairs.length ? d : null; renderCheatSheets(); })
+      .catch(() => {});
   }
 
   function renderCheatSheets() {
@@ -3353,27 +3355,24 @@ function askMarkStale(){
     const on = loaded().filter((k) => WANTS_TOTAL.indexOf(k) >= 0);
     host.style.display = on.length ? '' : 'none';
     if (!on.length) return;
-    host.innerHTML = on.map((kind) => {
-      const cs = cheatSheets[kind];
-      const when = cs && cs.uploadedAt ? new Date(cs.uploadedAt).toLocaleString() : '';
-      return '<div class="card" style="padding:12px 14px;margin-bottom:8px">' +
-        '<b>' + esc((SOURCES[kind] || {}).title || kind) + ' supplier name cheat sheet</b>' +
-        '<div class="muted" style="margin:4px 0 8px">' +
-        (cs
-          ? esc(cs.name) + ' · ' + esc(String(cs.pairs.length)) + ' name' +
-            (cs.pairs.length === 1 ? '' : 's') + ' · uploaded ' + esc(when) +
-            (cs.skipped ? ' · ' + cs.skipped + ' line(s) skipped' : '')
-          : 'None uploaded. Supplier names must then match Tramada exactly, ' +
-            'so a trading name like "Viva Holidays II Limited T/A Ready Rooms" ' +
-            'will read as "Supplier does not match".') +
-        '</div>' +
-        '<button class="btn sm" data-cheat="' + kind + '">' +
-        (cs ? 'Replace' : 'Upload') + ' cheat sheet</button>' +
-        '<span class="muted" id="csHint-' + kind + '" style="margin-left:8px"></span></div>';
-    }).join('');
-    host.querySelectorAll('[data-cheat]').forEach((b) => {
-      b.onclick = () => pickCheatSheet(b.dataset.cheat);
-    });
+    const cs = cheatSheet;
+    const when = cs && cs.uploadedAt ? new Date(cs.uploadedAt).toLocaleString() : '';
+    host.innerHTML = '<div class="card" style="padding:12px 14px;margin-bottom:8px">' +
+      '<b>Supplier name cheat sheet</b> <span class="muted">· MINT and TravelPay</span>' +
+      '<div class="muted" style="margin:4px 0 8px">' +
+      (cs
+        ? esc(cs.name) + ' · ' + esc(String(cs.pairs.length)) + ' supplier' +
+          (cs.pairs.length === 1 ? '' : 's') +
+          (cs.shipped ? ' · supplied with the app' : ' · uploaded ' + esc(when)) +
+          (cs.skipped ? ' · ' + cs.skipped + ' line(s) skipped' : '')
+        : 'None on file. Supplier names must then match Tramada exactly, ' +
+          'so a trading name like "Viva Holidays II Limited T/A Ready Rooms" ' +
+          'will read as "Supplier does not match".') +
+      '</div>' +
+      '<button class="btn sm" data-cheat="1">' +
+      (cs ? 'Replace' : 'Upload') + ' cheat sheet</button>' +
+      '<span class="muted" id="csHint" style="margin-left:8px"></span></div>';
+    host.querySelectorAll('[data-cheat]').forEach((b) => { b.onclick = pickCheatSheet; });
   }
 
   /* The panel host and its own file input, built here rather than added to the
@@ -3391,36 +3390,38 @@ function askMarkStale(){
     const picker = document.createElement('input');
     picker.type = 'file';
     picker.id = 'cheatPicker';
-    picker.accept = '.csv,text/csv';
+    picker.accept = '.csv,.xlsx,text/csv';
     picker.style.display = 'none';
     picker.onchange = () => {
       const file = picker.files && picker.files[0];
-      const kind = picker.dataset.kind;
-      if (!file || !kind) return;
+      if (!file) return;
       const fr = new FileReader();
       fr.onload = () => {
-        if (!ws || ws.readyState !== 1) { csHint(kind, 'not connected to the server', true); return; }
-        csHint(kind, 'reading ' + file.name + '…');
+        if (!ws || ws.readyState !== 1) { csHint('not connected to the server', true); return; }
+        csHint('reading ' + file.name + '…');
+        /* Read as bytes whatever it is. A workbook read as text is mangled
+           before it ever reaches the server; a CSV survives this path unchanged. */
+        const bytes = new Uint8Array(fr.result);
+        let bin = '';
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
         ws.send(JSON.stringify({
-          type: 'cheat_sheet', source: kind, name: file.name,
-          base64: btoa(unescape(encodeURIComponent(fr.result))),
+          type: 'cheat_sheet', source: 'suppliers', name: file.name, base64: btoa(bin),
         }));
       };
-      fr.readAsText(file);
+      fr.readAsArrayBuffer(file);
     };
     document.body.appendChild(picker);
   }
 
-  function csHint(kind, text, bad) {
-    const el = $('#csHint-' + kind);
+  function csHint(text, bad) {
+    const el = $('#csHint');
     if (el) el.innerHTML = bad ? '<span style="color:var(--err)">' + esc(text) + '</span>' : esc(text);
   }
 
-  function pickCheatSheet(kind) {
+  function pickCheatSheet() {
     const picker = $('#cheatPicker');
     if (!picker) return;
     picker.value = '';
-    picker.dataset.kind = kind;
     picker.click();
   }
 
@@ -4372,12 +4373,13 @@ function askMarkStale(){
       note(m.message, false);
       render();
     } else if (m.type === 'cheat_sheet') {
-      if (m.error) { csHint(m.source, m.error, true); return; }
-      cheatSheets[m.source] = m;
+      if (m.error) { csHint(m.error, true); return; }
+      cheatSheet = m;
       renderCheatSheets();
-      csHint(m.source, 'saved');
-      note((SOURCES[m.source] || {}).title + ' cheat sheet updated — ' +
-        m.pairs.length + ' supplier name' + (m.pairs.length === 1 ? '' : 's') +
+      csHint('saved');
+      note('Supplier cheat sheet updated — ' +
+        m.pairs.length + ' supplier' + (m.pairs.length === 1 ? '' : 's') +
+        ', used by MINT and TravelPay' +
         (m.skipped ? ', ' + m.skipped + ' line(s) skipped' : ''), true);
     } else if (m.type === 'recon_started') {
       lastRunId = m.runId || '';

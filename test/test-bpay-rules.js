@@ -273,6 +273,23 @@ console.log("\nBR14 — Shop, then Consultant");
 }
 check("no rows sorts to no rows", C.sortForFinance([]), []);
 
+console.log("\nstep 11 / step 30 — the receipt type, and the filter that finds it");
+check("the category chosen on the receipts list", C.BPAY_RECEIPT.value, "DEBTOR_PAYMENT_RECEIPT");
+check("and what the reconcile screen calls the same thing", C.BPAY_RECEIPT.label, "Debtor Payment Receipt");
+/* THE ONE THAT MATTERS. Filing under one name and searching under another
+   reconciles nothing while looking like it worked — the receipts are real, the
+   filter shows an empty grid, and every row reports "not reconciled". So the
+   filter is not allowed to drift from the category. */
+check("the filter is the same name the receipt is filed under",
+  C.REPORTS.bpay.recPayType, C.BPAY_RECEIPT.label);
+check("and it is in Tramada's own vocabulary for that dropdown",
+  ["Client Payment Receipt", "Creditor Payment", "Debtor Payment Receipt"]
+    .includes(C.REPORTS.bpay.recPayType), true);
+// Not in the guide, and its own string rather than a bare "Please review":
+// a booking that cannot take this type is a specific thing to go and look at.
+check("the remark for a booking that cannot take one",
+  C.REMARKS.noDebtorReceipt, "Please review, Debtor Payment Receipt not available");
+
 console.log("\nstep 9 — the shop shortcode");
 check("a branch label gives its code", C.branchCode("[WEST] RAA West Croydon"), "WEST");
 check("whatever the code is", C.branchCode("[BROKENHILL] RAA Broken Hill"), "BROKENHILL");

@@ -255,7 +255,11 @@ const overview = () => core.overviewFrom(listRuns());
  * being rewritten a hundred times an hour.
  */
 function cheatSheetPath() {
-  return path.join(DIR, "cheat-sheets.json");
+  // ROOT, not DIR. `DIR` never existed — every save threw and every read was
+  // swallowed by the catch below, so an uploaded cheat sheet was never once
+  // written to disk. Caught by the save-and-reload test, not by anything on
+  // screen, because both callers had a quiet fallback to "no mappings".
+  return path.join(ROOT, "cheat-sheets.json");
 }
 
 function readCheatSheets() {
@@ -267,9 +271,17 @@ function saveCheatSheet(source, { name, pairs, problems }, at = new Date().toISO
   const all = readCheatSheets();
   all[source] = {
     source,
-    name: String(name || "cheat-sheet.csv"),
+    name: String(name || "supplier-cheat-sheet"),
     uploadedAt: at,
-    pairs: (pairs || []).map((p) => ({ from: String(p.from), to: String(p.to) })),
+    pairs: (pairs || []).map((p) => ({
+      from: String(p.from),
+      to: String(p.to),
+      /* The candidates, not only the cell they came from. "Royal Caribbean /
+         Celebrity Cruises" is TWO creditors, and writing just the cell here
+         would quietly un-match one of them the moment the sheet came back off
+         disk — a bug that only appears after a restart. */
+      try: (p.try && p.try.length ? p.try : [p.to]).map(String),
+    })),
     // Kept so the screen can say "3 of 19 lines were half a mapping" rather
     // than quietly using the 16 that worked.
     skipped: (problems || []).filter((p) => !p.heading).length,

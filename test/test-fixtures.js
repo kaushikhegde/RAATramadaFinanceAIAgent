@@ -155,6 +155,59 @@ console.log("\nthe report file exists from the first row, not the last");
   ok("a writer with no rows leaves no half-written file", !fs.existsSync(w4.path));
 }
 
+console.log("\nthe fixtures seed the type the run goes looking for");
+{
+  /* THE INVARIANT THIS FILE EXISTS FOR NOW.
+   *
+   * A fixture that seeds one receipt type while its run filters to another
+   * produces receipts that are really there, a filter that shows an empty grid,
+   * and every row reported unreconciled. Nothing errors. Nothing looks wrong
+   * until somebody opens Tramada and finds the receipts sitting in it.
+   *
+   * That is not hypothetical: setting every booking's client to GRAY/MEGAN on
+   * 17-Aug-2026 made TravelPay's fixtures Debtor Payment Receipts, because the
+   * receipts list defaults to whatever the CLIENT's account type offers and the
+   * fixture never said which it wanted. Its run still filtered to Client
+   * Payment Receipt. This assertion is what that mistake is worth. */
+  const core = require("../recon-core");
+  const LABEL = {
+    DEBTOR_PAYMENT_RECEIPT: "Debtor Payment Receipt",
+    CLIENT_PAYMENT_RECEIPT: "Client Payment Receipt",
+  };
+  for (const [report, category] of Object.entries(F.CATEGORY_FOR)) {
+    const seeds = LABEL[category];
+    ok(`${report}: the category is one Tramada offers`, !!seeds, category);
+    if (report === "mint" || report === "travelpay") {
+      /* BOTH creditor reports work the same way: the receipt is only an
+         ENABLER — without money in, nothing is payable out — and what lands on
+         the statement page, and what the run filters to, is the creditor
+         payment that follows it. TravelPay joined Mint here on 17-Aug-2026;
+         before that its fixture stopped at the receipt and its run filtered to
+         Client Payment Receipt, so the file matched a receipt this repo had
+         created and proved nothing about a real TravelPay file. */
+      check(`${report} filters on what the receipt enables, not the receipt`,
+        core.REPORTS[report].recPayType, "Creditor Payment");
+      check(`${report} seeds a receipt its client can actually raise`,
+        category, "CLIENT_PAYMENT_RECEIPT");
+      continue;
+    }
+    check(`${report}: seeds exactly what its run filters to`,
+      seeds, core.REPORTS[report].recPayType);
+  }
+
+  // And the client has to be able to offer that category at all.
+  check("bpay builds under a debtor-account client", F.CLIENT_FOR.bpay, "GRAY/MEGAN");
+  check("travelpay builds under a retail one", F.CLIENT_FOR.travelpay, "GRAY/SPIDER");
+  // And the two creditor reports agree with each other, because they are the
+  // same shape of job — a receipt in, a payment out, filtered to the payment.
+  check("mint and travelpay filter to the same thing",
+    core.REPORTS.mint.recPayType, core.REPORTS.travelpay.recPayType);
+  ok("so the two are not the same client",
+    F.CLIENT_FOR.bpay !== F.CLIENT_FOR.travelpay, F.CLIENT_FOR.bpay);
+  check("and bpay's category is the one the run files under",
+    F.CATEGORY_FOR.bpay, core.BPAY_RECEIPT.value);
+}
+
 fs.rmSync(DIR, { recursive: true, force: true });
 console.log(`\n${fail ? "❌" : "✅"} ${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

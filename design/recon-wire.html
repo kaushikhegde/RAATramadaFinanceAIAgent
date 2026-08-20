@@ -265,6 +265,14 @@ header.top { display: none !important }
         '<input class="btn" id="rcOpening" style="width:130px" placeholder="0.00"></div>' +
         '<div><label class="field-lbl" style="margin:0 0 3px;display:block">Closing balance</label>' +
         '<input class="btn" id="rcClosing" style="width:130px" placeholder="0.00"></div>' +
+        /* MINT BR02 / TravelPay BR02 — "Total Transaction to be a required
+           field in the AI Reconciliation Dashboard ... to be calculated and
+           entered by a human". It is what the uploaded file's own amounts are
+           added up against, and the check is reported once on the run rather
+           than down every row. Shown only when one of those two reports is
+           loaded, because BPay has no such rule. */
+        '<div id="rcTotalBox" style="display:none"><label class="field-lbl" style="margin:0 0 3px;display:block">Transaction total</label>' +
+        '<input class="btn" id="rcTotal" style="width:130px" placeholder="0.00"></div>' +
         /* One checkbox, called Dry run. A fourth field in the row this script
            already builds, wearing the same .btn as the three beside it. The
            mockup's own markup is not touched; #stmtDate was already being
@@ -364,9 +372,116 @@ header.top { display: none !important }
       ' · ' + dollars(total.toFixed(2)) + ' to receipt';
   }
 
+  /* Which reports want a Transaction Total — MINT BR02 and TravelPay BR02.
+     BPay has no such rule, so the field stays out of its way. */
+  const WANTS_TOTAL = ['mint', 'travelpay'];
+
+  function syncTotalField() {
+    const box = $('#rcTotalBox');
+    if (!box) return;
+    const on = loaded().some((k) => WANTS_TOTAL.indexOf(k) >= 0);
+    box.style.display = on ? '' : 'none';
+  }
+
+  /* ── the supplier name cheat sheet ──
+     Both guides: "A section to show [the] supplier name cheat sheet .CSV file
+     and the date and time when it was uploaded", and "if there is an existing
+     one, it will get replaced".
+
+     ONE panel, not one per report. The guides each name their own sheet as
+     though there were two; RAA's actual file is headed "SUPPLIER NAME IN MINT /
+     TRAVELPAY" and covers both, so it is uploaded once and both reports use it.
+     Excel or CSV, like every other upload here. */
+  let cheatSheet = null;                   // what the server has on file
+
+  function loadCheatSheets() {
+    fetch('/api/cheat-sheet/suppliers')
+      .then((r) => r.json())
+      .then((d) => { cheatSheet = d && d.pairs && d.pairs.length ? d : null; renderCheatSheets(); })
+      .catch(() => {});
+  }
+
+  function renderCheatSheets() {
+    const host = $('#cheatSheets');
+    if (!host) return;
+    const on = loaded().filter((k) => WANTS_TOTAL.indexOf(k) >= 0);
+    host.style.display = on.length ? '' : 'none';
+    if (!on.length) return;
+    const cs = cheatSheet;
+    const when = cs && cs.uploadedAt ? new Date(cs.uploadedAt).toLocaleString() : '';
+    host.innerHTML = '<div class="card" style="padding:12px 14px;margin-bottom:8px">' +
+      '<b>Supplier name cheat sheet</b> <span class="muted">· MINT and TravelPay</span>' +
+      '<div class="muted" style="margin:4px 0 8px">' +
+      (cs
+        ? esc(cs.name) + ' · ' + esc(String(cs.pairs.length)) + ' supplier' +
+          (cs.pairs.length === 1 ? '' : 's') +
+          (cs.shipped ? ' · supplied with the app' : ' · uploaded ' + esc(when)) +
+          (cs.skipped ? ' · ' + cs.skipped + ' line(s) skipped' : '')
+        : 'None on file. Supplier names must then match Tramada exactly, ' +
+          'so a trading name like "Viva Holidays II Limited T/A Ready Rooms" ' +
+          'will read as "Supplier does not match".') +
+      '</div>' +
+      '<button class="btn sm" data-cheat="1">' +
+      (cs ? 'Replace' : 'Upload') + ' cheat sheet</button>' +
+      '<span class="muted" id="csHint" style="margin-left:8px"></span></div>';
+    host.querySelectorAll('[data-cheat]').forEach((b) => { b.onclick = pickCheatSheet; });
+  }
+
+  /* The panel host and its own file input, built here rather than added to the
+     mockup — that file is client-supplied and generated from, not edited. */
+  function mountCheatSheets() {
+    if ($('#cheatSheets')) return;
+    const grid = $('#tileGrid');
+    if (!grid || !grid.parentNode) return;
+    const host = document.createElement('div');
+    host.id = 'cheatSheets';
+    host.style.display = 'none';
+    host.style.marginTop = '14px';
+    grid.parentNode.insertBefore(host, grid.nextSibling);
+
+    const picker = document.createElement('input');
+    picker.type = 'file';
+    picker.id = 'cheatPicker';
+    picker.accept = '.csv,.xlsx,text/csv';
+    picker.style.display = 'none';
+    picker.onchange = () => {
+      const file = picker.files && picker.files[0];
+      if (!file) return;
+      const fr = new FileReader();
+      fr.onload = () => {
+        if (!ws || ws.readyState !== 1) { csHint('not connected to the server', true); return; }
+        csHint('reading ' + file.name + '…');
+        /* Read as bytes whatever it is. A workbook read as text is mangled
+           before it ever reaches the server; a CSV survives this path unchanged. */
+        const bytes = new Uint8Array(fr.result);
+        let bin = '';
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        ws.send(JSON.stringify({
+          type: 'cheat_sheet', source: 'suppliers', name: file.name, base64: btoa(bin),
+        }));
+      };
+      fr.readAsArrayBuffer(file);
+    };
+    document.body.appendChild(picker);
+  }
+
+  function csHint(text, bad) {
+    const el = $('#csHint');
+    if (el) el.innerHTML = bad ? '<span style="color:var(--err)">' + esc(text) + '</span>' : esc(text);
+  }
+
+  function pickCheatSheet() {
+    const picker = $('#cheatPicker');
+    if (!picker) return;
+    picker.value = '';
+    picker.click();
+  }
+
   function renderSource() {
     const grid = $('#tileGrid');
     if (!grid) return;
+    syncTotalField();
+    renderCheatSheets();
     const op = ($('#rcOpening') || {}).value, cl = ($('#rcClosing') || {}).value;
     const balances = op && cl ? ' · opening ' + dollars(op) + ' → closing ' + dollars(cl) : '';
 
@@ -899,21 +1014,32 @@ header.top { display: none !important }
   function fullColumns() {
     const rows = viewRows().filter((r) => !reportOnly || r.src === reportOnly);
     const kinds = [...new Set(rows.map((r) => r.src).filter(Boolean))];
-    const writing = kinds.filter((k) => !checksOnly(k));
-    if (writing.length !== 1 || kinds.length > 1) return null;
+    /* ONE report on screen, whatever kind it is. This used to insist on a
+       report that FILES something, which meant MINT and TravelPay — the two
+       that exist only to be checked against a spreadsheet — showed five
+       invented columns instead of the file Finance actually uploaded. Both
+       guides ask for the opposite: "create a new column titled Remarks and
+       append on the right of the spreadsheet". You cannot append to a
+       spreadsheet you are not showing. */
+    if (kinds.length !== 1) return null;
     if (viewing) return (viewing.columns && viewing.columns.length) ? viewing.columns : null;
-    const src = source[writing[0]];
+    const src = source[kinds[0]];
     return src && src.columns && src.columns.length ? src.columns : null;
   }
 
   /* The run's own columns, after the file's. Consultant and Shop come first of
      these and are EDITABLE — they are the two the agent fills in from the
      booking, and the two a person is most likely to want to correct. */
+  /* `only` names the reports a column belongs to. MINT and TravelPay file
+     nothing, so a Receipt No and an Allocation on their rows are two empty
+     columns that read as data that went missing — and neither guide has any
+     such column. Consultant and Shop are BPay's steps 7 and 9 and mean nothing
+     to a creditor payment either. */
   const RUN_COLUMNS = [
-    { key: 'consultant', label: 'Consultant', edit: true },
-    { key: 'shop', label: 'Shop', edit: true },
-    { key: 'receiptNo', label: 'Receipt No', mono: true },
-    { key: 'allocation', label: 'Allocation', badge: true },
+    { key: 'consultant', label: 'Consultant', edit: true, only: ['bpay'] },
+    { key: 'shop', label: 'Shop', edit: true, only: ['bpay'] },
+    { key: 'receiptNo', label: 'Receipt No', mono: true, only: ['bpay'] },
+    { key: 'allocation', label: 'Allocation', badge: true, only: ['bpay'] },
     { key: 'reconciliation', label: 'Reconciled', badge: true },
     /* Editable, like the two above it. The agent's remark is a starting point:
        Finance are the ones who know whether a row really does need review, and
@@ -948,7 +1074,10 @@ header.top { display: none !important }
        fixes a cell in Excel and re-uploads; looking before naming gave it a
        second one every time round. */
     const claimed = sheet.map(normHead).filter((h) => !inputHeads[h]);
-    const targets = RUN_COLUMNS.map((c) => {
+    // Which report is on screen — fullColumns() has already made sure there is
+    // exactly one, so the first row's is everyone's.
+    const kind = (shown[0] && shown[0].src) || active || 'bpay';
+    const targets = RUN_COLUMNS.filter((c) => !c.only || c.only.indexOf(kind) >= 0).map((c) => {
       const taken = sheet.some((h) => normHead(h) === normHead(c.label) && inputHeads[normHead(h)]);
       return Object.assign({}, c, { label: taken ? 'Tramada ' + c.label : c.label });
     });
@@ -1241,6 +1370,9 @@ header.top { display: none !important }
     const only = kind === 'both' ? null : (source[kind] || {});
     const common = {
       statementDate: date, openingBalance: op, closingBalance: cl, dryRun: dry,
+      // BR02. Blank is allowed through — the check then reports "no Transaction
+      // Total was entered" rather than accusing the file of not adding up.
+      transactionTotal: ($('#rcTotal') || {}).value || '',
       columns: only ? (only.columns || []) : [],
       format: only ? (only.format || 'csv') : 'csv',
     };
@@ -1292,6 +1424,15 @@ header.top { display: none !important }
       needLogin = m.message;
       note(m.message, false);
       render();
+    } else if (m.type === 'cheat_sheet') {
+      if (m.error) { csHint(m.error, true); return; }
+      cheatSheet = m;
+      renderCheatSheets();
+      csHint('saved');
+      note('Supplier cheat sheet updated — ' +
+        m.pairs.length + ' supplier' + (m.pairs.length === 1 ? '' : 's') +
+        ', used by MINT and TravelPay' +
+        (m.skipped ? ', ' + m.skipped + ' line(s) skipped' : ''), true);
     } else if (m.type === 'recon_started') {
       lastRunId = m.runId || '';
     } else if (m.type === 'recon_done') {
@@ -1814,8 +1955,9 @@ header.top { display: none !important }
   document.addEventListener('DOMContentLoaded', () => {
     // renderOverview first: the overview is wired now, and markSamples is only
     // allowed to be right about screens that still are not.
+    mountCheatSheets();
     mountNav(); mountSources(); renderOverview(); markSamples(); hideUnwired();
-    render(); connect(); loadOverview();
+    render(); connect(); loadOverview(); loadCheatSheets();
     /* Open on Sources & upload, not on Run overview.
        The mockup ships with the overview marked `on`, which made sense when it
        was one screen of a wider app. Here there is one job — put a report in

@@ -193,18 +193,37 @@ console.log("\nevery report is matched by the RIGHT matcher, chosen in one place
      sitting FIRST on the page with its reference in plain sight. One table
      now, and this reads it. */
   check("BPay matches on the receipt number", C.matcherFor("bpay"), C.matchAgainstStatement);
-  check("Mint on its P. number", C.matcherFor("mint"), C.matchMintAgainstStatement);
-  check("TravelPay on the Reference column", C.matcherFor("travelpay"), C.matchTravelPayAgainstStatement);
-  ok("Mint and TravelPay do NOT share one", C.matcherFor("mint") !== C.matcherFor("travelpay"));
+  /* Mint and TravelPay now share ONE matcher with two vocabularies — both
+     guides ask the same three-way question and only the words for a failure
+     differ. So the assertion is no longer "they are different functions" but
+     the thing that actually matters: each reports its own guide's remark. */
+  ok("Mint and TravelPay share the three-way matcher",
+    typeof C.matcherFor("mint") === "function" && typeof C.matcherFor("travelpay") === "function");
+  const bad = { transNo: "NOPE", amountCents: 1, toCompany: "X" };
+  check("and Mint answers in Mint's words",
+    C.matcherFor("mint")(bad, []).remark, C.MINT_REMARKS.reference);
+  check("while a wrong amount is Mint's wording",
+    C.matcherFor("mint")({ transNo: "A", amountCents: 2, toCompany: "X" },
+      [{ transNo: "P.1", reference: "A", amount: "1.00", payee: "X" }]).remark, C.MINT_REMARKS.amount);
+  check("and TravelPay's is its own",
+    C.matcherFor("travelpay")({ transNo: "A", amountCents: 2, toCompany: "X" },
+      [{ transNo: "P.1", reference: "A", amount: "1.00", payee: "X" }]).remark, C.TRAVELPAY_REMARKS.amount);
+  ok("which are not the same string",
+    C.MINT_REMARKS.amount !== C.TRAVELPAY_REMARKS.amount);
   // An unknown report falls back rather than crashing a live run.
-  check("something unknown falls back to Mint's", C.matcherFor("nonsense"), C.matchMintAgainstStatement);
-  check("and so does nothing at all", C.matcherFor(undefined), C.matchMintAgainstStatement);
+  ok("something unknown falls back to Mint's", typeof C.matcherFor("nonsense") === "function");
+  check("and that fallback speaks Mint",
+    C.matcherFor("nonsense")(bad, []).remark, C.MINT_REMARKS.reference);
 
   // Said out loud at the start of a run, so the wrong column is visible from
   // the log instead of only from a row that mysteriously will not reconcile.
   ok("a run says which column it will look in",
     /Reference column/.test(C.matchesOn("travelpay")), C.matchesOn("travelpay"));
-  ok("and Mint says Trans. No", /Trans\. No/.test(C.matchesOn("mint")), C.matchesOn("mint"));
+  // Both read the Reference column now, and both say all three things they
+  // check — so the log says what will be compared, not just where.
+  ok("and Mint too", /Reference column/.test(C.matchesOn("mint")), C.matchesOn("mint"));
+  ok("naming all three gates", /amount/.test(C.matchesOn("mint")) && /supplier/.test(C.matchesOn("mint")),
+    C.matchesOn("mint"));
 
   // Every report that reconciles against a statement page needs an entry.
   const needsOne = Object.keys(C.REPORTS).filter((k) => C.REPORTS[k].recPayType);
@@ -215,9 +234,24 @@ console.log("\nevery report is matched by the RIGHT matcher, chosen in one place
 console.log("\nwhat the report IS");
 check("TravelPay files nothing", C.REPORTS.travelpay.files, false);
 // Client Payment Receipt, confirmed 10-08-2026 — NOT the Finance Merchant
-// Payment Receipt its name suggests.
-check("and is filtered to Client Payment Receipt", C.REPORTS.travelpay.recPayType, "Client Payment Receipt");
-check("which is the same filter BPay uses", C.REPORTS.bpay.recPayType, C.REPORTS.travelpay.recPayType);
+// Payment Receipt its name suggests. These receipts ALREADY EXIST on Tramada;
+// nothing here files one, so the type is whatever Tramada gave them.
+/* CREDITOR PAYMENT, per the TravelPay guide's step 9 — corrected 17-Aug-2026.
+   This asserted "Client Payment Receipt" on a confirmation taken against
+   receipts this repo's own fixtures had created, which is exactly how the BPay
+   receipt type went wrong. A TravelPay settlement pays a merchant, and money
+   leaving to a supplier is a Creditor Payment. */
+check("and is filtered to Creditor Payment", C.REPORTS.travelpay.recPayType, "Creditor Payment");
+check("the same filter Mint uses", C.REPORTS.mint.recPayType, C.REPORTS.travelpay.recPayType);
+/* It used to share that filter with BPay. It no longer does: from 17-Aug-2026
+   BPay files Debtor Payment Receipts, because the type on offer depends on the
+   client's account and a BPay booking's client is a debtor account. Asserted as
+   a DIFFERENCE rather than deleted, so a change that silently merged them again
+   has something to fail against. */
+check("BPay does not share that filter", C.REPORTS.bpay.recPayType, "Debtor Payment Receipt");
+ok("so BPay is filtered separately from the two creditor reports",
+  C.REPORTS.bpay.recPayType !== C.REPORTS.travelpay.recPayType,
+  `both read ${C.REPORTS.bpay.recPayType}`);
 check("Mint has its own", C.REPORTS.mint.recPayType, "Creditor Payment");
 check("only BPay writes", Object.keys(C.REPORTS).filter((k) => C.REPORTS[k].files), ["bpay"]);
 

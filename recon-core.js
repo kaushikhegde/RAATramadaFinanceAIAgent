@@ -2047,14 +2047,60 @@ const TRAVELPAY_REMARKS = {
  * blank line is a blank line rather than a mapping of "" to "".
  */
 const CHEAT_SHEET_COLUMNS = {
-  from: ["spreadsheet name", "supplier", "supplier name", "mint name", "travelpay name", "from", "name"],
-  to: ["tramada creditor", "tramada name", "creditor", "tramada", "to", "maps to"],
+  from: [
+    "spreadsheet name", "supplier", "supplier name", "mint name", "travelpay name",
+    "from", "name",
+    // RAA's own sheet, received 20-Aug-2026. One sheet, both reports — which is
+    // why the heading names them both.
+    "supplier name in mint / travelpay", "supplier name in mint/travelpay",
+  ],
+  to: [
+    "tramada creditor", "tramada name", "creditor", "tramada", "to", "maps to",
+    // "TRY THESE", plural. See `cheatSheetCandidates`.
+    "in tramada - try these", "in tramada – try these", "in tramada — try these",
+    "in tramada try these",
+  ],
 };
 
-function parseCheatSheet(text) {
-  const grid = csvGrid(text);
+/**
+ * One cell of the "IN TRAMADA - TRY THESE" column → the creditor names to try.
+ *
+ * The heading is plural and RAA's sheet means it:
+ *
+ *     Circuit Travel Pty Ltd  →  Cosmos Tours, Globus, Avalon Waterways
+ *     RCL CRUISES LTD         →  Royal Caribbean / Celebrity Cruises
+ *
+ * so one row can name several creditors and the row matches if Tramada's name is
+ * any of them.
+ *
+ * THE WHOLE CELL IS ALWAYS KEPT as a candidate as well as the pieces, so
+ * splitting can only ever add a name and never lose one. That matters because
+ * company names contain both separators — "Broome, Kimberley & Beyond Pty Ltd"
+ * has the comma, "Viva Holidays II Limited T/A Ready Rooms" has the slash. The
+ * slash only separates with space around it (" / "), which is how this sheet
+ * writes it and is never how "T/A" or "P/L" is written.
+ */
+function cheatSheetCandidates(cell) {
+  const whole = String(cell == null ? "" : cell).trim();
+  if (!whole) return [];
+  const out = [whole];
+  for (const piece of whole.split(/\s+\/\s+|,/)) {
+    const t = piece.trim();
+    if (t && !out.some((s) => supplierKey(s) === supplierKey(t))) out.push(t);
+  }
+  return out;
+}
+
+/**
+ * @param input CSV text, or a sheet already read as `{ headers, rows }` — the
+ *   cheat sheet arrives as .xlsx as often as .csv and both guides accept either.
+ */
+function parseCheatSheet(input) {
+  const grid = typeof input === "string"
+    ? csvGrid(input)
+    : { headers: (input && input.headers) || [], rows: (input && input.rows) || [] };
   if (!grid.headers.length) return { pairs: [], problems: [{ line: 0, why: "the file is empty" }] };
-  const head = grid.headers.map((h) => String(h || "").trim().toLowerCase());
+  const head = grid.headers.map((h) => String(h || "").trim().toLowerCase().replace(/\s+/g, " "));
   let from = head.findIndex((h) => CHEAT_SHEET_COLUMNS.from.includes(h));
   let to = head.findIndex((h) => CHEAT_SHEET_COLUMNS.to.includes(h));
   /* A two-column file with headings nobody recognises is almost certainly still
@@ -2080,7 +2126,7 @@ function parseCheatSheet(text) {
       problems.push({ line: i + 2, why: `half a mapping — "${a}" → "${b}"` });
       return;
     }
-    pairs.push({ from: a, to: b });
+    pairs.push({ from: a, to: b, try: cheatSheetCandidates(b) });
   });
 
   /* THE FIRST LINE IS ALWAYS A HEADING, and on a file that has none that costs
@@ -2099,17 +2145,47 @@ function parseCheatSheet(text) {
   return { pairs, problems, positional };
 }
 
-/** The cheat sheet as a lookup, keyed the way names are compared. */
+/**
+ * The cheat sheet as a lookup, keyed the way names are compared.
+ *
+ * `index.near` is a SECOND lookup on a loosened key, and it exists only to tell
+ * somebody which row they nearly hit. It never makes a match — see `relaxedKey`.
+ */
 function cheatSheetIndex(pairs) {
   const index = new Map();
+  const near = new Map();
   for (const p of pairs || []) {
     const k = supplierKey(p.from);
     if (!k) continue;
-    const seen = index.get(k) || [];
-    seen.push(p.to);
-    index.set(k, seen);
+    const names = (p.try && p.try.length ? p.try : [p.to]).filter(Boolean);
+    index.set(k, (index.get(k) || []).concat(names));
+    const r = relaxedKey(p.from);
+    if (r) near.set(r, (near.get(r) || []).concat([p.from]));
   }
+  index.near = near;
   return index;
+}
+
+/**
+ * A loosened form of a name, used for ONE thing: naming the cheat-sheet row a
+ * supplier nearly matched.
+ *
+ * It never makes a match. RAA's file says "Trafalgar Tours (Aust) Pty Ltd" and
+ * the sheet says "Trafalgar Tours"; those are probably the same company and
+ * probably is not good enough to tick money onto a committed bank statement. So
+ * the row still stops, and the remark says which line to add to the sheet —
+ * which is a ten-second fix by someone who knows, instead of a guess by
+ * something that doesn't.
+ */
+function relaxedKey(name) {
+  return supplierKey(name)
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/[.,]/g, " ")
+    .replace(/\b(pty|proprietary)\s+(ltd|limited)\b/g, " ")
+    .replace(/\bp\/l\b/g, " ")
+    .replace(/\b(ltd|limited|inc|incorporated)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /**
@@ -2140,7 +2216,13 @@ function supplierMatches(fileName, tramadaName, index) {
   if (a === b) return { ok: true, via: "exact" };
   const mapped = (index && index.get(a)) || [];
   if (mapped.some((m) => supplierKey(m) === b)) return { ok: true, via: "cheat sheet" };
-  return { ok: false, via: mapped.length ? "cheat sheet disagrees" : "not in the cheat sheet" };
+  if (mapped.length) return { ok: false, via: "cheat sheet disagrees", tried: mapped };
+  /* Not in the sheet. If a row is nearly it, say which — the fix is one line. */
+  const close = ((index && index.near && index.near.get(relaxedKey(fileName))) || [])
+    .filter((n) => supplierKey(n) !== a);
+  return close.length
+    ? { ok: false, via: "not in the cheat sheet", near: close[0] }
+    : { ok: false, via: "not in the cheat sheet" };
 }
 
 /**
@@ -2210,9 +2292,16 @@ function matchCreditorRow(row, statementRows, opts = {}) {
 
   const supplier = supplierMatches(row.toCompany, hit.payee, index);
   if (!supplier.ok) {
+    /* Say what would fix it. "Supplier does not match" on its own sends someone
+       to Tramada to look up a creditor the sheet already half knows about. */
+    const hint = supplier.near
+      ? ` (the sheet has "${supplier.near}" — add this exact name to it if they are the same creditor)`
+      : supplier.tried && supplier.tried.length
+        ? ` (the sheet says to try ${supplier.tried.map((t) => `"${t}"`).join(", ")})`
+        : "";
     return no(words.supplier,
       `the page pays "${hit.payee || "(blank)"}", the file says "${row.toCompany || "(blank)"}"` +
-      ` — ${supplier.via}`);
+      ` — ${supplier.via}${hint}`);
   }
 
   return {
@@ -2283,5 +2372,6 @@ module.exports = {
   summarise,
   MINT_REMARKS, TRAVELPAY_REMARKS, CHEAT_SHEET_COLUMNS,
   parseCheatSheet, cheatSheetIndex, supplierKey, supplierMatches,
+  cheatSheetCandidates, relaxedKey,
   matchCreditorRow, checkTransactionTotal,
 };

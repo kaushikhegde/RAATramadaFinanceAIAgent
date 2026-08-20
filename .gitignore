@@ -9,3 +9,4 @@ uploads/
 runs.json
 runs.json.corrupt-*
 .DS_Store
+_to_delete/

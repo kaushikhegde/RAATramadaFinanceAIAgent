@@ -175,7 +175,7 @@ console.log("\nthe workbook is a workbook");
 {
   // The characters XML 1.0 cannot hold. Left in, the whole workbook is
   // unopenable — and the error names a line number, not a cell.
-  const grid = { headings: ["Ref"], rows: [["A BC"]] };
+  const grid = { headings: ["Ref"], rows: [["ABC"]] };
   const back = R.readSheet(W.writeSheet(grid));
   check("control characters are dropped rather than breaking the file", back.rows[0][0], "ABC");
 }

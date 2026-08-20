@@ -10,7 +10,7 @@
  * The remark strings are asserted character for character. MINT and TravelPay
  * do NOT use the same words for the same failure and must not be merged.
  */
-const C = require("./recon-core");
+const C = require("../recon-core");
 
 let pass = 0, fail = 0;
 function check(name, got, want) {
@@ -163,6 +163,120 @@ console.log("\nthe supplier cheat sheet");
   ok("and it is named", /half a mapping/.test(half.problems[0].why), half.problems[0].why);
   const blank = C.parseCheatSheet("Spreadsheet Name,Tramada Creditor\n,\nA,B");
   check("a spacer line is skipped rather than mapping nothing to nothing", blank.pairs.length, 1);
+}
+
+console.log("\nRAA's own cheat sheet — one sheet, both reports, .xlsx");
+{
+  /* The real file, read the way the server reads it. Asserted against the
+     actual workbook rather than a fixture because the headings, the separators
+     and the plural in "TRY THESE" are all facts about THAT file. */
+  const fs = require("fs");
+  const X = require("../xlsx-lite");
+  const sheet = X.readSheet(fs.readFileSync("./cheat-sheets/supplier-names.xlsx"));
+  check("its headings are the two the sheet actually uses",
+    sheet.headers, ["SUPPLIER NAME IN MINT / TRAVELPAY", "IN TRAMADA - TRY THESE"]);
+
+  const parsed = C.parseCheatSheet(sheet);
+  ok("a workbook parses without being turned into text first", parsed.pairs.length === 28,
+    `${parsed.pairs.length} pairs`);
+  check("and nothing in it is a problem", parsed.problems, []);
+  // The heading names both reports. There is one sheet, not one per report.
+  ok("the heading names MINT and TravelPay together",
+    /mint\s*\/\s*travelpay/i.test(sheet.headers[0]), sheet.headers[0]);
+
+  const ix = C.cheatSheetIndex(parsed.pairs);
+  const via = (file, tramada) => C.supplierMatches(file, tramada, ix);
+
+  // "TRY THESE" is plural and the sheet means it.
+  check("one row, several creditors — the first", via("RCL CRUISES LTD", "Royal Caribbean").ok, true);
+  check("and the second", via("RCL CRUISES LTD", "Celebrity Cruises").ok, true);
+  check("commas separate too", via("Circuit Travel Pty Ltd", "Globus").ok, true);
+  check("all three of them", via("Circuit Travel Pty Ltd", "Avalon Waterways").ok, true);
+  // The whole cell stays a candidate, so splitting can only ever ADD a name.
+  check("and the cell as written still matches",
+    via("RCL CRUISES LTD", "Royal Caribbean / Celebrity Cruises").ok, true);
+  check("a row with no separator is one name",
+    C.cheatSheetCandidates("Journey Beyond"), ["Journey Beyond"]);
+  /* The two separators both appear INSIDE real company names — "Broome,
+     Kimberley & Beyond Pty Ltd" and "Viva Holidays II Limited T/A Ready Rooms".
+     Keeping the whole cell is what stops a split from losing either. */
+  ok("a name containing a comma survives being split",
+    C.cheatSheetCandidates("Broome, Kimberley & Beyond Pty Ltd")[0] === "Broome, Kimberley & Beyond Pty Ltd");
+  check("and T/A is not a separator — only a spaced slash is",
+    C.cheatSheetCandidates("Viva Holidays II Limited T/A Ready Rooms"),
+    ["Viva Holidays II Limited T/A Ready Rooms"]);
+  check("nor is a hyphen", C.cheatSheetCandidates("Rail On-line"), ["Rail On-line"]);
+}
+
+console.log("\nthe sheet survives a restart");
+{
+  /* The candidates are worked out when the file is READ and used when a run
+     matches — with a save and a process restart in between. Writing only the
+     cell would leave "Royal Caribbean" un-matchable tomorrow morning, and
+     nothing on screen would say so. */
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cheat-"));
+  process.env.RECON_STORE_DIR = dir;
+  delete require.cache[require.resolve("../run-store")];
+  const store = require("../run-store");
+
+  const parsed = C.parseCheatSheet([
+    "SUPPLIER NAME IN MINT / TRAVELPAY,IN TRAMADA - TRY THESE",
+    "RCL CRUISES LTD,Royal Caribbean / Celebrity Cruises",
+  ].join("\n"));
+  store.saveCheatSheet("suppliers", { name: "Supplier Cheat Sheet.xlsx", pairs: parsed.pairs });
+
+  // Off disk, as a fresh process would see it.
+  const back = JSON.parse(fs.readFileSync(path.join(dir, "cheat-sheets.json"), "utf8")).suppliers;
+  check("the file name is kept whatever its format", back.name, "Supplier Cheat Sheet.xlsx");
+  const reloaded = C.cheatSheetIndex(back.pairs);
+  check("and both creditors still match after a restart",
+    [C.supplierMatches("RCL CRUISES LTD", "Royal Caribbean", reloaded).ok,
+     C.supplierMatches("RCL CRUISES LTD", "Celebrity Cruises", reloaded).ok],
+    [true, true]);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+  delete process.env.RECON_STORE_DIR;
+  delete require.cache[require.resolve("../run-store")];
+}
+
+console.log("\na near miss is named, never acted on");
+{
+  /* RAA's file says "Trafalgar Tours (Aust) Pty Ltd"; the sheet's row is
+     "Trafalgar Tours". Those are probably the same company — and probably is
+     not good enough to tick money onto a committed bank statement. So the row
+     STOPS, and says which line to add. */
+  const ix = C.cheatSheetIndex(C.parseCheatSheet([
+    "SUPPLIER NAME IN MINT / TRAVELPAY,IN TRAMADA - TRY THESE",
+    "Trafalgar Tours,Costsaver / Luxury Gold",
+  ].join("\n")).pairs);
+
+  const m = C.supplierMatches("Trafalgar Tours (Aust) Pty Ltd", "Costsaver", ix);
+  check("a near miss does NOT match", m.ok, false);
+  check("and names the row it nearly hit", m.near, "Trafalgar Tours");
+
+  const row = C.matchCreditorRow(
+    { transNo: "M1", amountCents: 1000, toCompany: "Trafalgar Tours (Aust) Pty Ltd" },
+    [{ transNo: "P.1", reference: "M1", amount: "10.00", payee: "Costsaver" }],
+    { cheatSheet: ix });
+  check("the row is not ticked", row.reconciled, false);
+  check("with the guide's words", row.remark, "Supplier does not match");
+  ok("and a reason that says exactly what to fix",
+    /Trafalgar Tours/.test(row.reason) && /add this exact name/.test(row.reason), row.reason);
+
+  // The loose key is for the hint ONLY. It must never turn into a match.
+  check("the exact name in the sheet does match", C.supplierMatches("Trafalgar Tours", "Luxury Gold", ix).ok, true);
+  ok("and relaxedKey is not reachable as a matcher",
+    C.relaxedKey("Trafalgar Tours (Aust) Pty Ltd") === C.relaxedKey("Trafalgar Tours"),
+    "the two names DO collapse together — which is why only the hint may use it");
+
+  // When the sheet has the supplier but points elsewhere, say where it pointed.
+  const wrong = C.matchCreditorRow(
+    { transNo: "M1", amountCents: 1000, toCompany: "Trafalgar Tours" },
+    [{ transNo: "P.1", reference: "M1", amount: "10.00", payee: "Somebody Else" }],
+    { cheatSheet: ix });
+  ok("a sheet that disagrees lists what it said to try",
+    /Costsaver/.test(wrong.reason) && /Luxury Gold/.test(wrong.reason), wrong.reason);
 }
 
 console.log("\nBR08 / BR09 — the file against the Transaction Total a human typed");
