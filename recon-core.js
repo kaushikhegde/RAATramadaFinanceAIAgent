@@ -1750,6 +1750,17 @@ function matcherFor(source) {
   return (MATCHERS[source] || MATCHERS.mint).fn;
 }
 
+/**
+ * A report's remark vocabulary, for the checks that are not row matching.
+ *
+ * A FUNCTION rather than a field on MATCHERS: the vocabularies are declared
+ * further down this file, so a field would be read before it exists. The
+ * matcher's own `fn` gets away with it only because a closure body runs later.
+ */
+function remarksFor(source) {
+  return source === "travelpay" ? TRAVELPAY_REMARKS : MINT_REMARKS;
+}
+
 /** What to tell the person the run is about to look for, and where. */
 function matchesOn(source) {
   const m = MATCHERS[source] || MATCHERS.mint;
@@ -2019,7 +2030,7 @@ const MINT_REMARKS = {
   reference: "Transaction ID does not match or not found",   // step 12
   amount: "Transaction totals do not match",                 // step 12
   supplier: "Supplier does not match",                       // step 12
-  total: "Transaction Total does not match.",                // BR08 — run-level
+  total: "Total transaction amounts does not match.",        // step 14, 20-Aug
 };
 
 const TRAVELPAY_REMARKS = {
@@ -2027,8 +2038,27 @@ const TRAVELPAY_REMARKS = {
   amount: "Transaction amount does not match",               // step 12
   negative: "Not entered, transaction amount is negative",   // BR06
   supplier: "Supplier does not match",                       // step 12
-  total: "Transaction Total does not match.",                // BR09 — run-level
+  total: "Total transaction amounts does not match.",        // step 13, 20-Aug
 };
+
+/**
+ * The OTHER total, and the other sentence — MINT BR08, TravelPay BR09, both
+ * unchanged by the 20-Aug update and identical to each other.
+ *
+ * The 20-Aug guides ask for two different comparisons and give each its own
+ * words, and they are not interchangeable:
+ *
+ *   the step  the spreadsheet's own total  vs the figure a human typed
+ *             → "Total transaction amounts does not match."
+ *   the BR    what was ticked in TRAMADA   vs the figure a human typed
+ *             → "Transaction Total does not match."
+ *
+ * The first catches a bad file or a mistyped figure. Only the second catches a
+ * payment that left the bank and was never recorded in Tramada — the file and
+ * the typed figure can agree perfectly while a line is missing off the page.
+ * Confirmed with RAA 20-Aug: both checks, both wordings.
+ */
+const TRAMADA_TOTAL_REMARK = "Transaction Total does not match.";
 
 /**
  * The supplier name cheat sheet — two columns, spreadsheet name → Tramada name.
@@ -2316,7 +2346,8 @@ function matchCreditorRow(row, statementRows, opts = {}) {
 }
 
 /**
- * MINT BR08 / TravelPay BR09 — the whole file against the figure a human typed.
+ * The 20-Aug step — the SPREADSHEET's own total against the figure a human
+ * typed off the bank statement.
  *
  * A RUN-LEVEL check, not a row one: it says something about the upload, not
  * about any particular payment, so it is reported once and never repeated down
@@ -2325,7 +2356,8 @@ function matchCreditorRow(row, statementRows, opts = {}) {
  * Both totals are in cents and compared with `===`, like every other money
  * comparison here. An unreadable entry is not silently treated as agreement.
  */
-function checkTransactionTotal(rows, entered) {
+function checkTransactionTotal(rows, entered, opts = {}) {
+  const words = opts.remarks || MINT_REMARKS;
   const want = cents(entered);
   if (want == null) {
     return { checked: false, remark: "", reason: "no Transaction Total was entered" };
@@ -2343,10 +2375,95 @@ function checkTransactionTotal(rows, entered) {
       reason: `the file totals $${money(got)}, which is the Transaction Total entered` };
   }
   return {
-    checked: true, ok: false, remark: MINT_REMARKS.total,
+    checked: true, ok: false, remark: words.total,
     enteredCents: want, fileCents: got,
     reason: `the file totals $${money(got)} but the Transaction Total entered is ` +
       `$${money(want)} — a difference of $${money(Math.abs(got - want))}`,
+  };
+}
+
+/**
+ * What a run says when the day has no bank statement — a HARD STOP.
+ *
+ * MINT and TravelPay reconcile the page the BPay run creates and never create
+ * one themselves (BR03 in both guides, BR12 in BPay's). So the absence of a
+ * statement is not something to work around: the run ends without a tick, and
+ * the person is told which run to do first rather than left to work it out.
+ *
+ * Here rather than in the browser code so the wording can be asserted — it is
+ * the sentence somebody reads at 8am when the day will not start.
+ */
+function noStatementMessage(source, statementDate, pages, accountLabel = "The account") {
+  const recent = (pages || [])
+    .map((p) => `${toTramadaDate(p.statementDate) || p.statementDate} (page ${p.pageNo})`)
+    .slice(-5);
+  return (
+    `${accountLabel} has no bank statement for ${toTramadaDate(statementDate)}. ` +
+    `${source === "travelpay" ? "TravelPay" : "MINT"} reconciles the statement the BPay run creates ` +
+    `and never creates one itself, so run BPay for that date first. ` +
+    (recent.length ? `The most recent statements are ${recent.join(", ")}.` : "There are no statements at all.")
+  );
+}
+
+/**
+ * MINT BR08 / TravelPay BR09 — what was TICKED IN TRAMADA against the figure a
+ * human typed.
+ *
+ * The other half of the pair, and the one that finds a missing payment. The
+ * file can total exactly what the bank statement says while a line never made
+ * it into Tramada at all: the first check compares two documents to each other
+ * and both can be right about money that is not there.
+ *
+ * Only the rows this run ticked are counted, decided with RAA 20-Aug. A
+ * statement page carries BPay receipts and the other report's payments too, so
+ * the page's own total is not this report's total and never was.
+ *
+ * `ticked` are transaction numbers as the page shows them; `statementRows` is
+ * the page as it was read. A ticked row whose amount cannot be read stops the
+ * check rather than failing it — a guess must not accuse anyone.
+ */
+function checkTickedTotal(statementRows, ticked, entered) {
+  const want = cents(entered);
+  if (want == null) {
+    return { checked: false, remark: "", reason: "no Transaction Total was entered" };
+  }
+  const byKey = new Map();
+  for (const r of statementRows || []) {
+    const k = receiptKey(r && r.transNo);
+    if (k) byKey.set(k, r);
+  }
+
+  let got = 0;
+  const unreadable = [];
+  const absent = [];
+  for (const t of ticked || []) {
+    const row = byKey.get(receiptKey(t));
+    if (!row) { absent.push(t); continue; }
+    const c = cents(row.amount);
+    if (c == null) { unreadable.push(t); continue; }
+    got += c;
+  }
+  if (unreadable.length || absent.length) {
+    return {
+      checked: false, remark: "",
+      reason: `the Tramada total could not be added up — ` +
+        (unreadable.length ? `${unreadable.length} ticked row(s) have an unreadable amount` : "") +
+        (unreadable.length && absent.length ? " and " : "") +
+        (absent.length ? `${absent.length} could not be found back on the page` : ""),
+    };
+  }
+  if (got === want) {
+    return { checked: true, ok: true, remark: "", enteredCents: want, tramadaCents: got,
+      reason: `the ${(ticked || []).length} transaction(s) ticked in Tramada total ` +
+        `$${money(got)}, which is the Transaction Total entered` };
+  }
+  const short = want - got;
+  return {
+    checked: true, ok: false, remark: TRAMADA_TOTAL_REMARK,
+    enteredCents: want, tramadaCents: got,
+    reason: `the ${(ticked || []).length} transaction(s) ticked in Tramada total $${money(got)} ` +
+      `but the Transaction Total entered is $${money(want)} — ` +
+      `$${money(Math.abs(short))} ${short > 0 ? "is not on the page" : "more than expected"}`,
   };
 }
 
@@ -2373,5 +2490,6 @@ module.exports = {
   MINT_REMARKS, TRAVELPAY_REMARKS, CHEAT_SHEET_COLUMNS,
   parseCheatSheet, cheatSheetIndex, supplierKey, supplierMatches,
   cheatSheetCandidates, relaxedKey,
-  matchCreditorRow, checkTransactionTotal,
+  matchCreditorRow, checkTransactionTotal, checkTickedTotal,
+  TRAMADA_TOTAL_REMARK, remarksFor, noStatementMessage,
 };

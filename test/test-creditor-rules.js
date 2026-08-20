@@ -27,9 +27,21 @@ console.log("\nthe two vocabularies, and that they are two");
 check("MINT, a reference that is not there", C.MINT_REMARKS.reference, "Transaction ID does not match or not found");
 check("MINT, a wrong amount", C.MINT_REMARKS.amount, "Transaction totals do not match");
 check("MINT, a wrong supplier", C.MINT_REMARKS.supplier, "Supplier does not match");
-check("MINT, the file's total", C.MINT_REMARKS.total, "Transaction Total does not match.");
 check("TravelPay, a wrong amount", C.TRAVELPAY_REMARKS.amount, "Transaction amount does not match");
 check("TravelPay, a negative one", C.TRAVELPAY_REMARKS.negative, "Not entered, transaction amount is negative");
+
+/* THE TWO TOTALS, and the two sentences the 20-Aug guides give them. The step
+   was reworded on 20-Aug; BR08 and BR09 were not, and they are about a
+   different comparison. Asserted apart so a tidy-up cannot merge them. */
+check("the spreadsheet's total, MINT", C.MINT_REMARKS.total,
+  "Total transaction amounts does not match.");
+check("the spreadsheet's total, TravelPay", C.TRAVELPAY_REMARKS.total,
+  "Total transaction amounts does not match.");
+check("what was ticked in Tramada — BR08 / BR09", C.TRAMADA_TOTAL_REMARK,
+  "Transaction Total does not match.");
+ok("and the two totals do NOT share a sentence",
+  C.MINT_REMARKS.total !== C.TRAMADA_TOTAL_REMARK,
+  `both read ${C.TRAMADA_TOTAL_REMARK}`);
 // The one a tidy-up would break. MINT says "totals", TravelPay says "amount",
 // for the same failure, and Finance filters on this column.
 ok("and the amount wording differs between the two guides",
@@ -170,9 +182,10 @@ console.log("\nRAA's own cheat sheet — one sheet, both reports, .xlsx");
   /* The real file, read the way the server reads it. Asserted against the
      actual workbook rather than a fixture because the headings, the separators
      and the plural in "TRY THESE" are all facts about THAT file. */
-  const fs = require("fs");
+  const fs = require("fs"), path = require("path");
   const X = require("../xlsx-lite");
-  const sheet = X.readSheet(fs.readFileSync("./cheat-sheets/supplier-names.xlsx"));
+  const sheet = X.readSheet(fs.readFileSync(
+    path.join(__dirname, "..", "cheat-sheets", "supplier-names.xlsx")));
   check("its headings are the two the sheet actually uses",
     sheet.headers, ["SUPPLIER NAME IN MINT / TRAVELPAY", "IN TRAMADA - TRY THESE"]);
 
@@ -279,7 +292,7 @@ console.log("\na near miss is named, never acted on");
     /Costsaver/.test(wrong.reason) && /Luxury Gold/.test(wrong.reason), wrong.reason);
 }
 
-console.log("\nBR08 / BR09 — the file against the Transaction Total a human typed");
+console.log("\nthe 20-Aug step — the SPREADSHEET against the Transaction Total a human typed");
 {
   const rows = [{ amountCents: 59400 }, { amountCents: 368484 }, { amountCents: 51000 }];
   const good = C.checkTransactionTotal(rows, "4788.84");
@@ -287,7 +300,10 @@ console.log("\nBR08 / BR09 — the file against the Transaction Total a human ty
 
   const bad = C.checkTransactionTotal(rows, "4788.85");
   check("one cent out does not agree", bad.ok, false);
-  check("and carries the guide's words", bad.remark, "Transaction Total does not match.");
+  check("and carries the 20-Aug words", bad.remark, "Total transaction amounts does not match.");
+  check("TravelPay says the same thing here",
+    C.checkTransactionTotal(rows, "4788.85", { remarks: C.TRAVELPAY_REMARKS }).remark,
+    "Total transaction amounts does not match.");
   ok("naming both figures and the difference",
     /\$4,?788\.84/.test(bad.reason) && /\$4,?788\.85/.test(bad.reason) && /\$0\.01/.test(bad.reason),
     bad.reason);
@@ -300,6 +316,72 @@ console.log("\nBR08 / BR09 — the file against the Transaction Total a human ty
   check("an unreadable amount stops the check rather than failing it",
     [unreadable.checked, unreadable.remark], [false, ""]);
   check("no rows at all totals nothing", C.checkTransactionTotal([], "0.00").ok, true);
+}
+
+console.log("\nBR08 / BR09 — what was TICKED IN TRAMADA against the same figure");
+{
+  /* The half that finds missing money. The file and the typed figure can agree
+     perfectly while a payment never reached Tramada at all — the check above
+     compares two documents to each other and both can be right about money
+     that is not there. */
+  const PAGE = [
+    { transNo: "P.0000001111", reference: "M00640038", amount: "594.00", payee: "Viva Holidays Pty Ltd" },
+    { transNo: "P.0000002222", reference: "M00641007", amount: "3,684.84", payee: "ANZCRO" },
+    { transNo: "P.0000003333", reference: "M00641453", amount: "510.00", payee: "READY ROOMS" },
+  ];
+  const ALL = ["P.0000001111", "P.0000002222", "P.0000003333"];
+
+  const good = C.checkTickedTotal(PAGE, ALL, "4788.84");
+  check("everything ticked and it agrees", [good.checked, good.ok, good.remark], [true, true, ""]);
+  ok("a thousands separator on the page is not a different number",
+    good.tramadaCents === 478884, String(good.tramadaCents));
+
+  // The whole point of this check: the file was right, the money is not there.
+  const short = C.checkTickedTotal(PAGE, ["P.0000001111", "P.0000002222"], "4788.84");
+  check("a payment that never reached Tramada is caught", short.ok, false);
+  check("with BR08's words, not the step's", short.remark, "Transaction Total does not match.");
+  ok("and it says how much is missing, and that it is missing",
+    /\$510\.00/.test(short.reason) && /not on the page/.test(short.reason), short.reason);
+
+  const over = C.checkTickedTotal(PAGE, ALL, "4278.84");
+  ok("more in Tramada than expected reads as more, not as missing",
+    over.ok === false && /more than expected/.test(over.reason), over.reason);
+
+  // The two checks disagree on purpose — that is what makes them two checks.
+  const file = C.checkTransactionTotal(
+    [{ amountCents: 59400 }, { amountCents: 368484 }, { amountCents: 51000 }], "4788.84");
+  ok("the spreadsheet check passes on the very run the Tramada check fails",
+    file.ok === true && short.ok === false, `${file.ok} / ${short.ok}`);
+
+  // Nothing entered, nothing ticked, nothing readable — none of these accuse.
+  check("no total entered is not a mismatch",
+    [C.checkTickedTotal(PAGE, ALL, "").checked, C.checkTickedTotal(PAGE, ALL, "").remark], [false, ""]);
+  check("nothing ticked at all is a zero, and says so",
+    [C.checkTickedTotal(PAGE, [], "0.00").ok, C.checkTickedTotal(PAGE, [], "0.00").tramadaCents],
+    [true, 0]);
+  const blind = C.checkTickedTotal(PAGE, ["P.0000009999"], "10.00");
+  check("a ticked row that is not on the page stops the check", [blind.checked, blind.remark], [false, ""]);
+  ok("and says which way it failed", /could not be found back on the page/.test(blind.reason), blind.reason);
+  const bad = C.checkTickedTotal([{ transNo: "P.1", amount: "not a number" }], ["P.1"], "1.00");
+  check("so does an unreadable amount", [bad.checked, bad.remark], [false, ""]);
+}
+
+console.log("\nno statement for the day is a hard stop, not a workaround");
+{
+  /* Asserted because it is the sentence somebody reads at 8am when the day
+     will not start, and because the alternative behaviour — quietly creating a
+     page — would leave the date with two statements and break BPay's BR12. */
+  const m = C.noStatementMessage("mint", "20-08-2026",
+    [{ statementDate: "18-08-2026", pageNo: 12 }], "Trust Account");
+  ok("it names the date asked for", /20-08-2026/.test(m), m);
+  ok("it names the report that cannot proceed", /\bMINT\b/.test(m), m);
+  ok("it says to run BPay first, in those words", /run BPay for that date first/.test(m), m);
+  ok("and shows what dates DO have a statement", /18-08-2026 \(page 12\)/.test(m), m);
+
+  const t = C.noStatementMessage("travelpay", "20-08-2026", [], "Trust Account");
+  ok("TravelPay is named as itself, not as MINT", /TravelPay/.test(t) && !/MINT/.test(t), t);
+  ok("and an empty account says so rather than trailing off",
+    /There are no statements at all\./.test(t), t);
 }
 
 console.log(`\n${fail === 0 ? "✅" : "❌"} ${pass} passed, ${fail} failed\n`);

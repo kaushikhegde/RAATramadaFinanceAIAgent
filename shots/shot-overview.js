@@ -8,18 +8,11 @@
  * before this showed $7.2m of the mockup's invented balances and nobody
  * noticed for weeks.
  *
- *   node shots/shot-overview.js  → shots/out/overview.png
+ *   node shot-overview.js        → overview.png
  */
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-
-/* Screenshots land in shots/out/, never the repo root. A bare relative path in
-   page.screenshot() resolves against cwd, not against this file, which is how a
-   dozen PNGs ended up sitting beside server.js. */
-const OUT = path.join(__dirname, "out");
-fs.mkdirSync(OUT, { recursive: true });
-const shot = (name) => path.join(OUT, name);
 
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), "recon-shot-"));
 process.env.RECON_STORE_DIR = DIR;
@@ -50,6 +43,12 @@ fs.writeFileSync(path.join(DIR, "runs.json"), JSON.stringify({
         { at: "2026-08-10T09:20:11Z", message: "Row 5: receipt failed: element is not enabled (blocked by <div>)", ok: false },
         { at: "2026-08-10T09:21:40Z", message: "Statement balances set — opening $111753.97, closing $120000.00.", ok: true },
         { at: "2026-08-10T09:21:55Z", message: "5 transactions ticked.", ok: true },
+        /* The two run-level totals, in the guides' own words. They are the one
+           kind of failure that belongs to the UPLOAD rather than to any row, so
+           the timeline is where a person finds them — including on a run they
+           open a week later, which a websocket frame would not survive. */
+        { at: "2026-08-10T09:21:57Z", message: "Total transaction amounts does not match. the file totals $3,056.93 but the Transaction Total entered is $3,066.93 — a difference of $10.00", ok: false },
+        { at: "2026-08-10T09:21:58Z", message: "Transaction Total does not match. the 5 transaction(s) ticked in Tramada total $3,056.93 but the Transaction Total entered is $3,066.93 — $10.00 is not on the page", ok: false },
         { at: "2026-08-10T09:22:00Z", message: "Done — the statement page is committed with 5 transactions reconciled.", ok: true },
       ],
       rows: [
@@ -84,6 +83,12 @@ fs.writeFileSync(path.join(DIR, "runs.json"), JSON.stringify({
 
 require("../server");
 const { chromium } = require("playwright");
+
+/* Screenshots go to shots/out/, not to whatever directory npm was run from. */
+const SHOT_OUT = require("path").join(__dirname, "out");
+require("fs").mkdirSync(SHOT_OUT, { recursive: true });
+const shotPath = (n) => require("path").join(SHOT_OUT, n);
+
 
 (async () => {
   await new Promise((r) => setTimeout(r, 600));
@@ -228,6 +233,19 @@ const { chromium } = require("playwright");
   ok("newest first", /committed with 5 transactions/.test(seen.activity[0]), seen.activity[0]);
   ok("a line that stopped the run is marked",
     seen.activity.some((a) => a.includes("stopped")), seen.activity.join(" ~ ").slice(0, 200));
+  /* Both totals reach the screen, in the guides' exact words — Finance reads
+     and filters on these sentences, so a render that paraphrased or truncated
+     either one would be a silent change to a shared vocabulary. */
+  ok("the spreadsheet total mismatch is on screen, verbatim",
+    seen.activity.some((a) => a.includes("Total transaction amounts does not match.")),
+    seen.activity.join(" ~ ").slice(0, 300));
+  ok("and the Tramada one, which is a different sentence",
+    seen.activity.some((a) => a.includes("Transaction Total does not match.") &&
+      a.includes("ticked in Tramada")),
+    seen.activity.join(" ~ ").slice(0, 300));
+  ok("each says which figures disagreed and by how much",
+    seen.activity.filter((a) => /\$10\.00/.test(a)).length >= 2,
+    seen.activity.filter((a) => /does not match/.test(a)).join(" ~ "));
   ok("no sample-data banner is left on this screen", !seen.structure.sampleBanner);
 
   /* THE STREAM CARDS SAY WHAT THE UPLOAD CARDS SAY.
@@ -345,11 +363,11 @@ const { chromium } = require("playwright");
   ok("nothing invented in the reaction table", !/118299|MT BARKER/.test(blank.body), blank.body.slice(0, 120));
   ok("nothing invented in the timeline", !/Princess Cruises|Jill S/.test(blank.tl), blank.tl.slice(0, 120));
   ok("and the rest of the markup is still all there", blank.structure === "4/0/4", blank.structure);
-  await fresh.screenshot({ path: shot("overview-empty.png"), fullPage: false });
+  await fresh.screenshot({ path: shotPath("overview-empty.png"), fullPage: false });
   await fresh.close();
 
-  await page.screenshot({ path: shot("overview.png"), fullPage: false });
-  console.log(`\n  shots/out/overview.png written${bad ? " (with failures above)" : ""}\n`);
+  await page.screenshot({ path: shotPath("overview.png"), fullPage: false });
+  console.log(`\n  overview.png written${bad ? " (with failures above)" : ""}\n`);
   await browser.close();
   fs.rmSync(DIR, { recursive: true, force: true });
   process.exit(bad ? 1 : 0);

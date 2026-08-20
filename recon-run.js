@@ -1102,18 +1102,13 @@ async function openStatementForDate(page, o) {
       `or give a date that has one statement.`
     );
   }
+  /* NO STATEMENT FOR THE DATE IS A HARD STOP. Not a warning, not a page this
+     run creates for itself: it throws, and the throw is not caught anywhere
+     between here and the caller, so the run ends without a single tick. BR12
+     says only BPay creates the statement, and a MINT run that quietly made its
+     own would leave the day with two. Confirmed again with RAA 20-Aug. */
   const want = candidates[0];
-  if (!want) {
-    const had = found.pages
-      .map((p) => `${core.toTramadaDate(p.statementDate) || p.statementDate} (page ${p.pageNo})`)
-      .slice(-5);
-    throw new Error(
-      `${accountLabel} has no bank statement for ${core.toTramadaDate(o.statementDate)}. ` +
-      `${o.source === "mint" ? "MINT" : "TravelPay"} reconciles the statement the BPay run creates ` +
-      `and never creates one itself, so run BPay for that date first. ` +
-      (had.length ? `The most recent statements are ${had.join(", ")}.` : "There are no statements at all.")
-    );
-  }
+  if (!want) throw new Error(core.noStatementMessage(o.source, o.statementDate, found.pages, accountLabel));
   say(`Reconciling the statement already created for that day — page ${want.pageNo}.`, true);
 
   /* The row's own Reconcile link, found by the PAGE NUMBER in that row rather
@@ -1552,10 +1547,11 @@ async function runMintReconciliation(o = {}) {
       say(`Row ${r.n}: ${m.status} — ${m.reason}`, m.reconciled);
     }
 
-    /* BR08 / BR09 — the whole file against the figure a human typed, reported
-       ONCE. It says something about the upload, not about any one payment, so
-       it never goes down every row's Remarks column. */
-    const total = core.checkTransactionTotal(results, o.transactionTotal);
+    /* The 20-Aug step — the SPREADSHEET's own total against the figure a human
+       typed, reported ONCE. It says something about the upload, not about any
+       one payment, so it never goes down every row's Remarks column. */
+    const total = core.checkTransactionTotal(results, o.transactionTotal,
+      { remarks: core.remarksFor(o.source) });
     if (total.checked && !total.ok) say(`${total.remark} ${total.reason}`, false);
     else if (total.reason) say(total.reason, true);
 
@@ -1565,13 +1561,26 @@ async function runMintReconciliation(o = {}) {
     const balances = null;
 
     const selection = await selectMatchedTransactions(page, statement, matched, say);
+
+    /* BR08 / BR09 — and only NOW, because it totals what was actually ticked.
+       The check above compares two documents to each other and both can be
+       right about money that never reached Tramada; this one is the half that
+       notices. Reported before Done, so a page is never committed with the
+       mismatch unsaid. */
+    const tramadaTotal = core.checkTickedTotal(statement, selection.ticked, o.transactionTotal);
+    if (tramadaTotal.checked && !tramadaTotal.ok) {
+      say(`${tramadaTotal.remark} ${tramadaTotal.reason}`, false);
+    } else if (tramadaTotal.reason && tramadaTotal.checked) {
+      say(tramadaTotal.reason, true);
+    }
+
     const finished = await finishStatementPage(page, selection.ticked.length, say, dryRun);
 
     ok = true;
     return {
       results, pageNumber, statementRows: statement.length,
       summary: core.summariseMint(results),
-      balances, selection, finished,
+      balances, selection, finished, total, tramadaTotal,
     };
   } finally {
     if (ok && page) await page.close().catch(() => {});
