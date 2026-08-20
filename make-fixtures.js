@@ -541,7 +541,7 @@ async function makeBpay() {
  */
 async function makeTravelPay() {
   const list = loadBookings();
-  say(`${list.length} booking${list.length === 1 ? "" : "s"} → bookings + costings + receipts.\n`);
+  say(`${list.length} booking${list.length === 1 ? "" : "s"} → bookings + costings + receipts + creditor payments to ${CREDITOR}.\n`);
   sayPlan("travelpay");
   if (DRY) return say("Dry run — Tramada was never opened.\n");
 
@@ -560,7 +560,11 @@ async function makeTravelPay() {
     csv.add({
       "Processing Date": today,
       "Merchant Settlement Date": today,
-      MerchantCompanyName: "Monarto Resort Pty Ltd",
+      /* The creditor this booking will actually be paid to. It used to be a
+         hardcoded "Monarto Resort Pty Ltd" copied from RAA's dummy file, which
+         no Tramada statement here would ever say — and BR05's supplier gate
+         compares this column against the page. */
+      MerchantCompanyName: CREDITOR,
       "Base Amount": core.money(b.dueCents || 148088),
       "Customer Fee": "0",
       "Processed Amount": core.money(b.dueCents || 148088),
@@ -616,12 +620,42 @@ async function makeTravelPay() {
          real TravelPay file, whose Payment Reference can never be a Tramada
          receipt number. */
       const paymentRef = ref("TP", b.bookingNo);
-      say(`     ✓ ${receiptNo} → Payment Reference ${paymentRef}`);
+      say(`     ✓ ${receiptNo} received — the booking can now pay its creditor`);
+
+      /* AND THEN THE PAYMENT OUT — because a TravelPay settlement is money
+         going TO a merchant, and that is what appears on the statement page as
+         a CREDITOR PAYMENT. Its guide's step 9 filters to exactly that.
+         Until 17-Aug-2026 this fixture stopped at the receipt above and the run
+         filtered to Client Payment Receipt, so the file matched a receipt this
+         repo had created — which proved the matcher could find its own homework
+         and nothing about a real TravelPay file. The receipt is now only the
+         enabler: without money in, nothing is payable out. */
+      const paid = await runCreditorPayment({
+        bookingNo: b.bookingNo,
+        creditor: CREDITOR,
+        payment: {
+          transactionType: "EFT",
+          // "AUTO" for the same reason Mint uses it: the payment allocates
+          // "ALL", so the amount has to BE what the form says is payable.
+          amount: "AUTO",
+          reference: paymentRef,
+          paymentDate: new Date().toISOString().slice(0, 10),
+          allocation: "ALL",
+        },
+        callbacks: {
+          onProgress: (pc, m) => console.log(`       [${String(pc).padStart(3)}%] ${m}`),
+          onNeedLogin: () => say("     Sign into Tramada in the Chrome on port 9222."),
+        },
+      });
+      const paymentNo = (paid && (paid.paymentNo || paid.transNo)) || "";
+      say(`     ✓ paid ${CREDITOR} → Payment Reference ${paymentRef}` +
+        (paymentNo ? ` (${paymentNo})` : ""));
       row["Payment Reference"] = paymentRef;
-      // The processor's own id in the real file (`PR.46nyrd`). Tramada's
-      // receipt number is the only second id a fixture has, and nothing
-      // matches on this column, so it is the traceable thing to put here.
-      row["Processor Reference"] = receiptNo;
+      row["MerchantCompanyName"] = CREDITOR;
+      // The processor's own id in the real file (`PR.46nyrd`). Tramada's own
+      // number is the only second id a fixture has, and nothing matches on this
+      // column, so it is the traceable thing to put here.
+      row["Processor Reference"] = paymentNo || receiptNo;
       csv.update();
     } catch (err) {
       console.error(`     ✗ ${core.tidyError(err.message)}`);

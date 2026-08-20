@@ -177,12 +177,18 @@ console.log("\nthe fixtures seed the type the run goes looking for");
   for (const [report, category] of Object.entries(F.CATEGORY_FOR)) {
     const seeds = LABEL[category];
     ok(`${report}: the category is one Tramada offers`, !!seeds, category);
-    if (report === "mint") {
-      // Mint filters on the CREDITOR PAYMENT its receipt makes possible, not on
-      // the receipt. Asserted as a deliberate difference so it reads as a
-      // decision rather than an oversight.
-      check("mint filters on what the receipt enables, not the receipt",
-        core.REPORTS.mint.recPayType, "Creditor Payment");
+    if (report === "mint" || report === "travelpay") {
+      /* BOTH creditor reports work the same way: the receipt is only an
+         ENABLER — without money in, nothing is payable out — and what lands on
+         the statement page, and what the run filters to, is the creditor
+         payment that follows it. TravelPay joined Mint here on 17-Aug-2026;
+         before that its fixture stopped at the receipt and its run filtered to
+         Client Payment Receipt, so the file matched a receipt this repo had
+         created and proved nothing about a real TravelPay file. */
+      check(`${report} filters on what the receipt enables, not the receipt`,
+        core.REPORTS[report].recPayType, "Creditor Payment");
+      check(`${report} seeds a receipt its client can actually raise`,
+        category, "CLIENT_PAYMENT_RECEIPT");
       continue;
     }
     check(`${report}: seeds exactly what its run filters to`,
@@ -192,6 +198,10 @@ console.log("\nthe fixtures seed the type the run goes looking for");
   // And the client has to be able to offer that category at all.
   check("bpay builds under a debtor-account client", F.CLIENT_FOR.bpay, "GRAY/MEGAN");
   check("travelpay builds under a retail one", F.CLIENT_FOR.travelpay, "GRAY/SPIDER");
+  // And the two creditor reports agree with each other, because they are the
+  // same shape of job — a receipt in, a payment out, filtered to the payment.
+  check("mint and travelpay filter to the same thing",
+    core.REPORTS.mint.recPayType, core.REPORTS.travelpay.recPayType);
   ok("so the two are not the same client",
     F.CLIENT_FOR.bpay !== F.CLIENT_FOR.travelpay, F.CLIENT_FOR.bpay);
   check("and bpay's category is the one the run files under",

@@ -563,9 +563,26 @@ function decidePreReceipt({ depDate, debtor, outstandingCents, today } = {}) {
  * Returns the page already holding that date, or null.
  */
 function pageForDate(pages, statementDate) {
+  return pagesForDate(pages, statementDate)[0] || null;
+}
+
+/**
+ * EVERY statement for that date, because there can be more than one.
+ *
+ * Measured on the live Trust account, 17-Aug-2026: pages 10, 11 and 12 all
+ * carry 12-08-2026. So "the existing statement already created for the day"
+ * (MINT BR03, TravelPay BR03) is not always a single thing, and picking the
+ * first is picking one of three at random — on a screen where the next click
+ * ticks transactions and commits them.
+ *
+ * `pageForDate` keeps its old single answer for BR12, where the question is
+ * only "is this date taken?". Anything that has to OPEN one asks this and stops
+ * when the answer is ambiguous.
+ */
+function pagesForDate(pages, statementDate) {
   const want = toIsoDate(statementDate);
-  if (!want) return null;
-  return (pages || []).find((p) => p && toIsoDate(p.statementDate) === want) || null;
+  if (!want) return [];
+  return (pages || []).filter((p) => p && toIsoDate(p.statementDate) === want);
 }
 
 /**
@@ -1624,6 +1641,23 @@ function summariseIpsi(results) {
  * row is matched. Held once here, because a fourth report added in three places
  * is a fourth report added correctly in two of them.
  */
+/*
+ * WHICH COLUMN THE PAGE IS SORTED BY, per report, because the guides differ:
+ *
+ *   MINT step 10       Sort by 'Reference'
+ *   TravelPay step 10  Sort by 'Receipt For/Payment To'
+ *   BPay               Date, descending — the receipts it just filed are newest
+ *
+ * And SORT BEFORE FILTER in every case (MINT BR04, TravelPay BR04): sorting
+ * rebuilds the list and drops the filter, so the other order leaves every
+ * transaction showing and reads as a filter that matched a great many rows.
+ */
+const SORT_BY = {
+  bpay: { by: "Date", order: "Descending" },
+  mint: { by: "Reference", order: "Ascending" },
+  travelpay: { by: "Receipt For/Payment To", order: "Ascending" },
+};
+
 const REPORTS = {
   bpay: {
     key: "bpay",
@@ -1657,14 +1691,15 @@ const REPORTS = {
   travelpay: {
     key: "travelpay",
     title: "TravelPay merchant settlement",
-    /* Client Payment Receipt, confirmed 10-08-2026 — NOT the Finance Merchant
-       Payment Receipt its name suggests. These are receipts that ALREADY EXIST
-       on Tramada; nothing here files one, so the type is whatever Tramada gave
-       them and is unaffected by BPay's move to Debtor Payment Receipt. (This
-       comment used to say "the same type the BPay receipts land under", which
-       stopped being true on 17-Aug-2026 — a shared filter pass is no longer the
-       reason to keep them together.) */
-    recPayType: "Client Payment Receipt",
+    /* CREDITOR PAYMENT, per the TravelPay guide's step 9 — corrected
+       17-Aug-2026. It read "Client Payment Receipt, confirmed 10-08-2026", and
+       that confirmation was taken against receipts THIS REPO's own fixtures had
+       created, which is precisely how the BPay receipt type went wrong too. A
+       TravelPay settlement pays a merchant — Monarto Resort in RAA's own dummy
+       file — and money leaving to a supplier is a Creditor Payment. Same filter
+       as Mint, which is why the combined run groups by filter rather than by
+       report. */
+    recPayType: "Creditor Payment",
     files: false,
   },
 };
@@ -1682,10 +1717,32 @@ const REPORTS = {
  *
  * One table, named columns, and a test that reads it.
  */
+/*
+ * MINT and TravelPay now go through ONE matcher with two vocabularies.
+ *
+ * Both guides ask the same three-way question — reference, amount, supplier —
+ * and both say do not tick unless all three agree. The old per-report matchers
+ * ticked on the reference alone and wrote the disagreement into a column
+ * nobody had to act on, which on a committed bank statement is a tick against
+ * a payment whose amount nobody confirmed.
+ *
+ * `matchAgainstStatement` stays as BPay's: it is looking for a receipt THIS RUN
+ * filed and knows its number, which is a different question.
+ */
 const MATCHERS = {
   bpay: { fn: matchAgainstStatement, column: "Trans. No", what: "the receipt number it was handed" },
-  mint: { fn: matchMintAgainstStatement, column: "Trans. No", what: "the P. payment number" },
-  travelpay: { fn: matchTravelPayAgainstStatement, column: "Reference", what: "TravelPay's own payment reference" },
+  mint: {
+    fn: (row, statement, opts) =>
+      matchCreditorRow(row, statement, { ...opts, remarks: MINT_REMARKS }),
+    column: "Reference",
+    what: "the Transaction ID, its amount and its supplier",
+  },
+  travelpay: {
+    fn: (row, statement, opts) =>
+      matchCreditorRow(row, statement, { ...opts, remarks: TRAVELPAY_REMARKS }),
+    column: "Reference",
+    what: "the Payment Reference, its amount and its merchant",
+  },
 };
 
 /** The matcher for a report, defaulting to Mint's — the older behaviour. */
@@ -1927,13 +1984,290 @@ function sourceBreakdown(run) {
   return out;
 }
 
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * MINT and TravelPay — the two guides' shared shape
+ *
+ * Both reconcile CREDITOR PAYMENTS that Tramada already holds. Neither files
+ * anything. Both ask the same question of every row, and it is a THREE-WAY
+ * question (MINT BR05, TravelPay BR05):
+ *
+ *     the transaction reference, the amount, AND the supplier
+ *
+ * all have to agree before the checkbox is ticked. Any one of them failing
+ * means DO NOT TICK and write a remark (MINT BR06, TravelPay BR07).
+ *
+ * That is stricter than this code used to be. `matchMintAgainstStatement`
+ * returned `reconciled: true` with a `mismatch` note when the money or the
+ * payee disagreed — the row was ticked on the strength of the reference alone
+ * and the disagreement went into a column nobody had to act on. On a run that
+ * commits a bank statement, that is a tick against a payment whose amount
+ * nobody confirmed.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/*
+ * The remark vocabularies, verbatim from each guide.
+ *
+ * They are NOT the same strings and must not be merged: MINT's step 12 says
+ * "Transaction totals do not match" for a row whose amount is wrong, where
+ * TravelPay's says "Transaction amount does not match". Finance filters this
+ * column, so a tidy-up that unified them would be a change to a shared
+ * vocabulary made by a programmer for aesthetic reasons.
+ */
+const MINT_REMARKS = {
+  reference: "Transaction ID does not match or not found",   // step 12
+  amount: "Transaction totals do not match",                 // step 12
+  supplier: "Supplier does not match",                       // step 12
+  total: "Transaction Total does not match.",                // BR08 — run-level
+};
+
+const TRAVELPAY_REMARKS = {
+  reference: "Transaction ID does not match or not found",   // step 12
+  amount: "Transaction amount does not match",               // step 12
+  negative: "Not entered, transaction amount is negative",   // BR06
+  supplier: "Supplier does not match",                       // step 12
+  total: "Transaction Total does not match.",                // BR09 — run-level
+};
+
+/**
+ * The supplier name cheat sheet — two columns, spreadsheet name → Tramada name.
+ *
+ * Both guides call for it, and the reason is in the files themselves: MINT
+ * names companies by their LEGAL ENTITY and Tramada names creditors by their
+ * TRADING NAME. RAA's own dummy file contains
+ *
+ *     Viva Holidays II Limited T/A Ready Rooms
+ *
+ * against a Tramada creditor called READY ROOMS. The row is perfectly fine and
+ * can never match on text. "T/A" is the file telling you so.
+ *
+ * Headings are read by name so the file can be maintained in Excel and gain
+ * columns without breaking. Anything after the first two is ignored, and a
+ * blank line is a blank line rather than a mapping of "" to "".
+ */
+const CHEAT_SHEET_COLUMNS = {
+  from: ["spreadsheet name", "supplier", "supplier name", "mint name", "travelpay name", "from", "name"],
+  to: ["tramada creditor", "tramada name", "creditor", "tramada", "to", "maps to"],
+};
+
+function parseCheatSheet(text) {
+  const grid = csvGrid(text);
+  if (!grid.headers.length) return { pairs: [], problems: [{ line: 0, why: "the file is empty" }] };
+  const head = grid.headers.map((h) => String(h || "").trim().toLowerCase());
+  let from = head.findIndex((h) => CHEAT_SHEET_COLUMNS.from.includes(h));
+  let to = head.findIndex((h) => CHEAT_SHEET_COLUMNS.to.includes(h));
+  /* A two-column file with headings nobody recognises is almost certainly still
+     the right file — left column theirs, right column Tramada's. Taken that way
+     rather than refused, because the alternative is an error message about
+     column names on a file a person can see is correct. */
+  let positional = false;
+  if (from < 0 && to < 0 && grid.headers.length === 2) { from = 0; to = 1; positional = true; }
+  if (from < 0 || to < 0) {
+    return {
+      pairs: [],
+      problems: [{ line: 1, why: "the header needs a spreadsheet-name column and a Tramada-creditor column" }],
+    };
+  }
+
+  const pairs = [];
+  const problems = [];
+  grid.rows.forEach((r, i) => {
+    const a = String((r[from] == null ? "" : r[from])).trim();
+    const b = String((r[to] == null ? "" : r[to])).trim();
+    if (!a && !b) return;                       // a spacer line is not a mapping
+    if (!a || !b) {
+      problems.push({ line: i + 2, why: `half a mapping — "${a}" → "${b}"` });
+      return;
+    }
+    pairs.push({ from: a, to: b });
+  });
+
+  /* THE FIRST LINE IS ALWAYS A HEADING, and on a file that has none that costs
+     a mapping. Said out loud rather than guessed at: deciding "this row looks
+     like data, not a heading" would be a rule that is right most of the time,
+     and the times it is wrong it silently drops or invents a supplier mapping.
+     A named problem the person can fix in ten seconds is better. */
+  if (positional) {
+    problems.push({
+      line: 1,
+      why: `no recognised heading, so "${grid.headers[0]}" → "${grid.headers[1]}" was read as ` +
+        `the heading row. Add a heading line like "Spreadsheet Name,Tramada Creditor" if it was a mapping.`,
+      heading: true,
+    });
+  }
+  return { pairs, problems, positional };
+}
+
+/** The cheat sheet as a lookup, keyed the way names are compared. */
+function cheatSheetIndex(pairs) {
+  const index = new Map();
+  for (const p of pairs || []) {
+    const k = supplierKey(p.from);
+    if (!k) continue;
+    const seen = index.get(k) || [];
+    seen.push(p.to);
+    index.set(k, seen);
+  }
+  return index;
+}
+
+/**
+ * How two supplier names are compared: case, surrounding space and repeated
+ * inner space only.
+ *
+ * DELIBERATELY NOT CLEVER. No stripping of "Pty Ltd", no fuzzy distance. Two
+ * creditors can differ by one word and be different companies, and a tick puts
+ * money against one of them on a committed bank statement. Everything the text
+ * cannot settle goes to the cheat sheet, which is a human's decision written
+ * down — and if it is not in there, the row is not ticked and says why.
+ */
+function supplierKey(name) {
+  return String(name == null ? "" : name).trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * Does the spreadsheet's supplier name mean the same creditor as Tramada's?
+ *
+ * Exact first, then the cheat sheet. Returns `{ ok, via }` so the reason can
+ * say which — "matched via the cheat sheet" is a different fact to "matched"
+ * and the person reading a remark deserves to know it was a mapping.
+ */
+function supplierMatches(fileName, tramadaName, index) {
+  const a = supplierKey(fileName);
+  const b = supplierKey(tramadaName);
+  if (!a || !b) return { ok: false, via: "missing" };
+  if (a === b) return { ok: true, via: "exact" };
+  const mapped = (index && index.get(a)) || [];
+  if (mapped.some((m) => supplierKey(m) === b)) return { ok: true, via: "cheat sheet" };
+  return { ok: false, via: mapped.length ? "cheat sheet disagrees" : "not in the cheat sheet" };
+}
+
+/**
+ * One row of a MINT or TravelPay file against the statement page — BR05.
+ *
+ * Three gates, in the guides' own order, and the FIRST failure is the remark.
+ * A row whose reference is not on the page has nothing to compare an amount
+ * against, so reporting "amount does not match" as well would be noise.
+ *
+ * `negative` is TravelPay's BR06 and is checked before anything else: a
+ * negative processed amount is a refund, it is not entered, and the guide gives
+ * it its own words.
+ */
+function matchCreditorRow(row, statementRows, opts = {}) {
+  const words = opts.remarks || MINT_REMARKS;
+  const index = opts.cheatSheet || null;
+  const no = (remark, reason) =>
+    ({ reconciled: false, status: "Not reconciled", remark, reason });
+
+  // TravelPay BR06 — a negative amount is never entered.
+  if (words.negative && row.amountCents != null && row.amountCents < 0) {
+    return no(words.negative,
+      `the file says $${money(row.amountCents)} — a negative amount is not entered`);
+  }
+
+  /* THE REFERENCE COLUMN, which is what both guides actually name.
+   *
+   *   MINT step 12       "Value in the 'Reference' column in Tramada should
+   *                       match 'Transaction ID' (column E) in spreadsheet"
+   *   TravelPay step 12  "...should match 'Payment Reference' (column Q)"
+   *
+   * Not Trans. No. Measured on page 13, 17-Aug-2026, a row reads
+   *
+   *   Trans. No   R.0000009444        Tramada's own number
+   *   Reference   BP-HM51N-13316      the id the payment was made under
+   *
+   * and it is the second one a MINT or TravelPay file carries. Matching on
+   * Trans. No would compare a bank's transaction id against a Tramada receipt
+   * number and never find anything — which is exactly what the first version of
+   * this function did.
+   *
+   * Trans. No is still accepted as a second place to look, and the reason says
+   * which column answered: both are unique on the page, and a run that found
+   * the id somewhere unexpected should say so rather than silently succeed or
+   * silently fail. */
+  const want = refKey(row.transNo);
+  const onReference = (statementRows || []).filter((t) => refKey(t.reference) === want);
+  const onTransNo = onReference.length ? []
+    : (statementRows || []).filter((t) => receiptKey(t.transNo) === receiptKey(row.transNo));
+  const hits = onReference.length ? onReference : onTransNo;
+  const foundIn = onReference.length ? "Reference" : "Trans. No";
+  if (!want || !hits.length) {
+    return no(words.reference,
+      `${row.transNo || "(no reference)"} is not in the Reference column of this page`);
+  }
+
+  /* Prefer a hit that agrees on the money, so a duplicated reference reports
+     the one that actually matches rather than whichever came first. */
+  const onAmount = hits.find((t) => cents(t.amount) === row.amountCents);
+  const hit = onAmount || hits[0];
+
+  if (row.amountCents == null || !onAmount) {
+    return no(words.amount,
+      `the page says $${money(cents(hit.amount))}, the file says ` +
+      `$${row.amountCents == null ? "?" : money(row.amountCents)}`);
+  }
+
+  const supplier = supplierMatches(row.toCompany, hit.payee, index);
+  if (!supplier.ok) {
+    return no(words.supplier,
+      `the page pays "${hit.payee || "(blank)"}", the file says "${row.toCompany || "(blank)"}"` +
+      ` — ${supplier.via}`);
+  }
+
+  return {
+    reconciled: true, status: "Reconciled", remark: "",
+    reason: `${row.transNo} found in the ${foundIn} column at $${money(row.amountCents)} ` +
+      `to "${hit.payee}"` +
+      (supplier.via === "cheat sheet" ? " (supplier matched via the cheat sheet)" : ""),
+    // What the run TICKS by, which is the page's own transaction number.
+    transNo: hit.transNo || null,
+    duplicates: hits.length > 1 ? hits.length : undefined,
+  };
+}
+
+/**
+ * MINT BR08 / TravelPay BR09 — the whole file against the figure a human typed.
+ *
+ * A RUN-LEVEL check, not a row one: it says something about the upload, not
+ * about any particular payment, so it is reported once and never repeated down
+ * every row's Remarks.
+ *
+ * Both totals are in cents and compared with `===`, like every other money
+ * comparison here. An unreadable entry is not silently treated as agreement.
+ */
+function checkTransactionTotal(rows, entered) {
+  const want = cents(entered);
+  if (want == null) {
+    return { checked: false, remark: "", reason: "no Transaction Total was entered" };
+  }
+  const amounts = (rows || []).map((r) => (r ? r.amountCents : null));
+  if (amounts.some((c) => c == null)) {
+    return {
+      checked: false, remark: "",
+      reason: "some rows have an unreadable amount, so the file's total cannot be added up",
+    };
+  }
+  const got = amounts.reduce((a, c) => a + c, 0);
+  if (got === want) {
+    return { checked: true, ok: true, remark: "", enteredCents: want, fileCents: got,
+      reason: `the file totals $${money(got)}, which is the Transaction Total entered` };
+  }
+  return {
+    checked: true, ok: false, remark: MINT_REMARKS.total,
+    enteredCents: want, fileCents: got,
+    reason: `the file totals $${money(got)} but the Transaction Total entered is ` +
+      `$${money(want)} — a difference of $${money(Math.abs(got - want))}`,
+  };
+}
+
 module.exports = {
   cents, money, refKey, receiptKey,
   summariseCombined, sourceBreakdown,
   uploadName, stampOf, runTotals, needsReaction, overviewFrom,
   splitCsvLine, parseReconCsv, parseReconRows,
   normaliseHeading, buildExportGrid, inputColumnsOf, moneyColumnsOf, gridToCsv, EXPORT_FIELDS,
-  REMARKS, RETAIL_DEBTOR, BPAY_RECEIPT, branchCode, isPastDate, toIsoDate, decidePreReceipt, sortForFinance, pageForDate,
+  REMARKS, RETAIL_DEBTOR, BPAY_RECEIPT, branchCode, isPastDate, toIsoDate, decidePreReceipt, sortForFinance, pageForDate, pagesForDate,
   outstandingFrom, totalLeftToAllocate, chooseSegments, decideAllocation,
   matchAgainstStatement,
   nextPageNumber, toTramadaDate,
@@ -1941,10 +2275,13 @@ module.exports = {
   mapColumns, rowsByHeader,
   STATEMENT_COLUMNS, TRANSACTION_COLUMNS, TRANSACTION_FALLBACK,
   MINT_COLUMNS, csvGrid, parseMintRows, matchMintAgainstStatement, summariseMint,
-  matchTravelPayAgainstStatement, MATCHERS, matcherFor, matchesOn,
+  matchTravelPayAgainstStatement, MATCHERS, matcherFor, matchesOn, SORT_BY,
   BOOKING_RECEIPT_COLUMNS, findFiledReceipt,
   TRAVELPAY_COLUMNS, parseTravelPayRows, serialDate, bookingFromReference, REPORTS,
   IPSI_COLUMNS, parseIpsiRows, matchIpsiAgainstReceipts, summariseIpsi,
   tidyError,
   summarise,
+  MINT_REMARKS, TRAVELPAY_REMARKS, CHEAT_SHEET_COLUMNS,
+  parseCheatSheet, cheatSheetIndex, supplierKey, supplierMatches,
+  matchCreditorRow, checkTransactionTotal,
 };

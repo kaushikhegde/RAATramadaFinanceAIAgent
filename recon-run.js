@@ -494,10 +494,39 @@ async function createStatement(page, { pageNumber, statementDate, openingBalance
  * report types possible at all — sort once, then swap the filter as often as
  * you like and the ticks made in between survive.
  */
-async function sortPage(page) {
+/**
+ * Sort the reconcile page — by the column the report's own guide names.
+ *
+ *   BPay       Date, descending      the receipts it just filed are the newest
+ *   MINT       Reference             step 10
+ *   TravelPay  Receipt For/Payment To  step 10
+ *
+ * ALWAYS BEFORE THE FILTER (MINT BR04, TravelPay BR04, and measured here on
+ * 07-08-2026): `#sortButton` rebuilds the list and drops whatever the filter was
+ * set to, so the other order leaves every transaction on screen — which reads
+ * as a filter that simply matched a great many rows.
+ *
+ * A sort option Tramada does not offer is not worth stopping a run over: the
+ * page is still readable unsorted, and the matcher does not care what order the
+ * grid is in. So a failed selectOption is said out loud and carries on.
+ */
+async function sortPage(page, source = "bpay", say = () => {}) {
+  const want = core.SORT_BY[source] || core.SORT_BY.bpay;
   await page.waitForSelector("#filterColumn", { timeout: 20000 });
-  await page.selectOption("#sortBy", { label: "Date" }).catch(() => {});
-  await page.selectOption("#sortOrder", { label: "Descending" }).catch(() => {});
+  const set = async (sel, label) => {
+    try { await page.selectOption(sel, { label }); return true; }
+    catch { return false; }
+  };
+  const byOk = await set("#sortBy", want.by);
+  await set("#sortOrder", want.order);
+  if (!byOk) {
+    const offered = await page.evaluate(() => {
+      const el = document.querySelector("#sortBy");
+      return el ? [...el.options].map((o) => o.text.trim()) : [];
+    }).catch(() => []);
+    say(`Could not sort by "${want.by}" — the page offers ${offered.join(", ") || "nothing"}. ` +
+      `Reading the grid unsorted; matching is unaffected.`, false);
+  }
   await page.click("#sortButton").catch(() => {});
   await page.waitForLoadState("domcontentloaded").catch(() => {});
   await sleep(1500);
@@ -554,8 +583,8 @@ async function applyFilter(page, recPayType) {
   }
 }
 
-async function filterAndRead(page, recPayType = core.BPAY_RECEIPT.label, say = () => {}, doFilter = true) {
-  await sortPage(page);
+async function filterAndRead(page, recPayType = core.BPAY_RECEIPT.label, say = () => {}, doFilter = true, source = "bpay") {
+  await sortPage(page, source, say);
   if (doFilter) {
     await applyFilter(page, recPayType);
   } else {
@@ -1021,6 +1050,125 @@ async function openFreshStatementPage(page, o) {
   return { pageNumber, carriedBalance, closingBalance: closingUsed };
 }
 
+/**
+ * MINT BR03 / TravelPay BR03 — OPEN the statement BPay already made, never
+ * create one.
+ *
+ * "Do not create a new statement for MINT — reuse the existing statement
+ * already created for the day. (From BPAY process)". Same words in the
+ * TravelPay guide. Both reports reconcile against the page BPay opened, which
+ * is also the only way the day ends with ONE statement rather than three.
+ *
+ * The search grid's Action column carries a "Reconcile Bank Statement" link per
+ * row; that link is the reconcile screen. The row is found by STATEMENT DATE,
+ * not by page number — the date is the thing a person and a guide both mean by
+ * "the statement for today", and page numbers are an implementation detail that
+ * shifts when anyone else creates one.
+ *
+ * If there is no statement for that date this THROWS rather than falling back
+ * to creating one. That was asked for explicitly, and it is the right way
+ * round: a Mint run that quietly created its own page would leave the day with
+ * two statements and no error, which is the failure BR03 exists to prevent.
+ */
+async function openStatementForDate(page, o) {
+  const say = o.say || (() => {});
+  const accountLabel = o.accountLabel || "[TRUST] Trust Account";
+  const wantIso = core.toIsoDate(o.statementDate);
+  if (!wantIso) {
+    throw new Error(`"${o.statementDate}" is not a date this run can look a statement up by.`);
+  }
+
+  say(`Looking for the ${accountLabel} statement already created for ` +
+    `${core.toTramadaDate(o.statementDate)}…`);
+  const found = await readExistingPages(page, accountLabel);
+  if (!found.pages.length && !found.saysEmpty) {
+    throw new Error(
+      `Couldn't read the existing statement pages for ${accountLabel} — the result list ` +
+      `${found.sawTable ? "rendered but no row had a readable Page No" : "never rendered"}, ` +
+      `and this run will not guess which statement to reconcile.`
+    );
+  }
+
+  /* MORE THAN ONE STATEMENT FOR THAT DATE IS NOT A THING TO GUESS AT.
+     Measured live: pages 10, 11 and 12 all carry 12-08-2026. Opening "the"
+     statement then means opening one of three, and the next thing this run does
+     is tick transactions on it. So it names them and stops. */
+  const candidates = core.pagesForDate(found.pages, o.statementDate);
+  if (candidates.length > 1) {
+    throw new Error(
+      `${accountLabel} has ${candidates.length} bank statements for ` +
+      `${core.toTramadaDate(o.statementDate)} — pages ${candidates.map((p) => p.pageNo).join(", ")}. ` +
+      `This run will not guess which one to reconcile. Reconcile or remove the extras in Tramada, ` +
+      `or give a date that has one statement.`
+    );
+  }
+  const want = candidates[0];
+  if (!want) {
+    const had = found.pages
+      .map((p) => `${core.toTramadaDate(p.statementDate) || p.statementDate} (page ${p.pageNo})`)
+      .slice(-5);
+    throw new Error(
+      `${accountLabel} has no bank statement for ${core.toTramadaDate(o.statementDate)}. ` +
+      `${o.source === "mint" ? "MINT" : "TravelPay"} reconciles the statement the BPay run creates ` +
+      `and never creates one itself, so run BPay for that date first. ` +
+      (had.length ? `The most recent statements are ${had.join(", ")}.` : "There are no statements at all.")
+    );
+  }
+  say(`Reconciling the statement already created for that day — page ${want.pageNo}.`, true);
+
+  /* The row's own Reconcile link, found by the PAGE NUMBER in that row rather
+     than by row index: the grid is re-read between the search and this click,
+     and a row index would point somewhere else if anything reordered. */
+  const opened = await page.evaluate((pageNo) => {
+    const rows = [...document.querySelectorAll("table tr")];
+    for (const tr of rows) {
+      const cells = [...tr.querySelectorAll("td")].map((td) => (td.textContent || "").trim());
+      if (!cells.some((c) => c === String(pageNo))) continue;
+      /* BY TITLE, never by href. Measured 17-Aug-2026: every row carries TWO
+         links — "Reconcile Bank Statement" (finance-statement-generation.htm)
+         and "Edit Page Balances" (finance-statement.htm). An href test for
+         "statement" matches both, and which one it returned would depend on the
+         order Tramada happens to render them in. */
+      const direct = tr.querySelector('a[title*="Reconcile" i]');
+      const viaImg = tr.querySelector('a img[title*="Reconcile" i], a img[alt*="Reconcile" i]');
+      const a = direct || (viaImg && viaImg.closest("a"));
+      if (a) { a.click(); return true; }
+    }
+    return false;
+  }, want.pageNo);
+  if (!opened) {
+    throw new Error(
+      `Found the statement for ${core.toTramadaDate(o.statementDate)} (page ${want.pageNo}) but could not ` +
+      `open it — the results grid had no Reconcile link on that row.`
+    );
+  }
+  await page.waitForLoadState("domcontentloaded").catch(() => {});
+  await sleep(1500);
+
+  // Landed, or not. The reconcile screen has the filter controls on it; the
+  // search grid does not, so this is the screen's own answer rather than a URL.
+  await page.waitForSelector("#filterColumn", { timeout: 20000 }).catch(() => {});
+  const heading = await page.evaluate(() => {
+    const t = [...document.querySelectorAll("h1, h2, h3, b, td, div, span")]
+      .map((n) => (n.textContent || "").replace(/\s+/g, " ").trim())
+      .find((x) => /^Reconcile Bank Statement Page\s+\d+/i.test(x)) || "";
+    return { heading: t, hasFilter: !!document.querySelector("#filterColumn") };
+  });
+  if (!heading.hasFilter) {
+    throw new Error(
+      `Clicked through to the statement for ${core.toTramadaDate(o.statementDate)} but did not land on the ` +
+      `reconcile screen (the page reads "${heading.heading || "something else"}").`
+    );
+  }
+  const onPage = (heading.heading.match(/Page\s+(\d+)/i) || [])[1] || String(want.pageNo);
+  if (String(onPage) !== String(want.pageNo)) {
+    throw new Error(
+      `Opened page ${onPage} while looking for page ${want.pageNo} — the statement list and the screen disagree.`
+    );
+  }
+  return { pageNumber: Number(want.pageNo), statementDate: want.statementDate, reused: true };
+}
+
 /* ── phase one: the receipts ─────────────────────────────────────────────── */
 
 /**
@@ -1271,7 +1419,7 @@ async function runReconciliation(o = {}) {
 
     /* 3 — sort, filter, read, match. Nothing else is clicked here. */
     say(`Sorting by date descending, then filtering to ${core.BPAY_RECEIPT.label}…`);
-    const statement = await filterAndRead(page, undefined, say, filterFor(false));
+    const statement = await filterAndRead(page, undefined, say, filterFor(false), "bpay");
     say(`${statement.length} transaction${statement.length === 1 ? "" : "s"} showing after the filter.`);
 
     const matched = [];
@@ -1367,39 +1515,54 @@ async function runMintReconciliation(o = {}) {
     page = await ctx.newPage();
     await ensureLoggedIn(page, cb.onNeedLogin);
 
-    /* The balances are no longer passed in. Tramada's new-statement form fills
-       Opening Balance from the account itself, that figure is carried into
-       Closing, and it comes back here so the reconcile screen can be made to
-       agree with it. Nothing typed on the Sources screen reaches either form. */
-    const { pageNumber, carriedBalance, closingBalance } = await openFreshStatementPage(page, {
+    /* BR03 — THE STATEMENT IS ALREADY THERE. Both guides say do not create one
+       for MINT or TravelPay; reuse the one the BPay process made for the day.
+       No statement for that date STOPS the run rather than falling back to
+       creating one — a fallback would leave the day with two statements and no
+       error, which is the outcome BR03 exists to prevent. */
+    const { pageNumber } = await openStatementForDate(page, {
       accountLabel,
       statementDate: o.statementDate,
-      // Step 27 — Finance's figure off the Westpac statement, not a copy of
-      // the opening balance.
-      closingBalance: o.closingBalance,
+      source: o.source || "mint",
       say,
     });
 
-    say("Sorting by date descending…");
-    const statement = await filterAndRead(page, recPayType, say, filterFor(false));
+    const sortBy = (core.SORT_BY[o.source || "mint"] || {}).by || "Reference";
+    say(`Sorting by ${sortBy}, then filtering to ${recPayType}…`);
+    const statement = await filterAndRead(page, recPayType, say, filterFor(false), o.source || "mint");
     say(`${statement.length} transaction${statement.length === 1 ? "" : "s"} showing after the filter.`);
 
+    /* BR05 — three gates per row, and the cheat sheet is how a trading name
+       gets past the supplier one. Built once, not per row. */
+    const cheatSheet = core.cheatSheetIndex((o.cheatSheet && o.cheatSheet.pairs) || o.cheatSheet || []);
     const matched = [];
     for (const r of results) {
-      const m = matchFor(r, statement);
+      const m = matchFor(r, statement, { cheatSheet });
       r.reconciliation = m.status;
       r.mismatch = m.mismatch;
+      // BR06 / BR07 — the guide's own words for whichever gate failed.
+      if (m.remark) r.remark = m.remark;
       r.why = (r.error || r.noReceipt) ? r.why : m.reason;
       if (m.duplicates) r.why += ` — ${m.duplicates} transactions carry that number`;
       if (m.reconciled && m.transNo) { r.transNo = m.transNo; matched.push(m.transNo); }
-      row(r.n, { reconciliation: r.reconciliation, why: r.why, mismatch: r.mismatch, transNo: r.transNo });
+      row(r.n, {
+        reconciliation: r.reconciliation, why: r.why, mismatch: r.mismatch,
+        transNo: r.transNo, remark: r.remark,
+      });
       say(`Row ${r.n}: ${m.status} — ${m.reason}`, m.reconciled);
     }
 
-    const balances = await setStatementBalances(page, {
-      openingBalance: carriedBalance,
-      closingBalance,
-    }, say, dryRun);
+    /* BR08 / BR09 — the whole file against the figure a human typed, reported
+       ONCE. It says something about the upload, not about any one payment, so
+       it never goes down every row's Remarks column. */
+    const total = core.checkTransactionTotal(results, o.transactionTotal);
+    if (total.checked && !total.ok) say(`${total.remark} ${total.reason}`, false);
+    else if (total.reason) say(total.reason, true);
+
+    /* The statement's balances were set when BPay created it. Nothing is typed
+       over them here: these reports reconcile against a page that already
+       exists, and rewriting another run's figures is not theirs to do. */
+    const balances = null;
 
     const selection = await selectMatchedTransactions(page, statement, matched, say);
     const finished = await finishStatementPage(page, selection.ticked.length, say, dryRun);
@@ -1577,7 +1740,7 @@ async function runCombinedReconciliation(o = {}) {
       say,
     });
 
-    await sortPage(page);
+    await sortPage(page, "bpay", say);
     let ticked = [];
     let missing = [];
     let futureDated = [];

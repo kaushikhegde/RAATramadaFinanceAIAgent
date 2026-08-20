@@ -237,8 +237,56 @@ const listRuns = () => readAllOrQuarantine().runs;
 const getRun = (id) => listRuns().find((r) => r.id === id) || null;
 const overview = () => core.overviewFrom(listRuns());
 
+
+
+/* ── the supplier name cheat sheet ───────────────────────────────────────── */
+
+/**
+ * One mapping file per report, replacing whatever was there.
+ *
+ * Both guides: "User to be able to upload supplier name cheat sheet. If there
+ * is an existing one, it will get replaced. Date and time of upload will be
+ * displayed." So: no history, one file, and the timestamp is part of the
+ * record rather than a property of the filesystem — a copied or restored
+ * directory should still say when Finance actually uploaded it.
+ *
+ * Kept in its own file rather than inside runs.json, because runs.json is
+ * rewritten on every row of every run and a mapping table has no business
+ * being rewritten a hundred times an hour.
+ */
+function cheatSheetPath() {
+  return path.join(DIR, "cheat-sheets.json");
+}
+
+function readCheatSheets() {
+  try { return JSON.parse(fs.readFileSync(cheatSheetPath(), "utf8")); }
+  catch { return {}; }
+}
+
+function saveCheatSheet(source, { name, pairs, problems }, at = new Date().toISOString()) {
+  const all = readCheatSheets();
+  all[source] = {
+    source,
+    name: String(name || "cheat-sheet.csv"),
+    uploadedAt: at,
+    pairs: (pairs || []).map((p) => ({ from: String(p.from), to: String(p.to) })),
+    // Kept so the screen can say "3 of 19 lines were half a mapping" rather
+    // than quietly using the 16 that worked.
+    skipped: (problems || []).filter((p) => !p.heading).length,
+  };
+  const tmp = `${cheatSheetPath()}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(all, null, 2));
+  fs.renameSync(tmp, cheatSheetPath());
+  return all[source];
+}
+
+function getCheatSheet(source) {
+  return readCheatSheets()[source] || null;
+}
+
 module.exports = {
   UPLOADS, RUNS,
   saveUpload, startRun, patchRow, appendActivity, finishRun,
   listRuns, getRun, overview, reconcileOrphans,
+  saveCheatSheet, getCheatSheet, readCheatSheets,
 };
