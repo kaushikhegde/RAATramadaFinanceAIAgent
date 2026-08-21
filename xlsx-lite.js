@@ -226,10 +226,14 @@ function readSheet(buf) {
     rows.push(cells);
   }
 
-  // Leading blank rows happen when a report carries a title band. The header is
-  // the first row with something in it.
+  // A title band happens when a report carries one — a lone total figure or a
+  // report title, one populated column each in an otherwise-wide row, ahead of
+  // the row that actually names every column. The header is the first row that
+  // names more than one of the columns it has more than one of — which is what
+  // keeps this from eating a genuinely single-column sheet.
   let head = 0;
-  while (head < rows.length && rows[head].every((c) => String(c).trim() === "")) head++;
+  while (head < rows.length - 1 && rows[head].length > 1 &&
+    rows[head].filter((c) => String(c).trim() !== "").length <= 1) head++;
   const headers = (rows[head] || []).map((c) => String(c).trim());
 
   return {

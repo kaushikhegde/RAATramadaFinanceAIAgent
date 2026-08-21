@@ -244,6 +244,36 @@ check("the dashboard sees both runs", dash.runs, 2);
 check("one completed", dash.completed, 1);
 check("one failed", dash.failed, 1);
 
+console.log("\nIPSI's pending settlements — resolved is manual, never automatic");
+const ipsiA = S.startRun({
+  source: "ipsi", statementDate: "2026-08-09", transactionTotal: "3035.85", rows: [],
+}, "2026-08-11T09:00:00.000Z");
+// Finished (not left "running") — a run reconcileOrphans() would otherwise
+// sweep up later in this same suite, alongside the orphan it is meant to find.
+S.finishRun(ipsiA.id, { summary: { ticked: 1, total: 2 } });
+const ipsiB = S.startRun({
+  source: "ipsi", statementDate: "2026-08-11", transactionTotal: "18668.07", rows: [],
+}, "2026-08-11T10:00:00.000Z");
+check("the NUVEI amount is stored with the run", S.getRun(ipsiA.id).transactionTotal, "3035.85");
+check("a run starts unresolved", S.getRun(ipsiA.id).resolved, false);
+check("both show as unresolved, most recent first",
+  S.listUnresolved("ipsi").map((r) => r.id), [ipsiB.id, ipsiA.id]);
+check("a report with no unresolved runs is an empty list, not a crash",
+  S.listUnresolved("travelpay"), []);
+
+S.markResolved(ipsiA.id);
+check("resolving one drops it off the list", S.listUnresolved("ipsi").map((r) => r.id), [ipsiB.id]);
+check("but it is still in the run's own history, marked", S.getRun(ipsiA.id).resolved, true);
+ok("with when", !!S.getRun(ipsiA.id).resolvedAt);
+check("resolving a run that isn't there is null, not a throw", S.markResolved("nope"), null);
+
+// A run finishing cleanly does not resolve it on its own — the guide's own
+// "Other features" wants a PERSON to decide that, and a dry run's own
+// preview can look clean while still being one Save away from being real.
+S.finishRun(ipsiB.id, { summary: { ticked: 2, total: 2 } });
+check("finishing clean still leaves it unresolved",
+  S.listUnresolved("ipsi").map((r) => r.id), [ipsiB.id]);
+
 console.log("\nwhen the file is not what it should be");
 const orphan = S.startRun({ source: "bpay", rows: [] }, "2026-08-10T15:00:00.000Z");
 check("an orphan starts running", S.getRun(orphan.id).status, "running");

@@ -1101,13 +1101,20 @@ and closes the window. The form is confirmed in the tab **before** the window is
 closed; if it does not appear, the window is kept and used exactly as before.
 `IPSI_KEEP_POPUP=true` turns it off.
 
-> **Not yet confirmed: pressing Issue from an ordinary tab.** The page rendering
-> there is measured; the submit is not. A form built for a popup can reference
-> `window.opener` (null in a tab) or call `self.close()`, and if its Issue
-> handler does, the click would throw instead of posting. That fails safe —
-> nothing is filed and the run reports it — but it has not been proven either
-> way. Tick **Dry run** for the first IPSI run after this change: it fills the
-> form and stops before Issue, which is exactly the question.
+> **CORRECTED 22-Aug-2026 — there is no `#issue` on this page.** This section
+> used to say "not yet confirmed: pressing Issue from an ordinary tab" and
+> guessed `#issue` from the guide's own wording ("click the Issue button") plus
+> the id convention every other Tramada form here follows. A live run that got
+> far enough to look — rows ticked, header filled, held in dry-run one click
+> short of committing — found no element with that id anywhere in the DOM.
+> What is actually there, in the guide's own bottom-right-hand-corner spot, is
+> `input#save[type=submit][value="Save"]` — the guide calls the ACTION "Issue";
+> the page's own control is labelled "Save". `issueMerchantReceipt` clicks
+> `#save` now. **Still not yet confirmed: the click actually posting from an
+> ordinary tab** — only that the element exists and is the right one to aim
+> at. The `window.opener`/`self.close()` risk this section originally raised
+> is unchanged by fixing the id; that part still wants a real, deliberate
+> non-dry-run attempt before it is trusted.
 
 ```
 #receipttransactionTypeCode   ""  CQ=Cheque  ET=EFT     ← same two as the payment form
@@ -1117,7 +1124,7 @@ closed; if it does not appear, the window is kept and used exactly as before.
 #receiptreceiptAmount  #receiptreferenceNumber
 #receiptchequeDrawer #receiptchequeBank #receiptchequeBranch   ← Cheque only
 #roundRemaining
-#cancel   #preview   #issue
+#cancel   preview (name, no id)   #save[type=submit][value="Save"]   ← NOT #issue
 #documentTemplate "Finance Merchant Payment Receipt" RO
 #documentType   RECEIPT_PLUS_ALLOCATION | (one other)
 email block: #useEmail #emailSubject #tos #emailFormat …   ← leave alone

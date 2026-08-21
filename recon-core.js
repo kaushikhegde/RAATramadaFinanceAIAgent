@@ -1023,7 +1023,7 @@ const TRANSACTION_FALLBACK = {
  * reordered export from quietly shifting them.
  */
 const MINT_COLUMNS = {
-  transNo: ["transaction reference", "transaction ref", "trans no", "trans. no"],
+  transNo: ["transaction reference", "transaction ref", "transaction id", "trans no", "trans. no"],
   amount: ["amount"],
   toCompany: ["to company", "company"],
 };
@@ -1040,9 +1040,21 @@ const MINT_COLUMNS = {
 function csvGrid(text) {
   const lines = String(text || "").split(/\r?\n/).filter((l) => l.trim() !== "");
   if (!lines.length) return { headers: [], rows: [] };
+  const grid = lines.map(splitCsvLine);
+  /* Mint's "Download Copy" export leads with a title band — "Total Outgoing
+     Amount" and its own total, one populated column each in an otherwise-wide
+     row, sometimes with a blank row either side — ahead of the row that
+     actually names "From Company", "Amount" and the rest. A genuine header
+     row always names more than one column of a row that HAS more than one;
+     a title or a total figure never does. The "row has more than one column"
+     guard is what keeps this from eating a genuinely single-column sheet,
+     where the header names exactly one thing on every row, on purpose. */
+  let head = 0;
+  while (head < grid.length - 1 &&
+    grid[head].length > 1 && grid[head].filter((c) => c.trim() !== "").length <= 1) head++;
   return {
-    headers: splitCsvLine(lines[0]).map((h) => h.trim()),
-    rows: lines.slice(1).map((l) => splitCsvLine(l)),
+    headers: grid[head].map((h) => h.trim()),
+    rows: grid.slice(head + 1),
   };
 }
 
@@ -1467,7 +1479,10 @@ const IPSI_COLUMNS = {
   reference: ["transaction reference"],
   bookingNo: ["booking number"],
   amount: ["transaction amount"],
-  kind: ["custom 5"],
+  // "Custom 5" is the ALREADY-CLEANED spreadsheet's name for this column;
+  // IPSI's own raw "Download Copy" export calls the same thing "Transaction
+  // Type User Friendly". Both are read so either shape parses.
+  kind: ["custom 5", "transaction type user friendly"],
   typeCode: ["transaction type"],
   status: ["transaction status"],
   settlementDate: ["settlement date"],
@@ -1481,13 +1496,53 @@ const IPSI_COLUMNS = {
 const isRefund = (row) => String(row.typeCode).trim() === "20" || /refund/i.test(row.kind || "");
 
 /**
+ * PreAuths are `Transaction Type` 10 — a card-authorisation hold, not money
+ * that moved. Reconciliation Guide — IPSI, step 7: every PreAuth is deleted
+ * before anything downstream sees the file, because whatever it authorised
+ * shows up again as its own Capture (`Transaction Type` 9) once the merchant
+ * actually takes the payment — ticking the PreAuth too would count the same
+ * money twice.
+ */
+const isPreAuth = (row) => String(row.typeCode).trim() === "10" || /preauth/i.test(row.kind || "");
+
+/** The guide's own words, verbatim — BR06, BR07, BR08 and step 14/BR10. */
+const IPSI_REMARKS = {
+  booking: "Booking number mismatch or not found",   // BR06
+  amount: "Incorrect amount",                          // BR07
+  reference: "Incorrect payment reference",            // step 14 / BR10
+  total: "Incorrect total amount",                     // BR08 — what TICKED vs entered
+  /* Step 9's own words — NOT the same check as `total` above, and not the
+     same sentence either, on purpose (the same distinction Mint/TravelPay
+     already draw between their file-level and Tramada-level totals): this one
+     is the FILE's own total against the entered Transaction Total, checked
+     before Tramada is touched at all. */
+  fileTotal: "Total transaction amounts does not match.",   // step 9 / BR01
+};
+
+/** BR03 — a transaction line is a match within three cents either way. */
+const IPSI_LINE_TOLERANCE_CENTS = 3;
+/** BR08 — the total allocated in Tramada is a match within twenty cents. */
+const IPSI_TOTAL_TOLERANCE_CENTS = 20;
+
+/**
  * An IPSI export → rows the run can act on, plus the day's own settlement.
  *
- * REFUNDS ARE NOT PART OF AN IPSI RUN. They are money going back out to a
- * cardholder — each one links to a purchase from an EARLIER settlement, and the
- * screen this run drives ticks *Receipts* To Reconcile, which is money coming
- * in. There is nothing there to tick against a refund. They are held back and
- * reported so a person can see them, never silently dropped.
+ * Reconciliation Guide — IPSI, steps 5-7, run here rather than left for a
+ * human to have already done to the file:
+ *
+ *   - a Refund (`Transaction Type` 20) has its amount FLIPPED NEGATIVE. IPSI's
+ *     raw export carries it as a plain positive figure, same as a purchase;
+ *     a refund that stayed positive would inflate the settlement instead of
+ *     explaining why it fell short of it. Refunds ARE part of an IPSI run —
+ *     they tick against *Payments* To Reconcile, a different table to the one
+ *     purchases and captures tick, but a table all the same. (Until this
+ *     change they were excluded outright, on the reasoning that the screen
+ *     this run drives has nothing to tick a refund against — true of
+ *     *Receipts* To Reconcile, false of the *Payments* table beside it.)
+ *   - a PreAuth (`Transaction Type` 10) is dropped. It is a hold, not money
+ *     that moved; whatever it authorised shows up again as its own Capture.
+ *   - anything not `APPROVED` (a Decline, a Void) is dropped — unchanged from
+ *     before, since that check already did what step 6 asks for.
  *
  * The file states its own `Settlement Amount` on one row, and the sum of every
  * row (refunds included, they carry their sign) should equal it. That is a free
@@ -1526,6 +1581,13 @@ function parseIpsiRows(headers, gridRows) {
     };
     row.rawAmount = row.amount;
     row.amountCents = cents(row.amount);
+    row.isRefund = isRefund(row);
+    // Step 5 — flip a refund's amount negative. Guarded on `> 0` so a file
+    // that arrives ALREADY flipped (the reconciled example, and any file this
+    // run has already touched once) is not flipped a second time.
+    if (row.amountCents != null && row.isRefund && row.amountCents > 0) {
+      row.amountCents = -row.amountCents;
+    }
     if (row.amountCents != null) {
       row.amount = money(row.amountCents);
       everyRowCents += row.amountCents;
@@ -1550,12 +1612,8 @@ function parseIpsiRows(headers, gridRows) {
     if (row.status && !/^approved$/i.test(row.status)) {
       why.push(`the transaction is "${row.status}", not approved`);
     }
-    if (isRefund(row)) {
-      why.push(
-        `this is a refund of $${money(Math.abs(row.amountCents || 0))}` +
-        (row.linked ? ` against ${row.linked}` : "") +
-        " — refunds are money going back out and are not part of an IPSI run"
-      );
+    if (isPreAuth(row)) {
+      why.push("this is a PreAuth (10) hold, not a settled transaction — its Capture carries the money");
     }
     if (why.length) problems.push({ line: row.line, why: why.join("; "), row });
     else rows.push(row);
@@ -1577,6 +1635,35 @@ function parseIpsiRows(headers, gridRows) {
 }
 
 /**
+ * Guide step 4 — keep only the one settlement date this run is FOR.
+ *
+ * IPSI's own export has a padding quirk: pulling one day's transactions
+ * returns that day plus the one either side of it (the guide's own example —
+ * asking for 13/08 also returns 12/08 and 14/08). The settlement date is typed
+ * in on a later screen than the upload, which is why this runs separately from
+ * `parseIpsiRows` rather than inside it — by upload time nobody has said which
+ * day this run is for yet.
+ *
+ * A row whose own settlement date cannot be read is KEPT, not thrown away —
+ * an unreadable date is not evidence the row belongs to some OTHER day.
+ */
+function filterIpsiSettlementDate(rows, wantedDate) {
+  const want = toIsoDate(wantedDate);
+  if (!want) return { rows: rows || [], excluded: [] };
+  const kept = [];
+  const excluded = [];
+  for (const r of rows || []) {
+    const got = toIsoDate(r.settlementDate);
+    if (got && got !== want) {
+      excluded.push({ ...r, why: `settled ${got}, not ${want} — this run is for one settlement date` });
+    } else {
+      kept.push(r);
+    }
+  }
+  return { rows: kept, excluded };
+}
+
+/**
  * One IPSI row against Tramada's "Receipts To Reconcile" list.
  *
  * Merchant Reference first, Booking No. second. The fallback is not politeness:
@@ -1585,10 +1672,21 @@ function parseIpsiRows(headers, gridRows) {
  * reference alone would leave a fifth of the settlement unticked with no
  * explanation. Amount has to agree either way — four bookings appear twice in
  * one file, so the booking on its own does not identify a row.
+ *
+ * BR03 allows a three-cent variance per line — a card processor's own rounding,
+ * not a reason to hold up a settlement over fractions of a cent. A row matched
+ * only by falling back to its booking gets `remark: IPSI_REMARKS.reference`
+ * (BR10) alongside `matched: true` — the guide's step 14 says "continue to next
+ * step" for this one, not "click Cancel", so it is a note on an otherwise-good
+ * tick, not a reason to withhold one.
  */
 function matchIpsiAgainstReceipts(row, receipts) {
   const list = receipts || [];
-  const sameMoney = (r) => cents(r.receiptAmount) === row.amountCents;
+  const sameMoney = (r) => {
+    const c = cents(r.receiptAmount);
+    return c != null && row.amountCents != null &&
+      Math.abs(c - row.amountCents) <= IPSI_LINE_TOLERANCE_CENTS;
+  };
 
   const byRef = list.filter((r) => r.reference && refKey(r.reference) === refKey(row.reference));
   const refHit = byRef.find(sameMoney);
@@ -1597,22 +1695,130 @@ function matchIpsiAgainstReceipts(row, receipts) {
       reason: `matched on reference ${row.reference} at $${money(row.amountCents)}` };
   }
   if (byRef.length) {
-    return { matched: false, on: "reference", candidates: byRef,
+    return { matched: false, on: "reference", candidates: byRef, remark: IPSI_REMARKS.amount,
       reason: `reference ${row.reference} is on the list at $${byRef.map((r) => money(cents(r.receiptAmount))).join(", $")}, not $${money(row.amountCents)}` };
   }
 
   const byBooking = list.filter((r) => r.bookingNo && refKey(r.bookingNo) === refKey(row.bookingNo));
   const bookHit = byBooking.find(sameMoney);
   if (bookHit) {
-    return { matched: true, on: "booking", receipt: bookHit,
+    return { matched: true, on: "booking", receipt: bookHit, remark: IPSI_REMARKS.reference,
       reason: `no receipt carries reference ${row.reference}, matched on booking ${row.bookingNo} at $${money(row.amountCents)}` };
   }
   if (byBooking.length) {
-    return { matched: false, on: "booking", candidates: byBooking,
+    return { matched: false, on: "booking", candidates: byBooking, remark: IPSI_REMARKS.amount,
       reason: `booking ${row.bookingNo} is on the list at $${byBooking.map((r) => money(cents(r.receiptAmount))).join(", $")}, not $${money(row.amountCents)}` };
   }
-  return { matched: false, on: null,
+  return { matched: false, on: null, remark: IPSI_REMARKS.booking,
     reason: `nothing on the list carries reference ${row.reference} or booking ${row.bookingNo}` };
+}
+
+/**
+ * One IPSI refund against Tramada's "Payments To Reconcile" list — the table
+ * beside Receipts To Reconcile, for money going back OUT rather than in.
+ *
+ * Same shape as `matchIpsiAgainstReceipts`, deliberately: reference first,
+ * booking second, three cents of tolerance either way (BR03 does not carve out
+ * an exception for refunds). The one real difference is the amount column —
+ * this table's own is `Due Amount`, and BOTH sides are compared as absolute
+ * figures. Measured live 21-Aug-2026: this screen's own Due Amount is itself
+ * NEGATIVE for a payment (`-1302.15` on a real row) — a refund reduces what is
+ * due, and Tramada shows that as a negative figure, the same sign this file
+ * already stores the refund's own amount in (guide step 5). Comparing the
+ * absolute value on both sides, rather than trusting either one's sign to
+ * mean the same thing forever, is what survives that.
+ */
+function matchIpsiAgainstPayments(row, payments) {
+  const list = payments || [];
+  const want = Math.abs(row.amountCents || 0);
+  const sameMoney = (r) => {
+    const c = cents(r.dueAmount);
+    return c != null && Math.abs(Math.abs(c) - want) <= IPSI_LINE_TOLERANCE_CENTS;
+  };
+
+  const byRef = list.filter((r) => r.reference && refKey(r.reference) === refKey(row.reference));
+  const refHit = byRef.find(sameMoney);
+  if (refHit) {
+    return { matched: true, on: "reference", payment: refHit,
+      reason: `matched refund on reference ${row.reference} at $${money(want)}` };
+  }
+  if (byRef.length) {
+    return { matched: false, on: "reference", candidates: byRef, remark: IPSI_REMARKS.amount,
+      reason: `reference ${row.reference} is on the Payments list at $${byRef.map((r) => money(Math.abs(cents(r.dueAmount) || 0))).join(", $")}, not $${money(want)}` };
+  }
+
+  const byBooking = list.filter((r) => r.bookingNo && refKey(r.bookingNo) === refKey(row.bookingNo));
+  const bookHit = byBooking.find(sameMoney);
+  if (bookHit) {
+    return { matched: true, on: "booking", payment: bookHit, remark: IPSI_REMARKS.reference,
+      reason: `no payment carries reference ${row.reference}, matched refund on booking ${row.bookingNo} at $${money(want)}` };
+  }
+  if (byBooking.length) {
+    return { matched: false, on: "booking", candidates: byBooking, remark: IPSI_REMARKS.amount,
+      reason: `booking ${row.bookingNo} is on the Payments list at $${byBooking.map((r) => money(Math.abs(cents(r.dueAmount) || 0))).join(", $")}, not $${money(want)}` };
+  }
+  return { matched: false, on: null, remark: IPSI_REMARKS.booking,
+    reason: `nothing on the Payments list carries reference ${row.reference} or booking ${row.bookingNo} for this refund` };
+}
+
+/**
+ * Step 9 / BR01 — the settlement file's OWN total against the NUVEI figure a
+ * human read off the bank statement and typed in, to the cent, checked before
+ * Tramada is touched at all. NOT the same check as BR08 below: this is the
+ * file against the human, BR08 is Tramada's own ticked total against the
+ * human, and a settlement can fail one without the other.
+ *
+ * `rows` is what `parseIpsiRows` already kept — PreAuths and anything not
+ * approved are gone, and a refund's `amountCents` already carries its sign —
+ * so summing it here is exactly "what this run is about to act on", not the
+ * raw file. Summed in integer cents, never by re-parsing dollar strings: a run
+ * of floats added as floats is exactly how "to the cent" quietly stops being
+ * true.
+ */
+function checkIpsiFileTotal(rows, entered) {
+  const fileCents = (rows || []).reduce((a, r) => a + (r.amountCents || 0), 0);
+  const want = cents(entered);
+  if (want == null) {
+    return { checked: false, ok: null, remark: "", fileCents, enteredCents: null,
+      reason: "no Transaction Total was entered" };
+  }
+  if (fileCents === want) {
+    return { checked: true, ok: true, remark: "", fileCents, enteredCents: want,
+      reason: `the file's own total of $${money(fileCents)} matches the $${money(want)} Transaction Total entered, to the cent` };
+  }
+  return {
+    checked: true, ok: false, remark: IPSI_REMARKS.fileTotal, fileCents, enteredCents: want,
+    reason: `the file totals $${money(fileCents)} but $${money(want)} was entered — a difference of $${money(Math.abs(fileCents - want))}`,
+  };
+}
+
+/**
+ * BR08 — what was actually ticked in Tramada against the Transaction Total a
+ * human typed off the NUVEI statement, twenty cents of tolerance either way.
+ *
+ * That is wider than a single line's three cents (BR03) on purpose — this is
+ * the WHOLE settlement's rounding, not one card's. Guide step 18: past this
+ * tolerance the run stops, names "Incorrect total amount", and does not go
+ * near the Rounding Remaining checkbox or Issue.
+ */
+function checkIpsiAllocatedTotal(allocatedCents, entered) {
+  const want = cents(entered);
+  if (want == null) {
+    return { checked: false, ok: null, remark: "", reason: "no Transaction Total was entered" };
+  }
+  const got = allocatedCents || 0;
+  const diff = Math.abs(got - want);
+  if (diff <= IPSI_TOTAL_TOLERANCE_CENTS) {
+    return {
+      checked: true, ok: true, remark: "", enteredCents: want, allocatedCents: got,
+      reason: `the $${money(got)} ticked in Tramada is within $0.20 of the $${money(want)} Transaction Total entered`,
+    };
+  }
+  return {
+    checked: true, ok: false, remark: IPSI_REMARKS.total, enteredCents: want, allocatedCents: got,
+    reason: `the $${money(got)} ticked in Tramada differs from the $${money(want)} Transaction Total ` +
+      `entered by $${money(diff)}, more than the $0.20 allowed`,
+  };
 }
 
 /** What an IPSI run made of its file. */
@@ -2484,7 +2690,8 @@ module.exports = {
   matchTravelPayAgainstStatement, MATCHERS, matcherFor, matchesOn, SORT_BY,
   BOOKING_RECEIPT_COLUMNS, findFiledReceipt,
   TRAVELPAY_COLUMNS, parseTravelPayRows, serialDate, bookingFromReference, REPORTS,
-  IPSI_COLUMNS, parseIpsiRows, matchIpsiAgainstReceipts, summariseIpsi,
+  IPSI_COLUMNS, IPSI_REMARKS, isPreAuth, parseIpsiRows, matchIpsiAgainstReceipts,
+  matchIpsiAgainstPayments, filterIpsiSettlementDate, checkIpsiFileTotal, checkIpsiAllocatedTotal, summariseIpsi,
   tidyError,
   summarise,
   MINT_REMARKS, TRAVELPAY_REMARKS, CHEAT_SHEET_COLUMNS,

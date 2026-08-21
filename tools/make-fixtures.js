@@ -99,13 +99,17 @@ require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
 const core = require("../recon-core");
+const xlsxLite = require("../xlsx-lite");
 const { runFullBooking } = require("../tramada-segments");
 const { runTramadaReceipt } = require("../tramada-receipt");
 const { runCreditorPayment } = require("../tramada-payment");
-/* No playwright here any more. Every browser step goes through one of the
-   tramada-* modules, which each open and close their own CDP connection. The
-   IPSI fixture used to reach for chromium directly to drive the Finance
-   Receipts search; it does not look receipts up at all now. */
+const ipsi = require("../tramada-ipsi");
+/* No playwright here — every browser step goes through a tramada-* module,
+   each of which opens and closes its own CDP connection. `ipsi --search` and
+   `ipsi --run` are no exception: they call `tramada-ipsi.js`'s own
+   `searchWaitingReceipts` / `runIpsiReconciliation` rather than reaching for
+   `chromium` directly, which is exactly what this comment used to warn the
+   old (removed) receipt-polling code against. */
 
 const args = process.argv.slice(2);
 const has = (f) => args.includes(f);
@@ -872,7 +876,168 @@ async function makeMint() {
  * is not read at all — two of the four rows on the live screen had none, and
  * requiring it threw those rows away before anything looked at them.)
  */
+/**
+ * `ipsi --search` — READ-ONLY: what is on the Finance Merchant Payment
+ * Receipt screen for a debtor, right now.
+ *
+ *   node tools/make-fixtures.js ipsi --search
+ *   node tools/make-fixtures.js ipsi --search --reference WLK
+ *   node tools/make-fixtures.js ipsi --search --booking 10565
+ *
+ * Never ticks, never types, never presses anything. Good for finding a real
+ * reference/booking/amount to reconcile `ipsi --run` against, and for
+ * checking whether a settlement already went through — the page this drives
+ * is slow enough that a run's own progress can look idle for minutes, and the
+ * fastest way to know a row's receipt was actually issued is to see it is no
+ * longer here.
+ */
+async function ipsiSearch() {
+  const debtorCode = IPSI_DEBTOR;
+  const debtorLabel = valueOf("--debtor-label", "MasterCard/Visa/Debit");
+  const toDate = valueOf("--to", new Date().toISOString().slice(0, 10));
+  const fromDate = valueOf("--from", "");
+  const wantRef = valueOf("--reference", "");
+  const wantBooking = valueOf("--booking", "");
+  const limit = parseInt(valueOf("--limit", "25"), 10) || 0;
+
+  const filterRows = (rows) => rows.filter((r) =>
+    (!wantRef || core.refKey(r.reference) === core.refKey(wantRef)) &&
+    (!wantBooking || core.refKey(r.bookingNo) === core.refKey(wantBooking)));
+  const printTable = (title, rows, cols) => {
+    say(`\n  ${title} — ${rows.length} row(s)${limit && rows.length > limit ? `, showing first ${limit}` : ""}`);
+    for (const r of (limit ? rows.slice(0, limit) : rows)) {
+      say(`     ${cols.map((c) => `${c}=${r[c] ?? ""}`).join(" | ")}`);
+    }
+  };
+
+  const { receipts, payments } = await ipsi.searchWaitingReceipts({
+    debtorCode, debtorLabel, fromDate, toDate,
+    callbacks: { onProgress: (m) => say(`  ${m}`) },
+  });
+  printTable("Receipts To Reconcile", filterRows(receipts),
+    ["receiptNo", "bookingNo", "reference", "receiptAmount", "dueAmount", "dateReceived"]);
+  printTable("Payments To Reconcile", filterRows(payments),
+    ["paymentNo", "bookingNo", "reference", "refundAmount", "dueAmount", "paymentDate"]);
+  console.log("");
+}
+
+/**
+ * `ipsi --run <file>` — reconcile a real IPSI settlement, following
+ * *Reconciliation Guide — IPSI* steps 3-19 end to end.
+ *
+ *   node tools/make-fixtures.js ipsi --run fixtures/ipsi.xlsx \
+ *       --settlement-date 2026-08-11 --transaction-total 18668.07
+ *
+ * DRY RUN BY DEFAULT (CLAUDE.md §3: receipts preview before they commit) —
+ * every row is matched, ticked and the header filled in, then this stops one
+ * click short of Save. `--live` presses it, and BR04/BR09 override even
+ * `--live` when any row failed to tick cleanly or the total sits outside
+ * BR08's twenty-cent tolerance, so a bad settlement never gets a partial
+ * Issue regardless of which flag was passed.
+ *
+ * Writes a reconciled CSV beside the input — every column of the file as
+ * uploaded, `Booking No.` and `Remarks` appended (steps 8, 15), sorted by
+ * ascending booking number with the ones nobody could put a number on last
+ * (step 19).
+ */
+async function ipsiRun(file) {
+  const settlementDate = valueOf("--settlement-date", "");
+  const transactionTotal = valueOf("--transaction-total", "");
+  if (!settlementDate) die("--settlement-date is required (guide step 4) — this run has to know which day it is for.");
+  if (!transactionTotal) die("--transaction-total is required (BR01 / BR08) — the NUVEI figure a human read off the bank statement.");
+
+  const live = has("--live");
+  const debtorCode = IPSI_DEBTOR;
+  const debtorLabel = valueOf("--debtor-label", "MasterCard/Visa/Debit");
+  // Guide step 11: "settlement date should be the day itself too" — the
+  // search's own date range defaults to the ONE day this run is for, not to
+  // today. `--from`/`--to` still override it, for a receipt that was raised a
+  // day either side of when it settled.
+  const toDate = valueOf("--to", settlementDate);
+  const fromDate = valueOf("--from", settlementDate);
+  const outPath = path.resolve(valueOf("--out", file.replace(/\.(csv|xlsx)$/i, "") + "-reconciled.csv"));
+
+  const readGrid = (filePath) => {
+    const buf = fs.readFileSync(filePath);
+    const isZip = buf.length > 1 && buf[0] === 0x50 && buf[1] === 0x4b;
+    return isZip ? xlsxLite.readSheet(buf) : core.csvGrid(buf.toString("utf8"));
+  };
+
+  say(`Reading ${file}…`);
+  const grid = readGrid(file);
+  const parsed = core.parseIpsiRows(grid.headers, grid.rows);
+  say(`${parsed.rows.length} usable, ${parsed.problems.length} held back (Decline/Void, PreAuth, or nothing to match by).`);
+  for (const p of parsed.problems) say(`    line ${p.line}: ${p.why}`);
+
+  const scoped = core.filterIpsiSettlementDate(parsed.rows, settlementDate);
+  if (scoped.excluded.length) say(`${scoped.excluded.length} row(s) outside ${settlementDate} left out of this run.`);
+  if (!scoped.rows.length) die(`Nothing left dated ${settlementDate} — nothing to run.`);
+
+  const fileTotal = core.checkIpsiFileTotal(scoped.rows, transactionTotal);
+  if (fileTotal.enteredCents == null) die(`--transaction-total "${transactionTotal}" is not a readable amount.`);
+  say(`${scoped.rows.length} row(s) for ${settlementDate}, totalling $${core.money(fileTotal.fileCents)}.`);
+
+  /* Step 9 / BR01 — the file's own total against the NUVEI figure, TO THE
+     CENT. Reported, not fatal: the guide's own words are "add an error remark
+     on the dashboard," not "stop" — and BR08's own check downstream (the
+     TICKED total against this same entered figure) catches the identical
+     discrepancy before Save is ever reached, so continuing to search and
+     match is not unsafe even when this disagrees. */
+  say(fileTotal.ok ? `BR01: ${fileTotal.reason}.` : `${fileTotal.remark} ${fileTotal.reason}.`);
+  say(`\n  ${live ? "LIVE RUN — Save will be pressed if every row ticks cleanly." : "DRY RUN — everything short of Save."}\n`);
+
+  const out = await ipsi.runIpsiReconciliation({
+    rows: scoped.rows,
+    debtorCode, debtorLabel, fromDate, toDate,
+    dateReceived: settlementDate,
+    transactionTotal,
+    dryRun: !live,
+    callbacks: {
+      onProgress: (m, ok) => say(`[${ok === false ? "!!" : ok === true ? "ok" : ".."}] ${m}`),
+      onNeedLogin: () => say("Sign into Tramada in the Chrome on port 9222 — waiting up to 5 minutes."),
+    },
+  });
+
+  say("\n=== SUMMARY ===");
+  say(`${out.summary.ticked} of ${out.summary.total} matched and ticked` +
+    (out.summary.unmatched ? `, ${out.summary.unmatched} not reconciled` : "") + ".");
+  if (out.totalCheck && out.totalCheck.checked) say(out.totalCheck.reason);
+  say(out.issued
+    ? (out.issued.issued ? `ISSUED $${out.issued.amount} as ${out.issued.payer}.` : `Not issued — preview only, $${out.issued.amount}.`)
+    : "Nothing issued (nothing matched).");
+
+  // Every held-back / excluded / reconciled row, joined back to the file by
+  // its own line number, so the output speaks for every row the upload had —
+  // never just the ones that made it to Tramada.
+  const byLine = new Map();
+  for (const p of [...parsed.problems, ...scoped.excluded]) byLine.set(p.line, { remark: p.why });
+  for (const r of out.results) {
+    byLine.set(r.line, {
+      bookingNo: r.tramadaBookingNo || r.bookingNo || "",
+      remark: r.remark || (r.ticked ? "" : r.why),
+    });
+  }
+  const headings = [...grid.headers, "Booking No.", "Remarks"];
+  const rows = grid.rows.map((cells, i) => {
+    const info = byLine.get(i + 2) || {};
+    return [...cells, info.bookingNo || "", info.remark || ""];
+  });
+  rows.sort((a, b) => {
+    const na = parseInt(a[a.length - 2], 10);
+    const nb = parseInt(b[b.length - 2], 10);
+    const aHas = Number.isFinite(na), bHas = Number.isFinite(nb);
+    if (aHas && bHas) return na - nb;
+    return aHas ? -1 : bHas ? 1 : 0;
+  });
+  fs.writeFileSync(outPath, core.gridToCsv({ headings, rows }));
+  say(`\nReconciled file written to ${outPath}\n`);
+}
+
 async function makeIpsi() {
+  if (has("--search")) return ipsiSearch();
+  const runFile = valueOf("--run", null);
+  if (runFile) return ipsiRun(runFile);
+
   const list = loadBookings();
   say(`${list.length} booking${list.length === 1 ? "" : "s"} → bookings + costings, then the file.`);
   sayPlan("ipsi");
@@ -993,12 +1158,20 @@ if (require.main === module) (async () => {
       "    node make-fixtures.js mint        bookings + costings + creditor payments, then the Mint CSV\n" +
       "    node make-fixtures.js ipsi        bookings, then waits for your swipe receipts, then the IPSI CSV\n" +
       "    node make-fixtures.js all         all four, one after the other\n\n" +
+      "  ipsi also takes two other modes, in place of the fixture-creation above:\n" +
+      "    node make-fixtures.js ipsi --search [--reference X] [--booking Y] [--from D] [--to D]\n" +
+      "        READ-ONLY — what's on the Finance Merchant Payment Receipt screen right now\n" +
+      "    node make-fixtures.js ipsi --run <file> --settlement-date D --transaction-total N [--live] [--out FILE]\n" +
+      "        reconcile a real IPSI settlement end to end (guide steps 3-19) — dry run unless --live;\n" +
+      "        BR04/BR09 hold Save back regardless of --live if any row failed to tick or the total\n" +
+      "        is outside BR08's 20c tolerance\n\n" +
       "  --dry-run   say what it would create, touch nothing\n" +
       "  --limit N   only the first N bookings in the file\n" +
       "  --file      a bookings JSON other than bookings.json\n" +
       "  --creditor  who the Mint payments go to (default READY ROOMS)\n" +
       "  --out-dir   where the CSVs land (default csv_uploads/)\n" +
-      "  --debtor    whose card receipts the IPSI file covers (default MASTER)\n" +
+      "  --debtor    whose card receipts the IPSI file covers, or the debtor\n" +
+      "              ipsi --search / --run reads (default MASTER)\n" +
       "  --client C  the Tramada client to book under (default: per report,\n" +
       "              GRAY/MEGAN for bpay, GRAY/SPIDER for the rest)\n" +
       "  --tag XXXXX pin this run's reference tag instead of a random one"

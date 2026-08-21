@@ -3012,10 +3012,11 @@ function askMarkStale(){
     ipsi: {
       title: 'IPSI merchant settlement',
       blurb: 'Card settlements IPSI has already put through. Nothing is filed against a '
-           + 'statement page — the run finds the matching receipts in Tramada and issues one '
-           + 'Finance Merchant Payment Receipt covering them. Refunds are not part of an IPSI run.',
+           + 'statement page — the run finds the matching receipts (and refunds, against '
+           + 'Payments To Reconcile) in Tramada and issues one Finance Merchant Payment '
+           + 'Receipt covering them. Runs alone — it has no statement page to share.',
       accept: '.csv,text/csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      columns: 'Merchant Reference, Transaction Amount, Booking Number — .csv or .xlsx',
+      columns: 'Transaction Reference, Transaction Amount, Booking Number — .csv or .xlsx',
     },
     travelpay: {
       title: 'TravelPay merchant settlement',
@@ -3027,7 +3028,7 @@ function askMarkStale(){
     },
   };
 
-  const source = { bpay: null, mint: null, travelpay: null };  // each: { file, rows, previewOpen }
+  const source = { bpay: null, mint: null, travelpay: null, ipsi: null };  // each: { file, rows, previewOpen }
   let active = null;              // a report key, or 'both' when more than one is loaded
 
   /* Only BPay FILES anything. Everything else is a report of payments that
@@ -3220,7 +3221,13 @@ function askMarkStale(){
            than down every row. Shown only when one of those two reports is
            loaded, because BPay has no such rule. */
         '<div id="rcTotalBox" style="display:none"><label class="field-lbl" style="margin:0 0 3px;display:block">Transaction total</label>' +
-        '<input class="btn" id="rcTotal" style="width:130px" placeholder="0.00"></div>' +
+        /* Numbers only — this is BR01/step 3's NUVEI figure, typed by a human
+           off the bank statement and compared to the cent against the file's
+           own total. type=number rejects letters at the keyboard rather than
+           catching a typo after the fact; step/min keep it to a plain
+           non-negative amount, the same shape core.cents() already expects. */
+        '<input class="btn" id="rcTotal" type="number" step="0.01" min="0" inputmode="decimal" ' +
+        'style="width:130px" placeholder="0.00"></div>' +
         /* One checkbox, called Dry run. A fourth field in the row this script
            already builds, wearing the same .btn as the three beside it. The
            mockup's own markup is not touched; #stmtDate was already being
@@ -3321,7 +3328,11 @@ function askMarkStale(){
   }
 
   /* Which reports want a Transaction Total — MINT BR02 and TravelPay BR02.
-     BPay has no such rule, so the field stays out of its way. */
+     BPay has no such rule, so the field stays out of its way. IPSI has its OWN
+     figure too (BR01/step 3, the NUVEI amount) but NOT this one — that field
+     lives inside the IPSI card itself (see ipsiNuvei below), not in this
+     shared header box, so a NUVEI entry can never be mistaken for or mixed up
+     with Mint/TravelPay's own Transaction Total. */
   const WANTS_TOTAL = ['mint', 'travelpay'];
 
   function syncTotalField() {
@@ -3339,7 +3350,10 @@ function askMarkStale(){
      ONE panel, not one per report. The guides each name their own sheet as
      though there were two; RAA's actual file is headed "SUPPLIER NAME IN MINT /
      TRAVELPAY" and covers both, so it is uploaded once and both reports use it.
-     Excel or CSV, like every other upload here. */
+     Excel or CSV, like every other upload here. IPSI does none of this — its
+     own guide has no supplier-name step — so it gets its own list rather than
+     riding along on WANTS_TOTAL. */
+  const WANTS_CHEAT_SHEET = ['mint', 'travelpay'];
   let cheatSheet = null;                   // what the server has on file
 
   function loadCheatSheets() {
@@ -3352,7 +3366,7 @@ function askMarkStale(){
   function renderCheatSheets() {
     const host = $('#cheatSheets');
     if (!host) return;
-    const on = loaded().filter((k) => WANTS_TOTAL.indexOf(k) >= 0);
+    const on = loaded().filter((k) => WANTS_CHEAT_SHEET.indexOf(k) >= 0);
     host.style.display = on.length ? '' : 'none';
     if (!on.length) return;
     const cs = cheatSheet;
@@ -3373,6 +3387,104 @@ function askMarkStale(){
       (cs ? 'Replace' : 'Upload') + ' cheat sheet</button>' +
       '<span class="muted" id="csHint" style="margin-left:8px"></span></div>';
     host.querySelectorAll('[data-cheat]').forEach((b) => { b.onclick = pickCheatSheet; });
+  }
+
+  /* ── IPSI's own NUVEI amount ──
+     BR01/step 3: "NUVEI amount is manually entered... into a field called
+     'Transaction Total'" — but IPSI's own figure, kept OUT of the shared
+     `#rcTotal` box above so it can never be confused with, or accidentally
+     shared with, Mint/TravelPay's own Transaction Total (a different number
+     for a different rule). Lives inside the IPSI card's own markup instead —
+     which is rebuilt on every render, so the typed value is held here in JS
+     and re-drawn into the input each time, the same way `previewOpen` survives
+     a card being torn down and rebuilt. */
+  let ipsiNuvei = '';
+
+  function ipsiNuveiField() {
+    return '<div style="margin-top:8px;display:flex;align-items:center;gap:8px">' +
+      '<label class="field-lbl" for="ipsiNuvei" style="margin:0">NUVEI amount</label>' +
+      '<input class="btn" id="ipsiNuvei" type="number" step="0.01" min="0" inputmode="decimal" ' +
+      'style="width:110px" placeholder="0.00" value="' + esc(ipsiNuvei) + '"></div>';
+  }
+
+  /* ── IPSI's unresolved settlements ──
+     Reconciliation Guide — IPSI, "Other features": errors found on one day's
+     settlement can take days to resolve, across more than one attempt, so more
+     than one can be sitting here at once and it has to say so, not just the
+     latest. A person decides one is finished (see run-store.markResolved) —
+     a run coming back clean does not clear it on its own, because "clean" here
+     can still just be a dry run's preview, one Save away from being real. */
+  let ipsiPending = [];
+
+  function loadIpsiPending() {
+    fetch('/api/ipsi/unresolved')
+      .then((r) => r.json())
+      .then((list) => { ipsiPending = Array.isArray(list) ? list : []; renderSource(); })
+      .catch(() => {});
+  }
+
+  function pendingTitle(run) {
+    const when = run.startedAt ? new Date(run.startedAt).toLocaleDateString() : 'unknown upload date';
+    const s = run.summary || {};
+    const tally = s.total != null ? (s.ticked || 0) + '/' + s.total + ' reconciled' : 'not yet run';
+    // BR01/step 3 — the NUVEI figure that attempt was entered against, so the
+    // list itself says what was typed without needing to Load first.
+    const nuvei = run.transactionTotal ? ' · NUVEI ' + dollars(run.transactionTotal) : ' · no NUVEI amount entered';
+    return esc((run.statementDate || 'no settlement date') + ' · uploaded ' + when + nuvei + ' · ' + tally);
+  }
+
+  function ipsiPendingBlock() {
+    const rows = ipsiPending.map((r) =>
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;' +
+      'padding:5px 0;font-size:13px;border-top:1px solid #eee">' +
+      '<span>' + pendingTitle(r) + '</span>' +
+      '<span style="flex:none;white-space:nowrap">' +
+      '<button class="btn sm ghost" data-ipsi-load="' + r.id + '">Load</button> ' +
+      '<button class="btn sm ghost" data-ipsi-resolve="' + r.id + '">Mark resolved</button>' +
+      '</span></div>').join('');
+    return '<div style="margin-top:10px">' +
+      '<div class="muted" style="font-size:12px;margin-bottom:2px">' +
+      'Unresolved settlements' + (ipsiPending.length ? ' (' + ipsiPending.length + ')' : ' — none') +
+      '</div>' + rows + '</div>';
+  }
+
+  /* Loads a past attempt's own rows back into the card as though they had
+     just been dropped in — same shape `accept()` builds, so every existing
+     path (preview, Start run, the export) works on it without knowing the
+     difference. Settlement date and the NUVEI amount come back too, as what
+     was entered last time — a starting point to check against the bank
+     statement again, not a reason to skip looking. */
+  function loadPendingSettlement(id) {
+    fetch('/api/runs/' + id)
+      .then((r) => r.json())
+      .then((run) => {
+        if (!run || run.error) return;
+        source.ipsi = {
+          file: { name: (run.file && run.file.name) || ((run.statementDate || 'ipsi') + '.csv'),
+            size: (run.file && run.file.bytes) || 0 },
+          rows: (run.rows || []).map((r) => ({ ...r })),
+          skippedRows: [],
+          previewOpen: false,
+          columns: run.columns || [],
+          format: run.format || 'csv',
+        };
+        const dateField = $('#rcDate');
+        if (dateField && run.statementDate) dateField.value = run.statementDate;
+        // The card's own field, redrawn on the next render — see ipsiNuveiField.
+        ipsiNuvei = run.transactionTotal || '';
+        active = 'ipsi';
+        syncActive();
+        results = allResults();
+        render();
+      })
+      .catch(() => {});
+  }
+
+  function resolveSettlement(id) {
+    if (!confirm('Mark this settlement resolved? It will drop off this list — the run itself stays in history.')) return;
+    fetch('/api/runs/' + id + '/resolve', { method: 'POST' })
+      .then(() => loadIpsiPending())
+      .catch(() => {});
   }
 
   /* The panel host and its own file input, built here rather than added to the
@@ -3433,18 +3545,29 @@ function askMarkStale(){
     const op = ($('#rcOpening') || {}).value, cl = ($('#rcClosing') || {}).value;
     const balances = op && cl ? ' · opening ' + dollars(op) + ' → closing ' + dollars(cl) : '';
 
+    // Computed once per render, not per card — the same answer either card's
+    // template asks it for. A full render only happens here on a file
+    // change/removal, not on every NUVEI keystroke — see `syncIpsiTotal` for
+    // the live, no-rebuild path that keeps this in sync while typing.
+    const ipsiWarn = ipsiCombo()
+      ? '<span style="color:var(--err)">IPSI runs alone — remove the other loaded report before starting this one.</span>'
+      : (ipsiTotalMismatch() ? '<span style="color:var(--err)">' + esc(ipsiTotalMismatch()) + '</span>' : '');
+
     grid.innerHTML = Object.keys(SOURCES).map((kind) => {
       const def = SOURCES[kind];
       const s = source[kind];
       const head = '<h4>' + def.title + ' ';
+      const hintSeed = kind === 'ipsi' ? ipsiWarn : '';
 
       if (!s) {
         return '<div class="dz" data-kind="' + kind + '"><div class="di">⇪</div><div style="flex:1">' +
           head + '<span class="badge b-mute">not uploaded</span></h4>' +
           '<p>' + def.blurb + '</p>' +
           '<span class="file">' + def.columns + '</span>' +
-          '<div class="muted rc-hint" data-hint="' + kind + '" style="margin-top:8px"></div>' +
+          (kind === 'ipsi' ? ipsiNuveiField() : '') +
+          '<div class="muted rc-hint" data-hint="' + kind + '" style="margin-top:8px">' + hintSeed + '</div>' +
           '<div class="actions"><button class="btn sm indigo" data-choose="' + kind + '">Choose file</button></div>' +
+          (kind === 'ipsi' ? ipsiPendingBlock() : '') +
           '</div></div>';
       }
 
@@ -3468,7 +3591,8 @@ function askMarkStale(){
         '<span class="file">' + esc(s.file.name) + ' · ' + s.rows.length + ' row' +
         (s.rows.length === 1 ? '' : 's') + ' · ' + kb(s.file.size) + esc(balances) + '</span>' +
         '<span class="result">✓ ' + sourceStats(kind) + '</span>' +
-        '<div class="muted rc-hint" data-hint="' + kind + '" style="margin-top:8px"></div>' +
+        (kind === 'ipsi' ? ipsiNuveiField() : '') +
+        '<div class="muted rc-hint" data-hint="' + kind + '" style="margin-top:8px">' + hintSeed + '</div>' +
         '<div class="actions">' +
         '<button class="btn sm" data-go="inbox">View rows</button>' +
         '<button class="btn sm ghost" data-preview="' + kind + '">' +
@@ -3477,6 +3601,7 @@ function askMarkStale(){
         '<button class="btn sm ghost" data-clear="' + kind + '">Remove</button>' +
         '</div>' +
         (s.previewOpen ? previewTable(kind) : '') +
+        (kind === 'ipsi' ? ipsiPendingBlock() : '') +
         '</div></div>';
     }).join('');
 
@@ -3510,6 +3635,17 @@ function askMarkStale(){
         render();
       };
     });
+    grid.querySelectorAll('[data-ipsi-load]').forEach((b) => {
+      b.onclick = () => loadPendingSettlement(b.dataset.ipsiLoad);
+    });
+    grid.querySelectorAll('[data-ipsi-resolve]').forEach((b) => {
+      b.onclick = () => resolveSettlement(b.dataset.ipsiResolve);
+    });
+    // Rebuilt with every render, same as the rest of #tileGrid — the typed
+    // value has to be read back into JS on every keystroke or it is gone the
+    // next time anything else (a tick, a preview toggle) triggers a re-render.
+    const nuveiField = grid.querySelector('#ipsiNuvei');
+    if (nuveiField) nuveiField.oninput = () => { ipsiNuvei = nuveiField.value; syncIpsiTotal(); };
 
     // Drop on a tile loads THAT tile's report — the card decides the parser,
     // never the file's contents.
@@ -3560,17 +3696,58 @@ function askMarkStale(){
       '</tr></thead><tbody>' + body + '</tbody></table></div>';
   }
 
+  // IPSI has no statement page to share — recon-core.REPORTS.ipsi carries no
+  // recPayType, which is exactly what a combined run is keyed on. Loaded
+  // alongside anything else it is not a second report to combine, it is a
+  // run with nowhere to send half its rows. A plain function, not a value
+  // cached at load time, because it has to answer the same way whether
+  // `syncActive` asks it before a render or `renderSource` asks it during one.
+  const ipsiCombo = () => { const on = loaded(); return on.includes('ipsi') && on.length > 1; };
+
+  /* BR01 — the NUVEI amount and the settlement file's OWN total, to the cent.
+     `amountCents` is what `recon-core.parseIpsiRows` already computed server
+     side; summed here in integer cents rather than re-parsing the display
+     string `sourceStats` uses, because a run of dollar-and-cents floats added
+     as floats is exactly how "to the cent" quietly stops being true. Returns
+     null when there is nothing to compare yet (no file, or nothing typed) —
+     "not entered" is not the same claim as "does not match". */
+  function ipsiTotalMismatch() {
+    const s = source.ipsi;
+    if (!s || !ipsiNuvei) return null;
+    const nuveiCents = Math.round(parseFloat(ipsiNuvei) * 100);
+    if (!Number.isFinite(nuveiCents)) return null;
+    const fileCents = (s.rows || []).reduce((a, r) => a + (r.amountCents || 0), 0);
+    if (fileCents === nuveiCents) return null;
+    return 'BR01: NUVEI amount ' + dollars(ipsiNuvei) + ' does not match the settlement file’s ' +
+      'own total ' + dollars((fileCents / 100).toFixed(2)) + ' — they have to agree to the cent ' +
+      'before this can run.';
+  }
+
   /* `active` is whichever single report is loaded. With none or with two there
      is nothing to run, and results belong to no one. */
   function syncActive() {
     const on = loaded();
+    const invalidCombo = ipsiCombo();
+    const ipsiBad = on.includes('ipsi') && !!ipsiTotalMismatch();
     // 'both' is a real value now, not the absence of a choice. Two reports run
     // together on ONE statement page — see runCombinedReconciliation.
-    active = on.length === 1 ? on[0] : (on.length > 1 ? 'both' : null);
+    active = invalidCombo ? null : (on.length === 1 ? on[0] : (on.length > 1 ? 'both' : null));
     rows = on.reduce((a, k) => a.concat(source[k].rows || []), []);
     if (!on.length) results = [];
     const run = $('#startRun');
-    if (run) run.disabled = !on.length || running;
+    if (run) run.disabled = !on.length || running || invalidCombo || ipsiBad;
+  }
+
+  /* Re-checks BR01 on every keystroke in the NUVEI field WITHOUT a full
+     re-render — `renderSource()` rebuilds `#tileGrid`'s innerHTML, which would
+     tear down and recreate the input the person is actively typing into,
+     dropping focus and the cursor position after every character. `hint()`
+     targets just the one already-rendered div instead. */
+  function syncIpsiTotal() {
+    syncActive();
+    hint('ipsi', ipsiCombo()
+      ? '<span style="color:var(--err)">IPSI runs alone — remove the other loaded report before starting this one.</span>'
+      : (ipsiTotalMismatch() ? '<span style="color:var(--err)">' + esc(ipsiTotalMismatch()) + '</span>' : ''));
   }
 
   /* Every loaded report's rows, in the order the run will do them: BPay first,
@@ -3611,6 +3788,11 @@ function askMarkStale(){
       columns: (columns || []).filter(Boolean),
       format: format === 'xlsx' ? 'xlsx' : 'csv',
     };
+    // A freshly dropped IPSI file needs its own NUVEI figure read off the
+    // bank statement, not whatever an earlier settlement happened to leave
+    // typed in — `loadPendingSettlement` sets this deliberately; a plain
+    // upload should not inherit it by accident.
+    if (kind === 'ipsi') ipsiNuvei = '';
     active = kind;
     syncActive();
     results = allResults();
@@ -4262,7 +4444,18 @@ function askMarkStale(){
     if (!kind || !results.length) return;
 
     const date = ($('#rcDate') || {}).value, op = ($('#rcOpening') || {}).value, cl = ($('#rcClosing') || {}).value;
-    if (!date || !op || !cl) {
+    // IPSI touches no bank statement, so it has no opening or closing balance
+    // to type in — only the settlement date (guide step 4) and its own NUVEI
+    // amount (BR01/step 3, typed into the card's own field, not #rcTotal).
+    if (kind === 'ipsi') {
+      if (!date) { stop('Settlement date is needed before a run.'); return; }
+      if (!ipsiNuvei) { stop('The NUVEI amount is needed before a run.'); return; }
+      // BR01, checked again here — Start is already disabled while this is
+      // true (see syncIpsiTotal), but that only guards the button; this
+      // guards the run itself against whatever got it clicked anyway.
+      const mismatch = ipsiTotalMismatch();
+      if (mismatch) { stop(mismatch); return; }
+    } else if (!date || !op || !cl) {
       stop('Statement date, opening balance and closing balance are all needed before a run.');
       return;
     }
@@ -4318,9 +4511,13 @@ function askMarkStale(){
     const only = kind === 'both' ? null : (source[kind] || {});
     const common = {
       statementDate: date, openingBalance: op, closingBalance: cl, dryRun: dry,
-      // BR02. Blank is allowed through — the check then reports "no Transaction
-      // Total was entered" rather than accusing the file of not adding up.
-      transactionTotal: ($('#rcTotal') || {}).value || '',
+      // MINT/TravelPay BR02 from the shared header field, IPSI's own BR01
+      // NUVEI amount from its own card field — never each other's, and never
+      // both at once, since IPSI cannot be loaded alongside anything else.
+      // Blank is allowed through for Mint/TravelPay — the check then reports
+      // "no Transaction Total was entered" rather than accusing the file of
+      // not adding up; IPSI's own field is required earlier in this function.
+      transactionTotal: kind === 'ipsi' ? ipsiNuvei : (($('#rcTotal') || {}).value || ''),
       columns: only ? (only.columns || []) : [],
       format: only ? (only.format || 'csv') : 'csv',
     };
@@ -4391,9 +4588,12 @@ function askMarkStale(){
       stopped = m.error || null;
       // The run is in runs.json now, whether it worked or not, so the overview
       // is stale the moment this frame lands — and so is the run picker, which
-      // has just gained the run that finished.
+      // has just gained the run that finished. An IPSI attempt is a NEW
+      // unresolved entry the moment it exists, whatever it came back saying —
+      // only a person marking it resolved takes it off the list.
       loadOverview();
       refreshRuns();
+      loadIpsiPending();
       if (m.error) {
         // Rows the run never reached must not keep saying "Pending" as though
         // a check were still coming, and must not be called "Not reconciled"
@@ -4905,7 +5105,7 @@ function askMarkStale(){
     // allowed to be right about screens that still are not.
     mountCheatSheets();
     mountNav(); mountSources(); renderOverview(); markSamples(); hideUnwired();
-    render(); connect(); loadOverview(); loadCheatSheets();
+    render(); connect(); loadOverview(); loadCheatSheets(); loadIpsiPending();
     /* Open on Sources & upload, not on Run overview.
        The mockup ships with the overview marked `on`, which made sense when it
        was one screen of a wider app. Here there is one job — put a report in

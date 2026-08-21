@@ -111,7 +111,7 @@ function saveUpload(originalName, buffer, at = new Date().toISOString()) {
 
 /* ── runs ────────────────────────────────────────────────────────────────── */
 
-function startRun({ source, file, statementDate, openingBalance, closingBalance, rows, dryRun, columns, format }, at = new Date().toISOString()) {
+function startRun({ source, file, statementDate, openingBalance, closingBalance, transactionTotal, rows, dryRun, columns, format }, at = new Date().toISOString()) {
   const doc = readAllOrQuarantine();
   // The stamp alone collides when two runs start in the same second, which the
   // Mint and BPay cards make easy to do; the count makes it unique.
@@ -136,17 +136,60 @@ function startRun({ source, file, statementDate, openingBalance, closingBalance,
     format: format === "xlsx" ? "xlsx" : "csv",
     openingBalance: core.money(core.cents(openingBalance)),
     closingBalance: core.money(core.cents(closingBalance)),
+    // BR01/step 3 — the NUVEI figure a human entered, not derived. `money()`
+    // of an unreadable or blank entry is "", which is exactly "none entered",
+    // not a guessed zero.
+    transactionTotal: core.money(core.cents(transactionTotal)),
     pageNumber: null,
     status: "running",
     error: null,
     totals: core.runTotals(rows),
     summary: null,
     committed: null,
+    /* IPSI only, in practice: an unresolved settlement can take days to fix,
+       across several separate run attempts, and stays on the dashboard's
+       pending list until a person says otherwise — see `markResolved`. Every
+       run gets the field regardless of source; nothing but the IPSI list
+       ever reads it. */
+    resolved: false,
+    resolvedAt: null,
     rows: (rows || []).map((r, i) => ({ n: i + 1, ...r })),
   };
   doc.runs.push(run);
   writeAll(doc);
   return run;
+}
+
+/**
+ * A person says a settlement is done with, independent of what any run against
+ * it reported. Reconciliation Guide — IPSI's "Other features": errors can take
+ * days to resolve, across several attempts, and the accounts team — not this
+ * code — is the one who knows when it is really finished.
+ */
+function markResolved(runId, at = new Date().toISOString()) {
+  const doc = readAll();
+  const run = doc.runs.find((r) => r.id === runId);
+  if (!run) return null;
+  run.resolved = true;
+  run.resolvedAt = at;
+  writeAll(doc);
+  return run;
+}
+
+/**
+ * Every run for a report that is still sitting unresolved, most recent first.
+ *
+ * IPSI is the only report this is for — BPay/Mint/TravelPay finish in one
+ * sitting and have no "still waiting on Tramada to be fixed" state at all.
+ * Deliberately every RUN, not deduplicated to one per settlement date: two
+ * attempts against the same date are two different pieces of evidence (what
+ * changed between them), and collapsing them would hide that a second attempt
+ * was ever made.
+ */
+function listUnresolved(source) {
+  return listRuns()
+    .filter((r) => r.source === source && !r.resolved)
+    .sort((a, b) => (b.startedAt || "").localeCompare(a.startedAt || ""));
 }
 
 /** One row's verdict, written the moment it is known. */
@@ -300,5 +343,6 @@ module.exports = {
   UPLOADS, RUNS,
   saveUpload, startRun, patchRow, appendActivity, finishRun,
   listRuns, getRun, overview, reconcileOrphans,
+  markResolved, listUnresolved,
   saveCheatSheet, getCheatSheet, readCheatSheets,
 };

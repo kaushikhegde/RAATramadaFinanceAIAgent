@@ -201,6 +201,12 @@ async function waitForReceiptWindow(page, act, say = () => {}) {
       if (waited >= told + 15) {
         told = waited;
         say(`Still waiting for the receipt window — ${waited}s so far. The search is what takes the time.`);
+        // Re-asserted on the same cadence as the message above — a wait long
+        // enough to need progress updates is also long enough for something
+        // else on the human's own Chrome to steal focus mid-search, and a
+        // throttled background tab is exactly what turned a 30s search into
+        // a five-minute one that still never finished.
+        await page.bringToFront().catch(() => {});
       }
       await sleep(500);
     }
@@ -259,14 +265,17 @@ function popupTarget(url) {
 /**
  * How far back the receipt search reaches, in days before the To date.
  *
- * The From date was left EMPTY, which on this screen means "everything up to
- * the To date" — every swipe receipt ever raised for that debtor, fetched and
- * rendered before anything could be ticked. That is most of why Go took long
- * enough to time out the window it opens.
- *
  * Two days rather than one: a receipt raised late in the evening settles the
  * next day, and a Monday run has a weekend behind it. `IPSI_FROM_DAYS` widens
  * or narrows it without touching this file.
+ *
+ * Measured live 21-Aug-2026: narrowing this from 112 days down to 2, then to
+ * none at all, made no difference to how long Go took to open its window —
+ * four live attempts all hung for minutes regardless. The actual cause was
+ * the page never being the FOREGROUND tab (see `page.bringToFront()` below),
+ * which Chrome throttles into exactly this kind of multi-minute stall. With
+ * that fixed, there is no reason left to search more of the ledger than this
+ * run actually needs.
  */
 const IPSI_FROM_DAYS = parseInt(process.env.IPSI_FROM_DAYS || "2", 10);
 
@@ -294,7 +303,13 @@ async function searchIssueReceipts(page, {
   // is why not one of them happens after it.
   await page.selectOption("#receiptType", receiptType);
   await page.selectOption("#agencyBankAccount", bankAccount);
-  await page.selectOption("#sortOrder", "DESCENDING");   // it defaults to ASCENDING
+  // Guide step 11: "Must 'Sort By' Booking Number" — it defaults to blank,
+  // and a run that never sets it reads the list in whatever order Tramada
+  // feels like, which is no order to reconcile against at all.
+  await page.selectOption("#sortBy", "BOOKING_NUMBER");
+  // ASCENDING — the field's own default, and set explicitly rather than left
+  // implicit so the choice is visible here rather than assumed from the page.
+  await page.selectOption("#sortOrder", "ASCENDING");
   const typeDate = async (sel, v) => {
     if (!v) return;
     const el = page.locator(sel);
@@ -337,6 +352,15 @@ async function searchIssueReceipts(page, {
      every selector after it would run against the search page, find nothing,
      and look exactly like an empty result set. Catch it AS it opens. */
   say("Searching… Go can take a while to open the receipt window.");
+  /* FOREGROUND, before clicking — Chrome throttles JS timers in a tab that is
+     not the focused one, and this run's own tab has no reason to be focused:
+     it was opened by `ctx.newPage()`, not by a person clicking on it. A search
+     that takes 10-30s in a tab someone is actually looking at can take minutes
+     longer throttled in the background, which fits everything four live
+     attempts showed — Go registers (the button disables), nothing about date
+     range or sort order changes it, and no window ever arrives within even a
+     five-minute wait. */
+  await page.bringToFront();
   const popup = await waitForReceiptWindow(page, () => page.click("#goButton"), say);
   if (!popup) {
     throw new Error(
@@ -379,7 +403,11 @@ async function searchIssueReceipts(page, {
     if (target.relocate) {
       try {
         await page.goto(target.url, { waitUntil: "domcontentloaded" });
-        await page.waitForSelector("#issue", { timeout: 20000 });
+        // "#issue" or "#save" — see `issueMerchantReceipt` for which one the
+        // live page actually has once it finishes loading (measured: #save).
+        // Accepting either here means this check does not depend on which
+        // stage of the page's own render it catches.
+        await page.waitForSelector("#issue, #save", { timeout: 20000 });
         if (!/error page/i.test((await page.title().catch(() => "")) || "")) {
           await popup.close().catch(() => {});
           say("Merchant receipt form opened in this tab — the popup window is closed.");
@@ -399,7 +427,7 @@ async function searchIssueReceipts(page, {
   if (/error page/i.test((await popup.title().catch(() => "")) || "")) {
     throw new Error("Tramada returned an Error Page instead of the merchant receipt window.");
   }
-  if (!(await popup.locator("#issue").count())) {
+  if (!(await popup.locator("#issue, #save").count())) {
     throw new Error(
       `The window that opened is not the merchant receipt form (it is "${await popup.title().catch(() => "?")}").`
     );
@@ -417,6 +445,23 @@ const RECEIPT_COLUMNS = {
   reference: ["reference"],
   receivedFrom: ["received from"],
   receiptAmount: ["receipt amount"],
+  dueAmount: ["due amount"],
+};
+
+/**
+ * "Payments To Reconcile" — the table beside Receipts To Reconcile, for money
+ * going back OUT. This is where a Refund ticks (Reconciliation Guide — IPSI,
+ * step 12); before this file's fix it was excluded from an IPSI run entirely
+ * because nobody read this second table.
+ */
+const PAYMENT_COLUMNS = {
+  paymentNo: ["payment no.", "payment no"],
+  bookingNo: ["booking no.", "booking no"],
+  paymentDate: ["payment date"],
+  cardHolder: ["card holder"],
+  reference: ["reference"],
+  paidTo: ["paid to"],
+  refundAmount: ["refund amount"],
   dueAmount: ["due amount"],
 };
 
@@ -463,6 +508,38 @@ async function readReceiptsToReconcile(popup) {
 }
 
 /**
+ * The "Payments To Reconcile" rows — same shape as `readReceiptsToReconcile`,
+ * a different table. Refunds tick here; nothing else on an IPSI run does.
+ */
+async function readPaymentsToReconcile(popup) {
+  const grid = await popup.evaluate(() => {
+    const clean = (s) => String(s == null ? "" : s).replace(/\s+/g, " ").trim();
+    const table = [...document.querySelectorAll("table")]
+      .find((t) => /Payment\s*No/i.test(t.textContent) && /Refund Amount/i.test(t.textContent));
+    if (!table) return { headers: [], rows: [], ids: [] };
+    const trs = [...table.querySelectorAll("tr")];
+    const head = trs.find((r) => /Payment\s*No/i.test(r.textContent));
+    const body = trs.filter((r) => r !== head && r.querySelectorAll("td").length > 2);
+    return {
+      headers: head ? [...head.children].map((c) => clean(c.textContent)) : [],
+      rows: body.map((r) => [...r.children].map((c) => clean(c.textContent))),
+      ids: body.map((r) => {
+        const cb = r.querySelector('input[type="checkbox"]');
+        return cb && /^\d+$/.test(cb.value) ? { value: cb.value, checked: !!cb.checked } : null;
+      }),
+    };
+  });
+
+  return core.rowsByHeader(grid.headers, grid.rows, PAYMENT_COLUMNS)
+    .map((r, i) => ({
+      ...r,
+      selectId: (grid.ids[i] && grid.ids[i].value) || null,
+      alreadyTicked: !!(grid.ids[i] && grid.ids[i].checked),
+    }))
+    .filter((r) => r.selectId);
+}
+
+/**
  * Tick the receipts this run matched. Real clicks, verified one at a time.
  *
  * `.checked = true` will not do: the box carries a bound click handler
@@ -500,6 +577,16 @@ async function tickReceipts(popup, selectIds, say = () => {}) {
  * raised as swipe on the booking form, which offers five types; this screen is
  * a different select with a different vocabulary and cannot express it.
  *
+ * Payer Name is "IPSI" — the guide's step 18 names it literally, not "RAA":
+ * this receipt is money IPSI settled, not a payment RAA made to itself.
+ *
+ * Rounding Remaining is ticked here, and ONLY here, on the way to a real
+ * Issue — never on a dry run, and never when the caller has decided (BR04/
+ * BR09, checked one level up in `runIpsiReconciliation`) that an error
+ * anywhere in this settlement means Issue must not be pressed at all. BR01's
+ * whole point is that the receipt does not have to balance to the cent in
+ * Tramada; this checkbox is how that slack is taken up.
+ *
  * The email block is left exactly as it ships — unticked. Issuing must not mail
  * a remittance to anybody.
  */
@@ -513,7 +600,7 @@ async function issueMerchantReceipt(popup, { payerName, amountCents, reference, 
     await el.pressSequentially(String(v), { delay: 30 });
     await el.press("Tab").catch(() => {});
   };
-  await type("#receiptpayerName", payerName || "RAA");
+  await type("#receiptpayerName", payerName || "IPSI");
   if (dateReceived) await type("#receiptdateReceived", core.toTramadaDate(dateReceived));
   await type("#receiptreceiptAmount", core.money(amountCents));
   await type("#receiptreferenceNumber", reference || "");
@@ -532,8 +619,34 @@ async function issueMerchantReceipt(popup, { payerName, amountCents, reference, 
     return { issued: false, amount: core.money(amountCents), payer: back.payer };
   }
 
+  /* Measured live 22-Aug-2026: on a settlement that allocated to the CENT,
+     `#roundRemaining` ships `data-fn-click="return false;" locked="true"` —
+     Tramada locks it out when there is nothing to round, which an exact match
+     always is. So a locked box is read as "nothing needed rounding," not as a
+     tick that failed to register; forcing one here would either do nothing
+     (the handler says so itself) or throw over a checkbox that was correctly
+     never meant to be ticked for this receipt. */
+  const roundRemaining = popup.locator("#roundRemaining");
+  if (await roundRemaining.count()) {
+    const locked = await roundRemaining
+      .evaluate((el) => el.disabled || el.getAttribute("locked") === "true")
+      .catch(() => false);
+    if (!locked) {
+      if (!(await roundRemaining.isChecked().catch(() => false))) await roundRemaining.click();
+      if (!(await roundRemaining.isChecked().catch(() => false))) {
+        throw new Error("Ticking Rounding Remaining did not register on the page.");
+      }
+    }
+  }
+
   say(`Issuing $${core.money(amountCents)}…`);
-  await popup.click("#issue");
+  // The guide calls this button "Issue"; the live page does not have one —
+  // measured 22-Aug-2026, there is no #issue anywhere in the DOM. What is
+  // there is `#save` (input[type=submit], value "Save"), in the bottom-right
+  // spot the guide describes. `#issue` was a guess from screenshots and id
+  // conventions (this popup was never reachable through the extension), and
+  // it was never actually confirmed until a live run got far enough to look.
+  await popup.click("#save");
   await popup.waitForLoadState("domcontentloaded").catch(() => {});
   await sleep(2000);
 
@@ -543,7 +656,7 @@ async function issueMerchantReceipt(popup, { payerName, amountCents, reference, 
       .filter((n) => !n.children.length)
       .map((n) => clean(n.textContent))
       .filter((t) => t && t.length < 200 && /must be|is required|is invalid|cannot be/i.test(t));
-    return { stillOnForm: !!document.querySelector("#issue"), error: errs[0] || "" };
+    return { stillOnForm: !!document.querySelector("#save"), error: errs[0] || "" };
   }).catch(() => ({ stillOnForm: false, error: "" }));
 
   if (after.error) throw new Error(`Receipt rejected: ${after.error}`);
@@ -557,12 +670,38 @@ async function issueMerchantReceipt(popup, { payerName, amountCents, reference, 
 /* ── the run ─────────────────────────────────────────────────────────────── */
 
 /**
- * One IPSI settlement: match its rows to receipts on the screen, tick them,
- * and issue one receipt for what was ticked.
+ * Guide step 18's Reference — "IPSI" followed by the Transaction date,
+ * YYYYMMDD, e.g. `IPSI 20210921`. Built here so a caller only has to hand over
+ * the settlement date, not remember the guide's exact format.
+ */
+function ipsiReference(dateLike) {
+  const iso = core.toIsoDate(dateLike);
+  return iso ? `IPSI ${iso.replace(/-/g, "")}` : "IPSI";
+}
+
+/**
+ * One IPSI settlement: match its transactions against Receipts To Reconcile
+ * and its refunds against Payments To Reconcile, tick both, and issue one
+ * receipt covering what was ticked — but only when EVERY row matched cleanly
+ * and the ticked total is within BR08's tolerance of the entered Transaction
+ * Total.
  *
- * Amount Received is the total of the rows that ACTUALLY TICKED — not the
- * file's headline settlement figure. A receipt has to balance against what it
- * allocates, and IPSI runs exclude refunds, so the two are not the same number.
+ * ══ BR04 / BR09 — THE ALL-OR-NOTHING GATE ═══════════════════════════════════
+ *
+ * Reconciliation Guide — IPSI, step 16: "with errors found, click Cancel...
+ * Continue to Step 17" — a settlement with even one bad row does not get a
+ * partial Issue, it gets NO Issue, and waits for the accounts team to fix
+ * Tramada before the run is tried again (typically the same afternoon). This
+ * is a HARDER rule than Mint's or TravelPay's own total checks, which are
+ * advisory and never hold up their statement page — IPSI's guide asks for a
+ * stop, so this run gives it one, forced regardless of the `dryRun` flag a
+ * human ticked. The Rounding Remaining checkbox and the Issue click are both
+ * skipped the moment either check fails.
+ *
+ * Amount Received is the total of the rows that ACTUALLY TICKED — refunds
+ * included, since they carry their own negative sign — not the file's
+ * headline settlement figure; a receipt has to balance against what it
+ * allocates.
  */
 async function runIpsiReconciliation(o = {}) {
   const cb = o.callbacks || {};
@@ -592,21 +731,40 @@ async function runIpsiReconciliation(o = {}) {
       toDate: o.toDate,
     }, say);
 
-    const waiting = await readReceiptsToReconcile(form);
-    say(`${waiting.length} receipt${waiting.length === 1 ? "" : "s"} waiting to be reconciled.`);
+    const [waitingReceipts, waitingPayments] = await Promise.all([
+      readReceiptsToReconcile(form),
+      readPaymentsToReconcile(form),
+    ]);
+    say(`${waitingReceipts.length} receipt${waitingReceipts.length === 1 ? "" : "s"} and ` +
+      `${waitingPayments.length} payment${waitingPayments.length === 1 ? "" : "s"} waiting to be reconciled.`);
 
     const toTick = [];
     for (const r of results) {
-      const m = core.matchIpsiAgainstReceipts(r, waiting);
+      // Refunds tick against Payments To Reconcile; everything else — a
+      // Purchase or a Capture — ticks against Receipts To Reconcile.
+      const m = r.isRefund
+        ? core.matchIpsiAgainstPayments(r, waitingPayments)
+        : core.matchIpsiAgainstReceipts(r, waitingReceipts);
       r.matchedOn = m.matched ? m.on : null;
       r.ticked = false;
       r.why = m.reason;
+      if (m.remark) r.remark = m.remark;
+      const hit = m.receipt || m.payment;
       if (m.matched) {
-        r.receiptNo = m.receipt.receiptNo;
-        r.selectId = m.receipt.selectId;
-        toTick.push(m.receipt.selectId);
+        r.receiptNo = (hit && (hit.receiptNo || hit.paymentNo)) || "";
+        r.selectId = hit && hit.selectId;
+        // Guide step 15: "Copy 'Booking No.' from each receipt line in
+        // Tramada and paste it in the 'Booking No.' column of the
+        // spreadsheet." Tramada's OWN booking number, not the file's own
+        // (often blank, or right only by coincidence) — this is what the
+        // guide means by copying it back.
+        r.tramadaBookingNo = (hit && hit.bookingNo) || "";
+        toTick.push(r.selectId);
       }
-      row(r.n, { reconciliation: m.matched ? "Reconciled" : "Not reconciled", why: r.why, receiptNo: r.receiptNo });
+      row(r.n, {
+        reconciliation: m.matched ? "Reconciled" : "Not reconciled",
+        why: r.why, remark: r.remark, receiptNo: r.receiptNo, tramadaBookingNo: r.tramadaBookingNo,
+      });
       say(`Row ${r.n}: ${m.reason}`, m.matched);
     }
 
@@ -620,15 +778,48 @@ async function runIpsiReconciliation(o = {}) {
       return { results, summary, issued: null };
     }
 
+    // BR08 — before anything is typed into the receipt header, because a
+    // failure here means Issue must not be pressed at all, not merely that
+    // the figure typed in would be wrong.
+    const totalCheck = core.checkIpsiAllocatedTotal(summary.allocatedCents, o.transactionTotal);
+    if (totalCheck.checked && !totalCheck.ok) say(`${totalCheck.remark} ${totalCheck.reason}`, false);
+    else if (totalCheck.reason) say(totalCheck.reason, totalCheck.ok !== false);
+
+    // BR04 / BR09 — every row has to have ticked, AND the total has to be in
+    // tolerance. Either failing means Cancel, not a partial Issue: forced
+    // regardless of the human's own Dry run tickbox, which is a preference
+    // about watching a good run, not a way to force through a bad one.
+    const allClean = results.every((r) => r.ticked) && totalCheck.ok !== false;
+    if (!allClean) {
+      say(
+        "Not every row reconciled cleanly, so this settlement stops here — " +
+        "no Rounding Remaining, no Issue. Fix the flagged rows in Tramada and rerun.",
+        false
+      );
+    }
+
+    /* Guide step 18 — "Amount Received – Amount that user have entered for
+       'Total Transaction' amount." NOT what this run allocated. That is the
+       whole point of Rounding Remaining (BR01): it exists to absorb the gap
+       between the figure a human read off the bank statement and what
+       actually ticked in Tramada, and a receipt that always typed its own
+       allocated total could never have a gap to round — which is exactly why
+       that checkbox came back `locked="true"` on an exact match, and would
+       never come back any other way if this kept typing the allocated total
+       instead. Falls back to the allocated total only when no Transaction
+       Total was given at all, so a caller that never passes one keeps working. */
+    const enteredCents = core.cents(o.transactionTotal);
+    const amountReceivedCents = enteredCents != null ? enteredCents : summary.allocatedCents;
+
     const issued = await issueMerchantReceipt(form, {
-      payerName: o.payerName || "RAA",
-      amountCents: summary.allocatedCents,
-      reference: o.reference || "",
+      payerName: o.payerName || "IPSI",
+      amountCents: amountReceivedCents,
+      reference: o.reference || ipsiReference(o.dateReceived || o.toDate),
       dateReceived: o.dateReceived,
-    }, !!o.dryRun, say);
+    }, !!o.dryRun || !allClean, say);
 
     ok = true;
-    return { results, summary, issued };
+    return { results, summary, issued, totalCheck, allClean };
   } finally {
     // `form` is this tab when the popup was relocated out of, and the popup
     // itself when it was not. Either way the window does not outlive the run.
@@ -638,9 +829,54 @@ async function runIpsiReconciliation(o = {}) {
   }
 }
 
+/**
+ * READ-ONLY: search and return what is waiting, nothing else.
+ *
+ * Every browser step in this project goes through a tramada-* module that
+ * opens and closes its own CDP connection — `make-fixtures.js` says so in its
+ * own header, and this is that rule applied to IPSI's own "what's on the
+ * screen right now" question. Without it, a caller wanting to *look* would
+ * have to reach for `playwright` directly, which is exactly the thing that
+ * comment forbids.
+ *
+ * Never ticks a box, never types into the receipt header, never presses
+ * anything.
+ */
+async function searchWaitingReceipts(o = {}) {
+  const cb = o.callbacks || {};
+  const say = cb.onProgress || (() => {});
+  const browser = await openBrowser();
+  let page;
+  let form;
+  let ok = false;
+  try {
+    const ctx = browser.contexts()[0] || (await browser.newContext());
+    page = await ctx.newPage();
+    await ensureLoggedIn(page, cb.onNeedLogin);
+
+    form = await searchIssueReceipts(page, {
+      debtorCode: o.debtorCode || "MASTER",
+      debtorLabel: o.debtorLabel || "MasterCard/Visa/Debit",
+      fromDate: o.fromDate,
+      toDate: o.toDate,
+    }, say);
+
+    const [receipts, payments] = await Promise.all([
+      readReceiptsToReconcile(form),
+      readPaymentsToReconcile(form),
+    ]);
+    ok = true;
+    return { receipts, payments };
+  } finally {
+    if (ok && form && form !== page) await form.close().catch(() => {});
+    if (ok && page) await page.close().catch(() => {});
+    await browser.close().catch(() => {});
+  }
+}
+
 module.exports = {
-  runIpsiReconciliation,
-  searchIssueReceipts, readReceiptsToReconcile, tickReceipts, issueMerchantReceipt,
-  fillAutocomplete, RECEIPT_COLUMNS,
+  runIpsiReconciliation, searchWaitingReceipts, ipsiReference,
+  searchIssueReceipts, readReceiptsToReconcile, readPaymentsToReconcile, tickReceipts, issueMerchantReceipt,
+  fillAutocomplete, RECEIPT_COLUMNS, PAYMENT_COLUMNS,
   popupTarget, RECEIPT_FORM_URL, chooseWindow, POPUP_TIMEOUT_MS,
 };

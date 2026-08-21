@@ -57,6 +57,17 @@ app.get("/api/runs/:id", (req, res) => {
   res.json(run);
 });
 
+/* IPSI settlements that can take days to fix, across several run attempts —
+   Reconciliation Guide — IPSI's "Other features". A person, not a clean run,
+   decides one is finished (see `run-store.markResolved`), so this list can
+   keep showing a settlement whose most recent attempt looked fine. */
+app.get("/api/ipsi/unresolved", (req, res) => res.json(store.listUnresolved("ipsi")));
+app.post("/api/runs/:id/resolve", (req, res) => {
+  const run = store.markResolved(req.params.id);
+  if (!run) return res.status(404).json({ error: "no such run" });
+  res.json(run);
+});
+
 /* ── the working file ────────────────────────────────────────────────────── */
 
 /**
@@ -543,8 +554,8 @@ async function handleCombinedRun(session, msg) {
  * the card it is uploaded on.
  */
 async function handleIpsiRun(session, msg) {
-  const rows = Array.isArray(msg.rows) ? msg.rows : [];
-  if (!rows.length) {
+  const uploaded = Array.isArray(msg.rows) ? msg.rows : [];
+  if (!uploaded.length) {
     send(session, { type: "recon_done", error: "nothing in that IPSI file could be checked" });
     return;
   }
@@ -554,13 +565,41 @@ async function handleIpsiRun(session, msg) {
   }
   session.reconRunning = true;
 
+  /* Guide step 4 — kept to ONE settlement date only now that the human has
+     typed it in. IPSI's own export pads a day either side of it, and every row
+     that padding brought along is reported, never silently dropped. */
+  const { rows, excluded } = reconCore.filterIpsiSettlementDate(uploaded, msg.statementDate);
+  if (excluded.length) {
+    console.log(`  IPSI: ${excluded.length} row(s) outside ${msg.statementDate} left out of this run.`);
+  }
+  if (!rows.length) {
+    send(session, { type: "recon_done", error: `none of the uploaded rows are dated ${msg.statementDate}` });
+    session.reconRunning = false;
+    return;
+  }
+
+  /* Step 9 / BR01 — the dashboard disables Start on this same check, but that
+     is JS in a page, not a gate. Checked again here, server-side, because this
+     is the one place a run cannot be talked past it. */
+  const fileTotal = reconCore.checkIpsiFileTotal(rows, msg.transactionTotal);
+  if (fileTotal.checked && !fileTotal.ok) {
+    send(session, { type: "recon_done", error: fileTotal.reason });
+    session.reconRunning = false;
+    return;
+  }
+
   const run = openRun(session, "ipsi", msg, rows.map((r) => ({ ...r, src: "ipsi" })));
   try {
     const out = await runIpsiReconciliation({
       rows,
-      payerName: msg.payerName || "RAA",
+      payerName: msg.payerName || "IPSI",
       toDate: msg.statementDate,
+      dateReceived: msg.statementDate,
+      // BR08's gate — the NUVEI figure a human typed for this settlement.
+      transactionTotal: msg.transactionTotal,
       // Checks only: the run does everything except press Issue and Done.
+      // BR04/BR09 can force the same outcome even when this is false — see
+      // `runIpsiReconciliation`'s all-or-nothing gate.
       dryRun: !!msg.dryRun,
       callbacks: callbacks(session, run),
     });
@@ -600,6 +639,11 @@ function openRun(session, source, msg, rows) {
       statementDate: msg.statementDate,
       openingBalance: msg.openingBalance,
       closingBalance: msg.closingBalance,
+      // BR01/step 3 — the NUVEI figure a human read off the bank statement.
+      // Kept with the run so IPSI's pending-settlements list can show it and
+      // a reloaded attempt can offer it back, rather than making a person
+      // remember or re-derive it on every retry.
+      transactionTotal: msg.transactionTotal,
       dryRun: !!msg.dryRun,
       /* The uploaded file's own headings, kept with the run. This is what lets
          the inbox show the spreadsheet as it was, and the export hand back

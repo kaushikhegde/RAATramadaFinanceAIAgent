@@ -374,6 +374,11 @@ you've raised the Credit Card Swipe receipts — that form wants a real card
 number, so it's yours to do. A blank one falls back to matching on Booking
 Number and amount.
 
+`ipsi --search` and `ipsi --run <file>` run the real thing in place of the
+above — a read-only look at what's waiting, and the actual reconciliation
+(dry run unless `--live`). `node tools/make-fixtures.js` with no arguments
+lists every flag.
+
 The bookings each run created are listed in
 `created-bookings-{bpay,travelpay,mint}.json`.
 

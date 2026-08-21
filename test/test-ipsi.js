@@ -32,21 +32,22 @@ const real = C.parseIpsiRows(sheet.headers, sheet.rows);
 console.log("\nthe client's own export");
 check("34 columns", sheet.headers.length, 34);
 check("49 transactions", sheet.rows.length, 49);
-check("47 of them are actionable", real.rows.length, 47);
-check("2 are held back", real.problems.length, 2);
+// The two refunds are now ACTIONABLE — they tick against Payments To
+// Reconcile — so all 49 rows run and nothing is held back.
+check("all 49 are actionable", real.rows.length, 49);
+check("none held back", real.problems.length, 0);
 
-console.log("\nrefunds are not part of an IPSI run");
-// They are money going back OUT to a cardholder, and each links to a purchase
-// from an EARLIER settlement. The screen this drives ticks receipts — money
-// coming in — so there is nothing there to tick against a refund.
-const refunds = real.problems.map((p) => p.row);
-check("both refunds are held back", refunds.map((r) => r.amount), ["-1050.93", "-455.37"]);
-ok("and the reason says why", /refunds are money going back out/.test(real.problems[0].why), real.problems[0].why);
-ok("naming the transaction being reversed", /1771283527nm3QB/.test(real.problems[0].why), real.problems[0].why);
+console.log("\nrefunds ARE part of an IPSI run — they tick against Payments To Reconcile");
+// Guide step 12: a refund is money going back OUT, and it ticks against the
+// table beside Receipts To Reconcile, not the one purchases and captures use.
+// Excluding it outright (the old behaviour) left a real settlement's refunds
+// unreconciled with no path to ever being ticked.
+const refunds = real.rows.filter((r) => r.isRefund);
+check("both refunds are flagged", refunds.length, 2);
+// Guide step 5 — flipped negative, whether the file arrived that way already
+// (this fixture, already reconciled) or arrived positive (IPSI's raw export).
+check("both carry a negative amount", refunds.map((r) => r.amount), ["-1050.93", "-455.37"]);
 check("both are the same booking", [...new Set(refunds.map((r) => r.bookingNo))], ["115932"]);
-// Held back, never silently dropped — a quietly shortened file reads as
-// "that was all there was".
-ok("held rows are still returned for a person to see", real.problems.every((p) => p.row));
 
 console.log("\nthe settlement cross-check");
 // The file states its own Settlement Amount on one row. Every row summed —
@@ -59,8 +60,8 @@ check("and it says which row carried the figure", real.settlement.statedBy, "178
 check("the Tramada payment number is picked up", real.settlement.paymentNo, "R276395");
 // Purchases and captures alone come to 105,939.71 — the refunds are exactly
 // why the bank settled 1,506.30 less.
-const withoutRefunds = real.rows.reduce((a, r) => a + r.amountCents, 0);
-check("actionable rows alone do NOT equal the settlement", C.money(withoutRefunds), "105939.71");
+const withoutRefunds = real.rows.filter((r) => !r.isRefund).reduce((a, r) => a + r.amountCents, 0);
+check("purchases and captures alone do NOT equal the settlement", C.money(withoutRefunds), "105939.71");
 
 /* The match key is TRANSACTION Reference now. It used to be Merchant
    Reference, and two of the four rows on the live screen had none — so those
@@ -76,26 +77,54 @@ const odd = C.parseIpsiRows(HEAD, [
   one("", "100.00", "128000"),
   one("128111-1", "n/a", "128111"),
   one("128222-2", "50.00", "128222", "DECLINED"),
-  one("guid-here", "-25.00", "115932", "APPROVED", "Refund (20)", "20"),
+  one("guid-here", "25.00", "115932", "APPROVED", "Refund (20)", "20"),
+  one("preauth-here", "10.00", "128999", "APPROVED", "PreAuth (10)", "10"),
 ]);
 /* A row with no reference but a booking number is now USABLE — it matches on
    the booking, which is the fallback that has always been there. Only a row
-   with neither is held back. */
+   with neither is held back. The refund is usable too, now — it just runs
+   against a different table, and its amount arrives here already flipped
+   negative (guide step 5). */
 check("a row with no reference still runs on its booking",
-  odd.rows.map((r) => r.bookingNo), ["128388", "128000"]);
+  odd.rows.map((r) => r.bookingNo), ["128388", "128000", "115932"]);
+check("the refund's amount is flipped negative", odd.rows[2].amount, "-25.00");
+ok("and flagged as a refund", odd.rows[2].isRefund === true);
 check("a row with neither is the one held back",
   C.parseIpsiRows(HEAD, [one("", "100.00", "")]).problems[0].why,
   "no transaction reference and no booking number — nothing to match it by");
-// One fewer problem than there used to be: the row with no reference is
-// usable now, so the indices below all moved down by one.
-check("three rows are held back, not four", odd.problems.length, 3);
+// The unreadable amount, the decline and the PreAuth — the refund is no
+// longer one of them.
+check("three rows are held back", odd.problems.length, 3);
 check("an unreadable amount", odd.problems[0].why, 'unreadable amount "n/a"');
 check("and one that was not approved", odd.problems[1].why, 'the transaction is "DECLINED", not approved');
-ok("and the refund", /refund/i.test(odd.problems[2].why), odd.problems[2].why);
+ok("and the PreAuth — a hold, not a settled transaction",
+  /PreAuth \(10\) hold/.test(odd.problems[2].why), odd.problems[2].why);
 check("a sheet with no transaction reference column is refused",
   C.parseIpsiRows(["Transaction Amount"], [["1.00"]]).problems[0].why,
   "the sheet has no column for: transaction reference");
 check("an empty sheet is empty, not a crash", C.parseIpsiRows(HEAD, []).rows, []);
+
+console.log("\na refund that arrives already flipped is not flipped again");
+const preFlipped = C.parseIpsiRows(HEAD, [one("g2", "-25.00", "115932", "APPROVED", "Refund (20)", "20")]);
+check("still -25.00, not +25.00", preFlipped.rows[0].amount, "-25.00");
+
+console.log("\nguide step 4 — one settlement date, the rest set aside");
+{
+  const HEAD2 = [...HEAD, "Settlement Date"];
+  const dated = (ref, amt, bkg, date) => [ref, amt, bkg, "APPROVED", "Purchase (1)", "1", date];
+  const parsed = C.parseIpsiRows(HEAD2, [
+    dated("a", "100.00", "1", "2026-08-13"),
+    dated("b", "200.00", "2", "2026-08-12"),
+    dated("c", "300.00", "3", "2026-08-14"),
+    dated("d", "400.00", "4", ""),           // unreadable — kept, not guessed away
+  ]);
+  const scoped = C.filterIpsiSettlementDate(parsed.rows, "13-08-2026");
+  check("only the 13th survives", scoped.rows.map((r) => r.bookingNo), ["1", "4"]);
+  check("the day either side is set aside", scoped.excluded.map((r) => r.bookingNo), ["2", "3"]);
+  ok("and says why", /settled 2026-08-12, not 2026-08-13/.test(scoped.excluded[0].why), scoped.excluded[0].why);
+  check("no date entered keeps everything", C.filterIpsiSettlementDate(parsed.rows, "").rows.length, 4);
+  check("nothing to filter is nothing to crash on", C.filterIpsiSettlementDate([], "13-08-2026"), { rows: [], excluded: [] });
+}
 
 console.log("\nmatching against Receipts To Reconcile");
 const receipts = [
@@ -134,6 +163,94 @@ ok("two receipts on one booking are separated by amount",
 const gone = C.matchIpsiAgainstReceipts({ reference: "x", bookingNo: "999", amountCents: 1 }, receipts);
 ok("nothing matching is not a match", !gone.matched);
 ok("and says so plainly", /nothing on the list carries/.test(gone.reason), gone.reason);
+check("and BR06's exact words", gone.remark, C.IPSI_REMARKS.booking);
+
+console.log("\nBR03 — three cents of variance is a match, four is not");
+{
+  const penny = C.matchIpsiAgainstReceipts(
+    { reference: "128388-171850", bookingNo: "128388", amountCents: 94238 }, receipts);   // 3c over
+  ok("three cents over still matches", penny.matched, JSON.stringify(penny));
+  const tooFar = C.matchIpsiAgainstReceipts(
+    { reference: "128388-171850", bookingNo: "128388", amountCents: 94239 }, receipts);   // 4c over
+  ok("four cents over does not", !tooFar.matched, JSON.stringify(tooFar));
+  check("and BR07's exact words", tooFar.remark, C.IPSI_REMARKS.amount);
+}
+
+console.log("\nBR10 — a booking-fallback match is still ticked, but flagged");
+ok("the capture above ticks", capHit.matched);
+check("with BR10's exact words, not blocked", capHit.remark, C.IPSI_REMARKS.reference);
+
+console.log("\nmatching a refund against Payments To Reconcile");
+{
+  // Measured live 21-Aug-2026: Tramada's own Due Amount for a payment is
+  // NEGATIVE ("-1302.15" on a real row) — a refund reduces what is due. The
+  // refund's own amount is negative too (guide step 5), for the same reason;
+  // both sides are compared on their absolute value rather than either one
+  // trusted to keep a particular sign.
+  const payments = [
+    { paymentNo: "P.0000000091", bookingNo: "115932", reference: "2dfa06e7-6454-445a-aa4d-7f36963f6d36", dueAmount: "-1050.93" },
+    { paymentNo: "P.0000000092", bookingNo: "115932", reference: "", dueAmount: "-455.37" },
+  ];
+  const refundHit = C.matchIpsiAgainstPayments(
+    { reference: "2dfa06e7-6454-445a-aa4d-7f36963f6d36", bookingNo: "115932", amountCents: -105093 }, payments);
+  ok("a refund matches on its reference", refundHit.matched && refundHit.on === "reference", JSON.stringify(refundHit));
+  check("against the payment it names", refundHit.payment.paymentNo, "P.0000000091");
+
+  const refundByBooking = C.matchIpsiAgainstPayments(
+    { reference: "nope", bookingNo: "115932", amountCents: -45537 }, payments);
+  ok("a second refund on the same booking falls back to amount",
+    refundByBooking.matched && refundByBooking.payment.paymentNo === "P.0000000092", JSON.stringify(refundByBooking));
+
+  const refundGone = C.matchIpsiAgainstPayments({ reference: "x", bookingNo: "1", amountCents: -100 }, payments);
+  ok("nothing on the Payments list is not a match", !refundGone.matched);
+  check("BR06's words apply here too", refundGone.remark, C.IPSI_REMARKS.booking);
+}
+
+console.log("\nBR08 — the allocated total against the entered Transaction Total, twenty cents either way");
+{
+  const dead_on = C.checkIpsiAllocatedTotal(1044341, "10443.41");
+  ok("an exact match is fine", dead_on.checked && dead_on.ok, JSON.stringify(dead_on));
+  const within = C.checkIpsiAllocatedTotal(1044341, "10443.61");   // 20c short
+  ok("twenty cents short is still fine", within.checked && within.ok, JSON.stringify(within));
+  const over = C.checkIpsiAllocatedTotal(1044341, "10443.62");     // 21c short
+  ok("twenty-one cents is not", over.checked && !over.ok, JSON.stringify(over));
+  check("BR08's exact words", over.remark, C.IPSI_REMARKS.total);
+  const blank = C.checkIpsiAllocatedTotal(1044341, "");
+  check("no Transaction Total entered is not a failure, just unchecked", blank.checked, false);
+}
+
+console.log("\nstep 9 / BR01 — a different check, a different sentence, on purpose");
+{
+  // Not the same wording as BR08's "Incorrect total amount" — MINT and
+  // TravelPay already draw exactly this distinction between their
+  // file-level total and their Tramada-level total, and the guide gives
+  // IPSI's own file-level check its own exact words too.
+  check("the file-level remark", C.IPSI_REMARKS.fileTotal, "Total transaction amounts does not match.");
+  ok("and it differs from BR08's Tramada-level one",
+    C.IPSI_REMARKS.fileTotal !== C.IPSI_REMARKS.total);
+
+  // The rows here are what parseIpsiRows would have already kept — a refund's
+  // amountCents carries its sign — so this is "what checkIpsiFileTotal does
+  // with a real settlement", not a hand-picked total.
+  const rows = [{ amountCents: 10000 }, { amountCents: 5050 }, { amountCents: -1000 }]; // net 140.50
+  const dead_on = C.checkIpsiFileTotal(rows, "140.50");
+  ok("the file's own total matching the NUVEI figure, to the cent, is fine",
+    dead_on.checked && dead_on.ok, JSON.stringify(dead_on));
+
+  // Unlike BR08, there is NO tolerance here — a single cent out fails it.
+  const oneCentOut = C.checkIpsiFileTotal(rows, "140.51");
+  ok("one cent out is not fine — BR01 has no tolerance",
+    oneCentOut.checked && !oneCentOut.ok, JSON.stringify(oneCentOut));
+  check("naming BR01's own remark", oneCentOut.remark, C.IPSI_REMARKS.fileTotal);
+  check("and the file's own total, for the dashboard to say", oneCentOut.fileCents, 14050);
+
+  const blank = C.checkIpsiFileTotal(rows, "");
+  check("nothing entered is not a failure, just unchecked", blank.checked, false);
+  check("with a null verdict, not a false one", blank.ok, null);
+
+  const noRows = C.checkIpsiFileTotal([], "0.00");
+  ok("an empty settlement totals zero, not a crash", noRows.checked && noRows.ok, JSON.stringify(noRows));
+}
 
 console.log("\nwhat the run made of it");
 const s = C.summariseIpsi([
