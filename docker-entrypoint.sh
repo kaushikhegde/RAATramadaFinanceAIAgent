@@ -101,7 +101,7 @@ start novnc websockify --web=/usr/share/novnc 6080 localhost:5900
 start node node server.js
 
 log "READY  →  app http://127.0.0.1:3000   |   login screen http://127.0.0.1:6080/vnc.html"
-log "Open the login screen, sign into Tramada by hand, then start a run in the app."
+log "Start a run in the app — it puts the login screen on screen when it needs one."
 
 # Supervise. First death wins: name it, take the rest down, exit non-zero so the
 # container stops rather than limping on with a browser nobody can reach.

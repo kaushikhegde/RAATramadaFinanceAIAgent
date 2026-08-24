@@ -53,14 +53,25 @@ opens in your own browser.
 ```bash
 docker compose up --build          # or: npm run docker:up
 
-#   login screen  http://127.0.0.1:6080/vnc.html   ← SIGN INTO TRAMADA HERE
-#   app           http://127.0.0.1:3000
+#   app           http://127.0.0.1:3000            ← START HERE
+#   login screen  http://127.0.0.1:6080/vnc.html   ← opens itself when needed
 ```
 
-Open the login screen first. It is a real Chromium on a virtual display inside the
-container, already on the Tramada login page — sign in there, by hand, exactly as
-you would locally, then go to the app and start a run. The rule has not moved: the
-run attaches to a browser a **human** signed into, and never types credentials.
+**Open the app and start a run — that is the whole flow.** When the run finds it
+is not signed in, the login screen appears inside the app: a real Chromium on a
+virtual display inside the container, already on the Tramada login page. Sign in
+there, by hand, and the screen closes itself the moment the login lands; the run
+carries on from where it stopped. The rule has not moved — the run attaches to a
+browser a **human** signed into, and never types credentials.
+
+Tick **Keep open** on that panel to watch the browser work for the rest of the
+run. The tick is remembered, but the screen still comes down when the run ends:
+a finished run has nothing to sign into, and leaving it up would hold a live
+connection to a signed-in browser open for as long as the tab stayed open.
+
+`:6080` is still there to open by hand if you would rather have it in its own
+tab — the panel has a link — and it is where to go if you want to sign in
+*before* starting a run.
 
 That is why there is a window manager and a VNC server in the image at all.
 "Headless" here means no monitor, not no display — a run needs a browser a person

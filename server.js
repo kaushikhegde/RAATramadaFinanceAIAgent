@@ -18,7 +18,9 @@
  *   page  ◀──recon_parsed{rows, problems}
  *   page  ──recon_run{source, rows, statementDate, openingBalance, closingBalance}
  *   page  ◀──recon_progress{message, ok}            every step, as it happens
+ *   page  ◀──recon_hello{novncPort}                 what this deployment has
  *   page  ◀──recon_login{message}                   a human has to sign in
+ *   page  ◀──recon_login_ok{message}                ...and has now done it
  *   page  ◀──recon_row{n, row}                      one row's verdict
  *   page  ◀──recon_done{pageNumber | error}
  */
@@ -39,6 +41,18 @@ const { runIpsiReconciliation } = require("./tramada-ipsi");
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const PUBLIC = path.join(__dirname, "public");
+
+/* The container runs a Chromium on a virtual screen and serves that screen as a
+   web page, so a human can sign in without a Chrome on the host — see
+   docker-entrypoint.sh. NOVNC_PORT is set by the image and by nothing else,
+   which is the whole test: no port means no login screen exists, and the page
+   must not offer to frame one. Discovered, not assumed (CLAUDE.md §6).
+
+   Only the PORT travels to the page, never a host. The page builds the URL from
+   its own location.hostname, so it still works through the
+   `ssh -L 6080:localhost:6080` tunnel the README recommends — where a
+   server-side 127.0.0.1 would name the wrong machine entirely. */
+const NOVNC_PORT = parseInt(process.env.NOVNC_PORT || "", 10) || null;
 
 const app = express();
 app.use(express.static(PUBLIC));
@@ -216,6 +230,13 @@ const wss = new WebSocketServer({ server, path: "/ws" });
 wss.on("connection", (ws) => {
   const session = { ws, active: true, reconRunning: false };
   console.log("🔌 page connected");
+
+  /* What this deployment can do, told to the page rather than guessed at by it.
+     Only the Docker image has a login screen; a local `npm start` has none, and
+     a page that assumed one would frame a port with nothing behind it.
+     `recon_` prefix because the page's socket handler drops every frame that
+     does not start with one. */
+  send(session, { type: "recon_hello", novncPort: NOVNC_PORT });
 
   ws.on("message", async (data) => {
     let msg;
@@ -421,8 +442,22 @@ const callbacks = (session, run) => ({
   // hung. The page shows it as a banner.
   onNeedLogin: () => send(session, {
     type: "recon_login",
-    message: "Sign into Tramada in the Chrome on port 9222 — I'll wait, and I never type credentials.",
+    /* Naming port 9222 inside the container sent people looking for a browser
+       that was not on their machine: compose deliberately never publishes it,
+       and the only Chrome is the one on the virtual screen. Say where the
+       browser actually IS for this deployment. */
+    message: NOVNC_PORT
+      ? "Sign into Tramada on the login screen below — I'll wait, and I never type credentials."
+      : `Sign into Tramada in the Chrome on port ${process.env.CDP_PORT || 9222} — I'll wait, and I never type credentials.`,
   }),
+  // The other half. To the page so it can take the login screen down, and to
+  // disk because "a human signed in at 09:14, mid-run" is exactly the kind of
+  // thing that settles a question about a run weeks later (§6b).
+  onLoginOk: () => {
+    const message = "Signed into Tramada — carrying on.";
+    send(session, { type: "recon_login_ok", message });
+    if (run) { try { store.appendActivity(run.id, message, true); } catch { /* the run matters more */ } }
+  },
 });
 
 async function handleReconRun(session, msg) {
@@ -760,8 +795,10 @@ server.listen(PORT, () => {
 ║   🌐  http://localhost:${String(PORT).padEnd(24)}║
 ╚════════════════════════════════════════════════╝
 
-  A run drives Chrome over CDP on port ${process.env.CDP_PORT || 9222}.
+${NOVNC_PORT ? `  Sign into Tramada on the login screen:
+  http://localhost:${NOVNC_PORT}/vnc.html
+  The app opens it for you when a run needs it — credentials are never typed here.` : `  A run drives Chrome over CDP on port ${process.env.CDP_PORT || 9222}.
   Start it with "npm run start:chrome" and sign into Tramada in that window —
-  credentials are never typed here.
+  credentials are never typed here.`}
 `);
 });

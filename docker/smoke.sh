@@ -5,7 +5,7 @@
 #   ./docker/smoke.sh            build, start, check, leave it running
 #   ./docker/smoke.sh --down     the same, then stop and remove the container
 #
-# Nine checks, each one a thing that has actually gone wrong somewhere:
+# Eleven checks, each one a thing that has actually gone wrong somewhere:
 #
 #   1  docker is installed and its daemon is up
 #   2  the image builds                       ← the step nobody can check for you
@@ -16,6 +16,8 @@
 #   7  Chrome's debugging port is reachable INSIDE the container
 #   8  ...and is NOT reachable from the host
 #   9  the VNC server is bound to the container's loopback
+#  10  the login screen sends no header that would blank the in-app panel
+#  11  NOVNC_PORT is set, so the app knows the login screen exists
 #
 # It does not sign into Tramada and it does not run a reconciliation. Those need
 # a person, and that is the point of the noVNC screen — step 8 above is the
@@ -150,6 +152,32 @@ case "$BIND" in
   "")                     red "could not read what 5900 is bound to" ;;
   *)                      red "x11vnc is bound to $BIND, not loopback" ;;
 esac
+
+head_ "10 · the app can frame the login screen"
+# The panel is a cross-origin iframe, :3000 → :6080. If websockify ever grows an
+# X-Frame-Options or a frame-ancestors CSP, that iframe renders BLANK and the
+# only symptom is an empty grey box where the login should be — no error, no log
+# line. Cheaper to assert here than to debug there.
+HDRS=$(curl -sSI --max-time 10 http://127.0.0.1:6080/vnc.html 2>/dev/null)
+if grep -qi 'x-frame-options\|content-security-policy' <<<"$HDRS"; then
+  red "the login screen sends a framing header — the in-app panel will be blank"
+  grep -i 'x-frame-options\|content-security-policy' <<<"$HDRS" | sed 's/^/      /'
+  info "fall back to opening it in a tab: the panel's \"Open in a tab\" link still works"
+else
+  green "no framing header — the app can show the login screen inline"
+fi
+
+head_ "11 · the server advertises the login screen"
+# NOVNC_PORT is the ONLY thing that tells the page a login screen exists. Unset,
+# every part of this feature silently does nothing and the run waits on a banner
+# naming a port that is not published.
+PORT_ENV=$(docker exec "$NAME" sh -c 'echo "$NOVNC_PORT"' 2>/dev/null | tr -d '\r')
+if [ "$PORT_ENV" = "6080" ]; then
+  green "NOVNC_PORT=6080 is set — the app will show the login screen itself"
+else
+  red "NOVNC_PORT is '${PORT_ENV:-unset}', not 6080 — the app will never show the login screen"
+  info "set it in docker-compose.yml; it must match the published noVNC port"
+fi
 
 head_ "verdict"
 printf '  %d passed, %d failed\n' "$PASS" "$FAIL"

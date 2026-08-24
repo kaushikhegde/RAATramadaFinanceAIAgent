@@ -89,14 +89,48 @@ async function tramadaIsAuthed(page) {
   return !page.url().includes("login.htm");
 }
 
+/* The same question as tramadaIsAuthed, asked WITHOUT touching the page.
+   tramadaIsAuthed NAVIGATES, and the wait loop below asks every three seconds —
+   on the very tab the human is typing their password into. Every ask reloaded
+   the login form and wiped both fields, so on the noVNC screen the login page
+   appeared to reload forever and there was no way to sign in at all. It went
+   unnoticed while the workflow was "sign in first, then start a run"; it became
+   the only path the moment the app started showing the login screen itself.
+
+   This shares the browser's cookie jar, so it sees the same session no matter
+   which tab the login happened in, and it never navigates anything. */
+async function tramadaIsAuthedQuietly(page) {
+  try {
+    const res = await page.request.get(`${TRAMADA_BASE_URL}/home/home.htm`, { timeout: 15000 });
+    return !res.url().includes("login.htm");
+  } catch {
+    // A probe that could not run has not proved anything — least of all that
+    // somebody is signed in (CLAUDE.md §6).
+    return false;
+  }
+}
+
 /** The human signs in. We wait, we never type credentials (CLAUDE.md §5). */
-async function ensureLoggedIn(page, onNeedLogin) {
+async function ensureLoggedIn(page, onNeedLogin, onLoginOk) {
   if (await tramadaIsAuthed(page)) return;
   if (typeof onNeedLogin === "function") onNeedLogin();
   const deadline = Date.now() + 5 * 60 * 1000;
   while (Date.now() < deadline) {
     await sleep(3000);
-    if (await tramadaIsAuthed(page)) return;
+    if (!(await tramadaIsAuthedQuietly(page))) continue;
+    /* Signed in. The run's own tab is still sitting on the login form, so put
+       it on a real page before carrying on — and confirm THERE, because the
+       probe proves the session is good, not that this tab is usable. This is
+       the only navigation in the whole wait, and it happens after the human
+       has finished, so it cannot eat anything they were typing. */
+    await page.goto(`${TRAMADA_BASE_URL}/home/home.htm`, { waitUntil: "domcontentloaded" }).catch(() => {});
+    if (page.url().includes("login.htm")) continue;
+    /* Paired with onNeedLogin, never fired alone. An already-authed session
+       returns above without a word, because the page never put a login screen
+       up and has nothing to take down — and an unpaired "logged in" would
+       close a screen somebody had deliberately pinned open to watch a run. */
+    if (typeof onLoginOk === "function") onLoginOk();
+    return;
   }
   throw new Error("Timed out waiting for a Tramada login.");
 }
@@ -1212,7 +1246,7 @@ async function fileReceipts(results, { auth, cb, say, row }) {
         // Steps 8-9, on the read pass only, so the profile page is opened once
         // per row rather than once per pass.
         withBranch: true,
-        callbacks: { onNeedLogin: cb.onNeedLogin },
+        callbacks: { onNeedLogin: cb.onNeedLogin, onLoginOk: cb.onLoginOk },
       });
 
       /* ALREADY ON THE BOOKING — same reference, same amount. The probe
@@ -1317,7 +1351,7 @@ async function fileReceipts(results, { auth, cb, say, row }) {
            would be rehearsing against an empty page. */
         dryRun: false,
         skipIfNoAllocatable: false,
-        callbacks: { onNeedLogin: cb.onNeedLogin },
+        callbacks: { onNeedLogin: cb.onNeedLogin, onLoginOk: cb.onLoginOk },
       });
 
       // On a real commit runTramadaReceipt returns `receipt` — the issued
@@ -1397,7 +1431,7 @@ async function runReconciliation(o = {}) {
   try {
     const ctx = browser.contexts()[0] || (await browser.newContext());
     page = await ctx.newPage();
-    await ensureLoggedIn(page, cb.onNeedLogin);
+    await ensureLoggedIn(page, cb.onNeedLogin, cb.onLoginOk);
 
     /* The balances are no longer passed in. Tramada's new-statement form fills
        Opening Balance from the account itself, that figure is carried into
@@ -1508,7 +1542,7 @@ async function runMintReconciliation(o = {}) {
   try {
     const ctx = browser.contexts()[0] || (await browser.newContext());
     page = await ctx.newPage();
-    await ensureLoggedIn(page, cb.onNeedLogin);
+    await ensureLoggedIn(page, cb.onNeedLogin, cb.onLoginOk);
 
     /* BR03 — THE STATEMENT IS ALREADY THERE. Both guides say do not create one
        for MINT or TravelPay; reuse the one the BPay process made for the day.
@@ -1734,7 +1768,7 @@ async function runCombinedReconciliation(o = {}) {
   try {
     const ctx = browser.contexts()[0] || (await browser.newContext());
     page = await ctx.newPage();
-    await ensureLoggedIn(page, cb.onNeedLogin);
+    await ensureLoggedIn(page, cb.onNeedLogin, cb.onLoginOk);
 
     /* The balances are no longer passed in. Tramada's new-statement form fills
        Opening Balance from the account itself, that figure is carried into

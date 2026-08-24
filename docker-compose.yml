@@ -25,6 +25,10 @@ services:
       CDP_HOST: 127.0.0.1
       CDP_PORT: "9222"
       PORT: "3000"
+      # Tells the server a login screen exists, so the app can put it on screen
+      # itself when a run needs one. Must match the published 6080 above: the
+      # page builds the URL from its own hostname and this port.
+      NOVNC_PORT: "6080"
       # runs.json, uploads/ AND the Chrome profile all live under here, so the
       # Tramada session and the run archive both survive `docker compose down`.
       RECON_STORE_DIR: /data

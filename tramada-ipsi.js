@@ -59,13 +59,46 @@ async function tramadaIsAuthed(page) {
   return !page.url().includes("login.htm");
 }
 
-async function ensureLoggedIn(page, onNeedLogin) {
+/* The same question as tramadaIsAuthed, asked WITHOUT touching the page.
+   tramadaIsAuthed NAVIGATES, and the wait loop below asks every three seconds —
+   on the very tab the human is typing their password into. Every ask reloaded
+   the login form and wiped both fields, so on the noVNC screen the login page
+   appeared to reload forever and there was no way to sign in at all. It went
+   unnoticed while the workflow was "sign in first, then start a run"; it became
+   the only path the moment the app started showing the login screen itself.
+
+   This shares the browser's cookie jar, so it sees the same session no matter
+   which tab the login happened in, and it never navigates anything. */
+async function tramadaIsAuthedQuietly(page) {
+  try {
+    const res = await page.request.get(`${TRAMADA_BASE_URL}/home/home.htm`, { timeout: 15000 });
+    return !res.url().includes("login.htm");
+  } catch {
+    // A probe that could not run has not proved anything — least of all that
+    // somebody is signed in (CLAUDE.md §6).
+    return false;
+  }
+}
+
+async function ensureLoggedIn(page, onNeedLogin, onLoginOk) {
   if (await tramadaIsAuthed(page)) return;
   if (typeof onNeedLogin === "function") onNeedLogin();
   const deadline = Date.now() + 5 * 60 * 1000;
   while (Date.now() < deadline) {
     await sleep(3000);
-    if (await tramadaIsAuthed(page)) return;
+    if (!(await tramadaIsAuthedQuietly(page))) continue;
+    /* Signed in. The run's own tab is still sitting on the login form, so put
+       it on a real page before carrying on — and confirm THERE, because the
+       probe proves the session is good, not that this tab is usable. This is
+       the only navigation in the whole wait, and it happens after the human
+       has finished, so it cannot eat anything they were typing. */
+    await page.goto(`${TRAMADA_BASE_URL}/home/home.htm`, { waitUntil: "domcontentloaded" }).catch(() => {});
+    if (page.url().includes("login.htm")) continue;
+    /* Paired with onNeedLogin. Without this an IPSI run put the login screen
+       on the page and never took it down — only this frame closes it. Same
+       rule as recon-run.js: never fired unless we asked. */
+    if (typeof onLoginOk === "function") onLoginOk();
+    return;
   }
   throw new Error("Timed out waiting for a Tramada login.");
 }
@@ -722,7 +755,7 @@ async function runIpsiReconciliation(o = {}) {
   try {
     const ctx = browser.contexts()[0] || (await browser.newContext());
     page = await ctx.newPage();
-    await ensureLoggedIn(page, cb.onNeedLogin);
+    await ensureLoggedIn(page, cb.onNeedLogin, cb.onLoginOk);
 
     form = await searchIssueReceipts(page, {
       debtorCode: o.debtorCode || "MASTER",
@@ -852,7 +885,7 @@ async function searchWaitingReceipts(o = {}) {
   try {
     const ctx = browser.contexts()[0] || (await browser.newContext());
     page = await ctx.newPage();
-    await ensureLoggedIn(page, cb.onNeedLogin);
+    await ensureLoggedIn(page, cb.onNeedLogin, cb.onLoginOk);
 
     form = await searchIssueReceipts(page, {
       debtorCode: o.debtorCode || "MASTER",

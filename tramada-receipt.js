@@ -163,7 +163,28 @@ async function tramadaIsAuthed(page) {
   return !showingLogin;
 }
 
-async function ensureLoggedIn(page, { username, password, onNeedLogin } = {}) {
+/* The same question as tramadaIsAuthed, asked WITHOUT touching the page.
+   tramadaIsAuthed NAVIGATES, and the wait loop below asks every three seconds —
+   on the very tab the human is typing their password into. Every ask reloaded
+   the login form and wiped both fields, so the login page appeared to reload
+   forever and there was no way to sign in at all. It went unnoticed while the
+   workflow was "sign in first, then start a run"; it became the only path the
+   moment the app started showing the login screen itself.
+
+   This shares the browser's cookie jar, so it sees the same session no matter
+   which tab the login happened in, and it never navigates anything. */
+async function tramadaIsAuthedQuietly(page) {
+  try {
+    const res = await page.request.get(`${TRAMADA_BASE_URL}/home/home.htm`, { timeout: 15000 });
+    return !res.url().includes("login.htm");
+  } catch {
+    // A probe that could not run has not proved anything — least of all that
+    // somebody is signed in (CLAUDE.md §6).
+    return false;
+  }
+}
+
+async function ensureLoggedIn(page, { username, password, onNeedLogin, onLoginOk } = {}) {
   if (await tramadaIsAuthed(page)) return; // warm session — nothing to do
 
   if (username && password) {
@@ -183,7 +204,18 @@ async function ensureLoggedIn(page, { username, password, onNeedLogin } = {}) {
   const deadline = Date.now() + 5 * 60 * 1000;
   while (Date.now() < deadline) {
     await sleep(3000);
-    if (await tramadaIsAuthed(page)) { await sleep(500); return; }
+    if (!(await tramadaIsAuthedQuietly(page))) continue;
+    /* Signed in. This tab is still on the login form, so put it on a real page
+       and confirm THERE — the probe proves the session is good, not that this
+       tab is usable. The only navigation in the whole wait, and it happens
+       after the human has finished. */
+    if (!(await tramadaIsAuthed(page))) continue;
+    await sleep(500);
+    // Paired with onNeedLogin above: the page put a login screen up on that
+    // frame and only this one takes it down. The credentialed branch returns
+    // earlier without either, which is right — it never asked anybody.
+    if (typeof onLoginOk === "function") onLoginOk();
+    return;
   }
   throw new Error("Timed out waiting for Tramada login. Sign in to the shared Chrome and try again.");
 }
@@ -1197,7 +1229,7 @@ async function runTramadaReceipt({
     page = await context.newPage();
 
     onProgress(12, "Checking Tramada session...");
-    await ensureLoggedIn(page, { username, password, onNeedLogin: callbacks.onNeedLogin });
+    await ensureLoggedIn(page, { username, password, onNeedLogin: callbacks.onNeedLogin, onLoginOk: callbacks.onLoginOk });
 
     onProgress(25, `Opening booking ${bookingNo}...`);
     const details = await getBookingDetails(page, bookingNo);

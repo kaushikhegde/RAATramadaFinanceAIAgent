@@ -43,11 +43,16 @@ ENV CDP_MODE=external \
     CDP_HOST=127.0.0.1 \
     CDP_PORT=9222 \
     PORT=3000 \
+    NOVNC_PORT=6080 \
     RECON_STORE_DIR=/data \
     DISPLAY=:99 \
     VNC_SCREEN=1440x900x24 \
     CHROMIUM_BIN=/usr/bin/chromium
 
+# NOVNC_PORT is how the server knows a login screen exists at all — the page is
+# told, and offers to frame it only here. Unset outside this image, where a
+# local `npm start` has no such screen.
+#
 # 3000 = app, 6080 = noVNC login screen. 9222 (CDP) and 5900 (raw VNC) stay
 # inside the container by design — anything reaching them drives a browser
 # signed into a finance system.

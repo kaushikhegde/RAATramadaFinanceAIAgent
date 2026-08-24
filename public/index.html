@@ -3066,6 +3066,18 @@ function askMarkStale(){
   let activity = [];    // newest first, what the server said it was doing
   let stopped = null;   // the error that ended the run, if one did
   let needLogin = null; // set while a run is waiting for a human to sign in
+  /* The container serves the sign-in browser as a web page (noVNC); a local run
+     has no such thing and there is nothing to frame. Null until the server says
+     otherwise, so a page that never hears about a login screen never offers
+     one. */
+  let novncPort = null;
+  let vncOpen = false;  // the run asked for a login and has not been given one
+  /* Ticked, the login screen stays up for the whole run so you can watch it
+     work. In localStorage because it is a preference about how you like to
+     watch, not a fact about this run — and wrapped because a browser with site
+     data blocked THROWS on the read rather than returning null. */
+  let vncPin = false;
+  try { vncPin = localStorage.getItem('rcVncPin') === '1'; } catch (_) {}
   let statementPage = null; // the page a finished run created — the header that
                             // used to show it is hidden in this project
 
@@ -4378,7 +4390,30 @@ function askMarkStale(){
     const banner = $('#rcLogin');
     if (banner) {
       banner.style.display = needLogin ? '' : 'none';
-      if (needLogin) banner.textContent = needLogin;
+      banner.textContent = needLogin || '';
+    }
+    const wrap = $('#rcVncWrap');
+    if (wrap) {
+      const want = !!novncPort && running && (vncOpen || vncPin);
+      wrap.style.display = want ? '' : 'none';
+      const frame = $('#rcVnc');
+      if (frame) {
+        /* The src is set on show and CLEARED on hide, because display:none does
+           NOT stop an iframe — a hidden one holds its VNC socket open to a
+           browser signed into a finance system for the rest of the run.
+           Clearing it drops the connection.
+
+           Only assigned when it actually changes. Re-setting the same src on
+           every repaint reloads the screen, and a repaint lands on every
+           progress line — which would wipe a password halfway through being
+           typed. */
+        const src = want ? vncUrl() : '';
+        if (frame.getAttribute('src') !== src) frame.setAttribute('src', src);
+      }
+      const pin = $('#rcVncPin');
+      if (pin && pin.checked !== vncPin) pin.checked = vncPin;
+      const tab = $('#rcVncTab');
+      if (tab && want) tab.href = vncUrl();
     }
     const live = $('#rcLive');
     if (live) {
@@ -4398,6 +4433,17 @@ function askMarkStale(){
     const stop = t.search(/\.\s/);
     const head = stop > 0 ? t.slice(0, stop + 1) : t;
     return head.length > 120 ? head.slice(0, 117).trimEnd() + '…' : head;
+  }
+
+  /* Built from the page's own hostname, never a hardcoded 127.0.0.1. Through
+     the `ssh -L 6080:localhost:6080` tunnel the README recommends, the screen
+     is on whatever host you typed in the address bar; 127.0.0.1 would be your
+     own machine, which is not running it. autoconnect goes straight to the
+     desktop rather than a Connect button nobody expects to have to press, and
+     scaling fits a 1440x900 screen into the panel instead of cropping it. */
+  function vncUrl() {
+    return location.protocol + '//' + location.hostname + ':' + novncPort +
+      '/vnc.html?autoconnect=1&resize=scale&reconnect=1';
   }
 
   function note(message, ok) {
@@ -4470,6 +4516,7 @@ function askMarkStale(){
     reportOnly = '';
     stopped = null;
     needLogin = null;
+    vncOpen = false;
     statementPage = null;
     activity = [];
     $('#startRun').disabled = true;
@@ -4565,9 +4612,25 @@ function askMarkStale(){
       needLogin = null;
       note(m.message, m.ok);
       render();
+    } else if (m.type === 'recon_hello') {
+      /* What this deployment has, rather than what the page assumed. Only the
+         Docker image runs a login screen; without this the page would frame a
+         port with nothing behind it on every local `npm start`. */
+      novncPort = m.novncPort || null;
+      render();
     } else if (m.type === 'recon_login') {
       needLogin = m.message;
+      vncOpen = true;
       note(m.message, false);
+      render();
+    } else if (m.type === 'recon_login_ok') {
+      /* The sign-in landed, so down it goes — unless it is pinned. This frame
+         is why the screen closes on the login itself rather than on whatever
+         progress line happened to come next, which could be a whole step
+         later. */
+      needLogin = null;
+      vncOpen = false;
+      note(m.message || 'Signed into Tramada — carrying on.', true);
       render();
     } else if (m.type === 'cheat_sheet') {
       if (m.error) { csHint(m.error, true); return; }
@@ -4584,6 +4647,7 @@ function askMarkStale(){
       if (m.runId) lastRunId = m.runId;
       running = false;
       needLogin = null;
+      vncOpen = false;
       $('#startRun').disabled = false;
       stopped = m.error || null;
       // The run is in runs.json now, whether it worked or not, so the overview
@@ -5053,8 +5117,30 @@ function askMarkStale(){
         '<div class="card-b" style="padding-top:4px">' +
         '<div id="rcLogin" style="display:none;margin-bottom:10px;padding:9px 12px;border-radius:9px;' +
         'background:#FFF6D6;border:1px solid #E8D48A;color:#6B5300;font-size:12.5px;font-weight:600"></div>' +
+        // The sign-in browser itself, framed. Hidden until a run asks for a
+        // login, or for as long as "Keep open" is ticked.
+        '<div id="rcVncWrap" style="display:none;margin-bottom:10px">' +
+        '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">' +
+        '<strong style="font-size:12.5px;white-space:nowrap">Tramada login screen</strong>' +
+        '<span style="flex:1"></span>' +
+        '<label style="font-size:12px;display:flex;align-items:center;gap:5px;cursor:pointer;user-select:none;white-space:nowrap">' +
+        '<input type="checkbox" id="rcVncPin"> Keep open</label>' +
+        '<a id="rcVncTab" href="#" target="_blank" rel="noopener" style="font-size:12px;white-space:nowrap">Open in a tab \u2197</a>' +
+        '</div>' +
+        '<iframe id="rcVnc" title="Tramada login screen" style="width:100%;height:520px;' +
+        'border:1px solid #DDD;border-radius:9px;background:#111;display:block"></iframe>' +
+        '</div>' +
         '<ul class="tl" id="rcTl"></ul></div>';
       grid.appendChild(act);
+      /* Wired here rather than in render(): the card is built once, and
+         re-adding the listener on every repaint would fire it once per repaint
+         the next time it was ticked. */
+      const pinBox = act.querySelector('#rcVncPin');
+      if (pinBox) pinBox.addEventListener('change', () => {
+        vncPin = pinBox.checked;
+        try { localStorage.setItem('rcVncPin', vncPin ? '1' : '0'); } catch (_) {}
+        render();
+      });
     }
     /* The inbox's filter row, and all but one of it means something now.
        #ibDate is the mockup's own "Report date" select — a dead control until

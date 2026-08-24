@@ -43,26 +43,30 @@ wait for this line to appear:
 
 That line means everything is up.
 
-### 2. Sign into Tramada
+### 2. Run a reconciliation
 
-- In your browser, open **<http://127.0.0.1:6080/vnc.html>**
-- Click **Connect**.
-- You'll see a browser window already on the Tramada login page. **Sign in there,
-  by hand**, exactly as you would normally.
-
-> This screen *is* the browser the app drives. The app never types your password —
-> a person always signs in. That is by design.
-
-### 3. Run a reconciliation
-
-- In another tab, open **<http://127.0.0.1:3000>** — this is the app.
+- In your browser, open **<http://127.0.0.1:3000>** — this is the app.
 - Upload your report file.
 - Click **Preview**.
-- Switch back to the login screen tab (`:6080`) and watch — the app drives the
-  same browser you just signed into.
 
 **Preview is safe.** It reads real bookings and shows you what it *would* file,
 without filing anything.
+
+### 3. Sign into Tramada, when it asks
+
+The first thing a run does is check whether it is signed in. If it isn't, a
+**Tramada login screen** appears in the Run activity panel on the right, already
+on the login page.
+
+- **Sign in there, by hand**, exactly as you would normally.
+- The screen closes itself as soon as the login lands, and the run carries on.
+
+> That screen *is* the browser the app drives. The app never types your password —
+> a person always signs in. That is by design.
+
+Tick **Keep open** on the panel to leave it up and watch the run work. To sign in
+before you start instead, open **<http://127.0.0.1:6080/vnc.html>** yourself and
+click **Connect** — the panel's "Open in a tab" link goes to the same place.
 
 ### 4. Stop the app
 
@@ -111,8 +115,17 @@ Give it a few more seconds after the `READY` line, then reload the page and clic
 **Connect** again. The browser inside takes a moment to appear.
 
 **The app says it's waiting for a login.**
-You haven't finished signing into Tramada on the `:6080` screen yet, or the
-session expired. Go back to `:6080` and sign in.
+You haven't finished signing in yet, or the session expired. Sign in on the login
+screen in the Run activity panel; it waits five minutes.
+
+**The run wants a login but no screen appears.**
+The panel only shows when the server knows a login screen exists, which it learns
+from `NOVNC_PORT`. Check it is set:
+```bash
+docker exec raa-recon sh -c 'echo $NOVNC_PORT'    # expect: 6080
+```
+Empty means the container was built without it — rebuild with
+`docker compose up --build`. You can still sign in at `:6080` by hand meanwhile.
 
 **You want to force a fresh, signed-out browser.**
 ```bash
