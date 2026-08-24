@@ -7,6 +7,9 @@
 services:
   recon:
     build: .
+    # A fixed name so scripts (docker/smoke.sh) and `docker logs raa-recon` have
+    # something stable to reach, instead of the compose-generated project prefix.
+    container_name: raa-recon
     # Loopback only. Both a browser signed into a finance system and its
     # password-less VNC screen live behind these ports; the loopback bind is
     # what keeps them shut. Tunnel over SSH to reach them, never republish.
