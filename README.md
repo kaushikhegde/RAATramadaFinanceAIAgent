@@ -46,47 +46,62 @@ receipt per row against a real booking, and nothing rolls back. The card's
 
 ## In Docker
 
+The image is **self-contained** — the server *and* a Chromium you sign into. No
+Chrome on the host, no `start:chrome`. You do the login through a VNC screen that
+opens in your own browser.
+
 ```bash
 docker compose up --build          # or: npm run docker:up
 
-#   app     http://127.0.0.1:3000
-#   screen  http://127.0.0.1:6080/vnc.html   ← SIGN INTO TRAMADA HERE
+#   login screen  http://127.0.0.1:6080/vnc.html   ← SIGN INTO TRAMADA HERE
+#   app           http://127.0.0.1:3000
 ```
 
-Open the screen first. It is a real X display inside the container with Chrome
-already on the Tramada login page — sign in there, by hand, exactly as you would
-locally, then go to the app and start a run. The rule has not moved: the run
-attaches to a browser a **human** signed into, and never types credentials.
+Open the login screen first. It is a real Chromium on a virtual display inside the
+container, already on the Tramada login page — sign in there, by hand, exactly as
+you would locally, then go to the app and start a run. The rule has not moved: the
+run attaches to a browser a **human** signed into, and never types credentials.
 
-That is also why there is a window manager and a VNC server in the image at all.
+That is why there is a window manager and a VNC server in the image at all.
 "Headless" here means no monitor, not no display — a run needs a browser a person
 can reach, because Tramada will ask for a password, and one day an OTP.
 
-**What survives a restart.** `./data` holds the Chrome profile — so the Tramada
-session outlives `docker compose down` — along with `runs.json` and `uploads/`.
-`./csv_uploads` is bound to the same folder the fixture generator writes to, so a
-CSV made inside the container is a file you can pick up and upload. Delete
-`./data/chrome-profile` and the next start is a signed-out browser.
+**What survives a restart.** A named Docker volume (`recon-data`) holds the Chrome
+profile — so the Tramada session outlives `docker compose down` — along with
+`runs.json` and `uploads/`. Copy the archive out with
+`docker compose cp recon:/data/runs.json ./runs.json`. Force a fresh (signed-out)
+browser with `docker compose run --rm recon rm -rf /data/chrome-profile`.
 
-**Both ports are published to `127.0.0.1` only**, and the VNC server has no
-password by design — the loopback bind is what keeps it shut. From another
-machine, tunnel rather than republish:
+> A host bind mount (`./data:/data`) is **not** used: this project lives under
+> `~/Documents`, which macOS blocks Docker Desktop from mounting (you get
+> `operation not permitted`). To use one anyway, grant Docker Desktop access to
+> Documents under System Settings → Privacy & Security → Files and Folders, then
+> swap the volume line in `docker-compose.yml`.
+
+**Both published ports are bound to `127.0.0.1` only**, and the VNC server has no
+password by design — the loopback bind is what keeps it shut. From another machine,
+tunnel rather than republish:
 
 ```bash
 ssh -L 6080:localhost:6080 -L 3000:localhost:3000 you@thathost
 ```
 
-**Port 9222 is deliberately not published.** Anything that can reach the
-debugging port drives a browser signed into a finance system; the app reaches it
-on `127.0.0.1` inside the container, and nothing outside needs to.
+**Ports 9222 (CDP) and 5900 (raw VNC) are never published.** Anything reaching the
+debugging port drives a browser signed into a finance system; the app and the noVNC
+bridge reach them on `127.0.0.1` inside the container, and nothing outside needs to.
 
 Point it at a different portal with `TRAMADA_URL` in a `.env` beside the compose
 file. Everything else has a working default.
 
 If any of the six processes dies — Xvfb, fluxbox, Chromium, x11vnc, websockify,
 node — the container stops and says which one. That is on purpose: restarting a
-dead Chrome on its own would hand back a browser nobody is signed into, and a run
+dead Chromium on its own would hand back a browser nobody is signed into, and a run
 would then sit waiting for a login against a window that was never there.
+
+**`docker` not on your PATH?** Docker Desktop installs the CLI at
+`~/.docker/bin/docker`. Add `export PATH="$HOME/.docker/bin:$PATH"` to your shell
+profile, or the `npm run docker:*` scripts (which shell out to `docker compose`)
+will not find it.
 
 ## The BPay rules
 

@@ -1,0 +1,21 @@
+# Keep the build context small and secrets out of the image.
+node_modules
+npm-debug.log
+.git
+.gitignore
+.env
+.env.example
+.jetstar-profile-cdp
+data
+uploads
+csv_uploads
+runs.json
+runs.json.corrupt-*
+created-bookings*.json
+*.png
+shots/out
+.DS_Store
+_to_delete
+Dockerfile
+docker-compose.yml
+.dockerignore

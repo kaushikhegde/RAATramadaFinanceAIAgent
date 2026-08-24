@@ -1,0 +1,46 @@
+# Self-contained reconciliation stack: the server AND a Chromium you sign into
+# through a browser-based VNC screen. No Chrome needed on the host.
+#
+#   docker compose up --build          # or: npm run docker:up
+#   → login screen  http://127.0.0.1:6080/vnc.html   (SIGN INTO TRAMADA HERE)
+#   → app           http://127.0.0.1:3000
+services:
+  recon:
+    build: .
+    # Loopback only. Both a browser signed into a finance system and its
+    # password-less VNC screen live behind these ports; the loopback bind is
+    # what keeps them shut. Tunnel over SSH to reach them, never republish.
+    ports:
+      - "127.0.0.1:3000:3000"   # app
+      - "127.0.0.1:6080:6080"   # noVNC login screen
+    # Chromium crashes tabs on the default 64 MB /dev/shm; the entrypoint also
+    # passes --disable-dev-shm-usage, and this is the belt to that braces.
+    shm_size: "1gb"
+    environment:
+      # Connect to the in-container Chromium the entrypoint launched; never spawn.
+      CDP_MODE: external
+      CDP_HOST: 127.0.0.1
+      CDP_PORT: "9222"
+      PORT: "3000"
+      # runs.json, uploads/ AND the Chrome profile all live under here, so the
+      # Tramada session and the run archive both survive `docker compose down`.
+      RECON_STORE_DIR: /data
+      # The instance a run drives and the login screen opens. Override here or in
+      # a .env beside this file.
+      TRAMADA_URL: ${TRAMADA_URL:-https://asp.tramada.com.au/ttms/raatravelsandbox}
+      DEBUG: ${DEBUG:-false}
+    volumes:
+      # A named volume, NOT a host bind mount: this project sits under
+      # ~/Documents, which macOS blocks Docker Desktop from mounting (TCC →
+      # "operation not permitted"). The volume still outlives `compose down`.
+      # Pull the archive out with:
+      #   docker compose cp recon:/data/runs.json ./runs.json
+      # Delete the profile to force a fresh login:
+      #   docker compose run --rm recon rm -rf /data/chrome-profile
+      - recon-data:/data
+    # A dead process should surface (the entrypoint exits and names it), not be
+    # silently restarted into a browser nobody is signed into.
+    restart: "no"
+
+volumes:
+  recon-data:
