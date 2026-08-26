@@ -33,6 +33,121 @@ const AU_AIRPORT_CODES = new Set([
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/* ── autocomplete: find-and-click, with verification ──
+   Copied from `tramada-segments.js` (same file family, no shared base module
+   between them — `sleep` above is duplicated the same way) rather than
+   required, because `tramada-segments.js` already requires THIS file for
+   `runTramadaAddAndSearch`; requiring it back would be a cycle.
+
+   This is the fix for the client field a few lines down. The code it replaces
+   typed a client code, waited a fixed 2s, and looked for a dropdown item under
+   one of several guessed CSS classes (`.autocomplete-suggestions`,
+   `.ac_results`, etc.) — classes Tramada's autocomplete does not actually use
+   (see `_findSuggestion` below: "Tramada's dropdown has no stable class to
+   hook"). When the guessed selectors matched nothing, it fell back to a blind
+   ArrowDown+Enter with no check that anything was actually selected — so a
+   slow-to-render dropdown left the visible text reading "GRAY/SPIDER" with no
+   client ever resolved behind it, and the booking failed 15+ seconds later at
+   Save with "Client Code is invalid", nowhere near where the real problem was.
+   `pickAutocomplete` finds the suggestion by screen position instead of a
+   class name, polls for a STABLE match before clicking it, and — the part the
+   old code never did — verifies the field's value actually changed before
+   calling the pick successful, retrying once and then throwing if it never
+   does. */
+function _findSuggestion(arg) {
+  const input = document.querySelector(arg.sel);
+  if (!input) return null;
+  const ir = input.getBoundingClientRect();
+  const val = String(arg.raw).trim().toUpperCase();
+  const esc = val.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  const inDropdownZone = (n) => {
+    const r = n.getBoundingClientRect();
+    if (!r.width || !r.height) return false;
+    const below = r.top >= ir.bottom - 4 && r.top <= ir.bottom + 340;
+    const overlap = r.left < ir.right + 80 && r.right > ir.left - 80;
+    return below && overlap;
+  };
+
+  const vis = Array.from(document.querySelectorAll("li, div, td, a")).filter(
+    (n) =>
+      n.offsetParent !== null &&
+      (n.textContent || "").trim() &&
+      (n.textContent || "").length < 80 &&
+      inDropdownZone(n)
+  );
+
+  let hit = vis.find((n) => new RegExp("^\\s*[\\(\\[]" + esc + "[\\)\\]]").test(n.textContent || ""));
+  if (!hit) {
+    hit = vis.find((n) => {
+      const t = (n.textContent || "").trim().toUpperCase();
+      return t.includes(val) && t !== val;
+    });
+  }
+  if (!hit) return null;
+  const r = hit.getBoundingClientRect();
+  if (arg.doClick) hit.click();
+  return { text: (hit.textContent || "").trim().slice(0, 60), x: r.left + r.width / 2, y: r.top + r.height / 2 };
+}
+
+async function pickAutocomplete(page, selector, value) {
+  if (!value) return null;
+  const el = page.locator(selector);
+  if (!(await el.count())) return null;
+  const first = el.first();
+  const typed = String(value).trim().toUpperCase();
+
+  const registered = async () => {
+    const v = ((await first.inputValue().catch(() => "")) || "").trim();
+    return v && v.toUpperCase() !== typed ? v : null;
+  };
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    await first.click();
+    await first.fill("");
+    await first.type(String(value), { delay: 60 });
+
+    let match = null;
+    let prev = null;
+    for (let i = 0; i < 20; i++) {
+      await sleep(300);
+      const cur = await page
+        .evaluate(_findSuggestion, { sel: selector, raw: String(value), doClick: false })
+        .catch(() => null);
+      if (cur && prev && cur.text === prev.text && Math.abs(cur.y - prev.y) < 2) {
+        match = cur;
+        break;
+      }
+      prev = cur;
+    }
+
+    if (!match) {
+      await first.evaluate((n) => n.blur()).catch(() => {});
+      await sleep(800);
+      const v = await registered();
+      if (v) return v;
+      continue;
+    }
+
+    await page.evaluate(_findSuggestion, { sel: selector, raw: String(value), doClick: true }).catch(() => null);
+    await sleep(500);
+    let v = await registered();
+    if (v) return v;
+
+    const fresh =
+      (await page.evaluate(_findSuggestion, { sel: selector, raw: String(value), doClick: false }).catch(() => null)) ||
+      match;
+    await page.mouse.move(fresh.x, fresh.y);
+    await sleep(150);
+    await page.mouse.click(fresh.x, fresh.y);
+    await sleep(600);
+    v = await registered();
+    if (v) return v;
+  }
+
+  throw new Error(`Autocomplete ${selector}: could not select "${value}" (no click registered after 2 attempts)`);
+}
+
 // yyyy-mm-dd → dd-mm-yyyy (the format Tramada's date inputs expect)
 function toTramadaDate(isoDate) {
   if (!isoDate) return "";
@@ -212,26 +327,11 @@ async function tramadaAddBooking(page, mapped) {
   });
   await page.waitForSelector("#client", { timeout: 15000 });
 
-  // Client autocomplete — type and pick the first match
-  const clientInput = page.locator("#client");
-  await clientInput.click();
-  await clientInput.fill("");
-  await clientInput.type(mapped.clientCode, { delay: 80 });
-  await sleep(2000);
-
-  const acItem = page
-    .locator(
-      `.autocomplete-suggestions div, .ac_results li, ul.ui-autocomplete li, div[class*="autocomplete"] div`
-    )
-    .filter({ hasText: mapped.clientCode });
-  if ((await acItem.count()) > 0) {
-    await acItem.first().click();
-  } else {
-    // Fallback: keyboard-select first suggestion
-    await page.keyboard.press("ArrowDown");
-    await sleep(300);
-    await page.keyboard.press("Enter");
-  }
+  // Client autocomplete — found by screen position and VERIFIED, not guessed
+  // at by CSS class and left unchecked. See the comment on `pickAutocomplete`
+  // above for why: the old code here left a booking's client unresolved and
+  // didn't find out until Save rejected it with "Client Code is invalid".
+  await pickAutocomplete(page, "#client", mapped.clientCode);
   await sleep(1500);
 
   // Mandatory fields. IMPORTANT: picking the client fires an ajax refresh that
@@ -335,7 +435,26 @@ async function tramadaAddBooking(page, mapped) {
     await sleep(400);
   }
 
-  await page.click("#save");
+  /* `#save` can resolve to MORE THAN ONE element here — the same ajax that
+     wipes fields above (see `wiped`) can also leave a stale copy of the form
+     footer behind instead of replacing it, so two buttons end up sharing this
+     id. `page.click` takes DOM order, which is not necessarily render order:
+     clicking the wrong one passes every actionability check (visible,
+     enabled, stable) and does nothing, which is indistinguishable from a hang
+     until this line's own 30s timeout. Narrow to the one(s) actually on
+     screen and enabled; if more than one still qualifies, the LAST is taken —
+     the most recently rendered copy is the one wired to the form's current
+     state, same reasoning `wiped` above already relies on. */
+  const saveBtns = page.locator("#save");
+  const saveCount = await saveBtns.count();
+  let save = saveBtns.first();
+  if (saveCount > 1) {
+    const states = await saveBtns.evaluateAll((els) =>
+      els.map((el) => ({ visible: !!el.offsetParent, disabled: !!el.disabled })));
+    const live = states.reduce((acc, s, i) => (s.visible && !s.disabled ? [...acc, i] : acc), []);
+    if (live.length) save = saveBtns.nth(live[live.length - 1]);
+  }
+  await save.click();
   await page.waitForLoadState("domcontentloaded");
   await sleep(1500);
 

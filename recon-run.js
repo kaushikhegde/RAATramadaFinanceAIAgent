@@ -50,7 +50,7 @@
 require("dotenv").config();
 const { chromium } = require("playwright");
 const core = require("./recon-core");
-const { runTramadaReceipt } = require("./tramada-receipt");
+const { runTramadaReceipt, getBookingDetails, getBookingBranch } = require("./tramada-receipt");
 /* IPSI never touches a bank statement page — it walks Finance Receipts. A
    combined run has to be able to drive it too, or a loaded IPSI file gets
    matched against a page its transactions can never be on. */
@@ -1318,6 +1318,22 @@ async function fileReceipts(results, { auth, cb, say, row }) {
         callbacks: { onNeedLogin: cb.onNeedLogin, onLoginOk: cb.onLoginOk },
       });
 
+      /* STEPS 7 AND 9, TAKEN OFF THE PROBE THE MOMENT IT RETURNS.
+         These used to be read further down, after three `continue`s had already
+         had their chance — so every row that took an early exit reached
+         Finance with both columns blank. The commonest of those is the one that
+         WORKED: a receipt already on the booking skips straight past, and an
+         export of five such rows had ten empty cells (measured 25-08-2026,
+         bookings 13646-13658).
+
+         The probe is the pass that carries `withBranch: true`, so by here the
+         values are already in hand — reading them later cost a page load and
+         lost them to whichever branch ran first. An empty string still means
+         "not read", and is still never guessed at. */
+      const probeDetails = (probe && probe.details) || {};
+      r.consultant = probeDetails.consultant || "";
+      r.shop = probeDetails.branch || "";
+
       /* ALREADY ON THE BOOKING — same reference, same amount. The probe
          reads the receipts list before it opens anything, so this comes back
          without a form having been touched. The row takes the receipt that is
@@ -1331,7 +1347,8 @@ async function fileReceipts(results, { auth, cb, say, row }) {
         r.why = `already on booking ${r.bookingNo} as ${was.receiptNo} for ${was.amount}` +
           (probe.duplicates ? ` — and ${probe.duplicates} receipts carry that reference and amount` : "") +
           " — nothing was filed again";
-        row(r.n, { receiptNo: r.receiptNo, allocation: r.allocation, why: r.why });
+        row(r.n, { receiptNo: r.receiptNo, allocation: r.allocation, why: r.why,
+          consultant: r.consultant, shop: r.shop });
         say(`Row ${r.n}: ${r.why}`, true);
         continue;
       }
@@ -1349,19 +1366,14 @@ async function fileReceipts(results, { auth, cb, say, row }) {
           `${(probe.offered || []).map((x) => `"${x}"`).join(", ") || "no receipt types"} ` +
           `but not "${core.BPAY_RECEIPT.label}"`;
         r.noReceipt = true;
-        row(r.n, { allocation: r.allocation, remark: r.remark, why: r.why });
+        row(r.n, { allocation: r.allocation, remark: r.remark, why: r.why,
+          consultant: r.consultant, shop: r.shop });
         say(`Row ${r.n}: ${r.remark}`, false);
         continue;
       }
 
       const segments = (probe && probe.segments) || [];
-      const details = (probe && probe.details) || {};
-
-      /* STEPS 7 AND 9 — the two columns Finance gets back. Recorded from the
-         read pass whatever happens next, so a row that is about to be stopped
-         by a rule still tells Finance who booked it and which shop it was. */
-      r.consultant = details.consultant || "";
-      r.shop = details.branch || "";
+      const details = probeDetails;
 
       /* STEPS 4, 5 AND 6 — the gate. This is the only thing standing between a
          CSV row and a real receipt on a real booking, so it runs BEFORE the
@@ -1959,8 +1971,85 @@ async function runCombinedReconciliation(o = {}) {
   }
 }
 
+/**
+ * Steps 7-9 for a file that has just been uploaded — read in the BACKGROUND.
+ *
+ * Consultant and Shop are facts about the booking: true the moment the file
+ * names a booking number, and knowable without running anything. But reading
+ * them costs two page loads each, so doing it before the upload is acknowledged
+ * makes a drag-and-drop sit there for half a minute looking broken.
+ *
+ * So the upload answers immediately and this runs after it, with the page told
+ * to hold Start run until it finishes. That ordering matters: a run started
+ * mid-lookup would read the same two fields again off the same bookings, and
+ * the two passes would race to write the same cells.
+ *
+ * READ-ONLY — the summary for `Cons1`, the profile for `#level1Branch`. It
+ * raises nothing, ticks nothing and commits nothing.
+ *
+ * IT MUST NEVER STOP AN UPLOAD. The file has already arrived and already been
+ * stored, so every failure here is swallowed and reported:
+ *
+ *   - Chrome unreachable, or nobody signed in → every row keeps blank columns
+ *     and the caller is told which of the two it was. Deliberately NOT
+ *     `ensureLoggedIn`, whose five-minute wait belongs to a run somebody is
+ *     watching, not to a file that is already on screen.
+ *   - one booking that will not open → that row stays blank, the rest continue.
+ *
+ * A blank cell means "not read". Nothing here guesses, and in particular the
+ * consultant's own home branch — the decoy sitting on the same profile page —
+ * is never used as a stand-in for the booking's.
+ */
+async function fillConsultantAndShop(rows, { onProgress = () => {} } = {}) {
+  const todo = (rows || []).filter((r) => r && r.bookingNo);
+  if (!todo.length) return { filled: 0, attempted: 0, skipped: "no row carries a booking number" };
+
+  let browser;
+  try {
+    browser = await openBrowser();
+  } catch (err) {
+    return { filled: 0, attempted: 0, skipped: core.tidyError(err.message) };
+  }
+
+  let page;
+  let filled = 0;
+  try {
+    const context = browser.contexts()[0] || (await browser.newContext());
+    page = await context.newPage();
+
+    if (!(await tramadaIsAuthed(page))) {
+      return {
+        filled: 0, attempted: 0,
+        skipped: `nobody is signed into Tramada in the Chrome on port ${CDP_PORT}`,
+      };
+    }
+
+    for (const [i, row] of todo.entries()) {
+      onProgress(Math.round(((i + 1) / todo.length) * 100),
+        `Reading consultant and shop for booking ${row.bookingNo} (${i + 1} of ${todo.length})...`);
+      try {
+        const details = await getBookingDetails(page, row.bookingNo);
+        if (details && details.consultant) row.consultant = details.consultant;
+      } catch { /* stays blank — the next read may still work */ }
+      // Never throws by contract; a branch it cannot read comes back "".
+      const profile = await getBookingBranch(page, row.bookingNo);
+      const shop = core.branchCode((profile && profile.branch) || "");
+      if (shop) row.shop = shop;
+      if (row.consultant || row.shop) filled++;
+    }
+    return { filled, attempted: todo.length, skipped: null };
+  } catch (err) {
+    return { filled, attempted: todo.length, skipped: core.tidyError(err.message) };
+  } finally {
+    // CDP: drops the connection, never closes the human's Chrome.
+    try { if (page && !page.isClosed()) await page.close(); } catch { /* already gone */ }
+    await browser.close().catch(() => {});
+  }
+}
+
 module.exports = {
   runReconciliation, runMintReconciliation, runCombinedReconciliation,
+  fillConsultantAndShop,
   sortPage, applyFilter, filterFor, readVisibleTransactions, fileReceipts,
   readExistingPages, createStatement, openFreshStatementPage, filterAndRead,
   setStatementBalances, selectMatchedTransactions, finishStatementPage,

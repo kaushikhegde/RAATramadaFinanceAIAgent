@@ -36,7 +36,8 @@ const reconCore = require("./recon-core");
 const xlsxLite = require("./xlsx-lite");
 const xlsxWrite = require("./xlsx-write");
 const store = require("./run-store");
-const { runReconciliation, runMintReconciliation, runCombinedReconciliation } = require("./recon-run");
+const { runReconciliation, runMintReconciliation, runCombinedReconciliation,
+        fillConsultantAndShop } = require("./recon-run");
 const { runIpsiReconciliation } = require("./tramada-ipsi");
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
@@ -170,7 +171,7 @@ function parseUploadedCheatSheet(name, base64) {
 }
 
 function handleCheatSheet(session, msg) {
-  const reply = (extra) => send(session, { type: "cheat_sheet", source: CHEAT_SHEET_KEY, ...extra });
+  const reply = (extra) => send(session, { type: "cheat_sheet", source: CHEAT_SHEET_KEY, via: "upload", ...extra });
   try {
     const parsed = parseUploadedCheatSheet(msg.name, msg.base64);
     if (!parsed.pairs.length) {
@@ -184,6 +185,51 @@ function handleCheatSheet(session, msg) {
         problems: parsed.problems,
       }),
       problems: parsed.problems,
+    });
+  } catch (err) {
+    reply({ error: reconCore.tidyError(err.message) });
+  }
+}
+
+/**
+ * A row typed or edited by hand on the Reconciliation inbox's cheat-sheet tab,
+ * as opposed to a file dropped on it (`handleCheatSheet` above). Kept as its
+ * own message rather than folded into that one because the two have nothing in
+ * common to validate: a upload is bytes that might not even be a spreadsheet,
+ * an edit is already `{from, to}` strings the page's own inputs produced.
+ *
+ * Whole-sheet replace, same as an upload — "no history, one file" (see
+ * `run-store.saveCheatSheet`) applies here too, so Save writes the page's
+ * current table, not a diff of one row.
+ */
+function handleCheatSheetSave(session, msg) {
+  const reply = (extra) => send(session, { type: "cheat_sheet", source: CHEAT_SHEET_KEY, via: "edit", ...extra });
+  try {
+    const problems = [];
+    const pairs = [];
+    (Array.isArray(msg.pairs) ? msg.pairs : []).forEach((p, i) => {
+      const from = String((p && p.from) || "").trim();
+      const to = String((p && p.to) || "").trim();
+      if (!from && !to) return;                 // a blank row added and left empty
+      if (!from || !to) {
+        problems.push({ line: i + 1, why: `half a mapping — "${from}" → "${to}"` });
+        return;
+      }
+      pairs.push({ from, to, try: reconCore.cheatSheetCandidates(to) });
+    });
+    if (!pairs.length) {
+      reply({ error: "nothing to save — every row is missing one side of the mapping" });
+      return;
+    }
+    // Keep whatever the sheet was already called; a hand-typed table has no
+    // filename of its own. The shipped default has never been "named" by
+    // anyone, so an edit to it is called what it is rather than borrowing the
+    // shipped file's name.
+    const existing = cheatSheetFor();
+    const name = existing && existing.name && !existing.shipped ? existing.name : "Edited by hand";
+    reply({
+      ...store.saveCheatSheet(CHEAT_SHEET_KEY, { name, pairs, problems }),
+      problems,
     });
   } catch (err) {
     reply({ error: reconCore.tidyError(err.message) });
@@ -222,6 +268,22 @@ app.get("/api/cheat-sheet/:source", (req, res) => {
   res.json({ source: CHEAT_SHEET_KEY, ...cheatSheetFor() });
 });
 
+/* The cheat sheet back out as a CSV, with whatever has been uploaded or
+   hand-edited since — so a Finance person can take the updated names back
+   into their own copy without retyping them. Headings match
+   `CHEAT_SHEET_COLUMNS` so the file this hands back is also one this app can
+   read back in, unchanged. */
+app.get("/api/cheat-sheet/:source/export", (req, res) => {
+  const sheet = cheatSheetFor();
+  const grid = {
+    headings: ["Spreadsheet Name", "Tramada Creditor"],
+    rows: (sheet.pairs || []).map((p) => [p.from, p.to]),
+  };
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="supplier-cheat-sheet.csv"');
+  res.send("﻿" + reconCore.gridToCsv(grid));
+});
+
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 
@@ -246,6 +308,7 @@ wss.on("connection", (ws) => {
       else if (msg.type === "recon_upload") handleReconUpload(session, msg);
       else if (msg.type === "recon_edit") handleReconEdit(session, msg);
       else if (msg.type === "cheat_sheet") handleCheatSheet(session, msg);
+      else if (msg.type === "cheat_sheet_save") handleCheatSheetSave(session, msg);
       else if (msg.type === "recon_run") await handleReconRun(session, msg);
     } catch (err) {
       // A throw here would take the socket down mid-run and the page would show
@@ -345,18 +408,71 @@ function handleReconParse(session, msg) {
       ipsi: reconCore.parseIpsiRows,
     }[source] || reconCore.parseMintRows;
     const { rows, problems, settlement, columns } = parse(sheet.headers, sheet.rows);
+
     /* `columns` is the file's own headings, in its own order. It goes back to
        the page so the inbox can show the spreadsheet as Finance wrote it, and
        so the export can hand back that same spreadsheet with the run's columns
        filled in rather than a new file of this code's own devising. */
+    /* STEPS 7-9 RUN AFTER THIS REPLY, NOT BEFORE IT.
+       Consultant and Shop are knowable the moment the file names a booking, but
+       reading them costs two page loads each — so doing it first made a
+       drag-and-drop sit for half a minute looking like it had hung. The rows go
+       back now, and the two columns arrive when they arrive.
+
+       `enriching` tells the page to hold Start run until they do. That is not
+       cosmetic: a run started mid-lookup reads the same two fields off the same
+       bookings, and the two passes would race to write the same cells. */
+    const enriching = source === "bpay" && rows.length > 0;
     reply({
       rows, problems, settlement, columns: columns || sheet.headers,
       format: isZip ? "xlsx" : "csv",
       headers: sheet.headers, sheetRows: sheet.rows.length,
+      enriching,
     });
+
+    if (enriching) enrich(session, source, rows, problems);
   } catch (err) {
     reply({ error: reconCore.tidyError(err.message) });
   }
+}
+
+
+/**
+ * Fill Consultant and Shop after the upload has already been answered.
+ *
+ * Deliberately NOT awaited by its caller: the point is that the page has the
+ * file on screen before this starts. It reports progress as it goes and sends
+ * the finished rows back in one frame, then releases Start run — which the page
+ * has been holding since `enriching` came back true.
+ *
+ * `recon_enriched` is ALWAYS sent, including when the lookup could not run at
+ * all. A page that is told to wait and never told to stop is a Start run button
+ * that stays greyed out forever, which is a worse failure than blank columns.
+ */
+function enrich(session, source, rows, problems) {
+  const both = rows.concat((problems || []).map((p) => p.row).filter(Boolean));
+  Promise.resolve()
+    .then(() => fillConsultantAndShop(both, {
+      onProgress: (pct, m) => send(session, { type: "recon_progress", message: m, ok: true, pct }),
+    }))
+    .catch((err) => ({ filled: 0, attempted: both.length, skipped: reconCore.tidyError(err.message) }))
+    .then((said) => {
+      send(session, {
+        type: "recon_enriched",
+        source,
+        rows,
+        filled: said.filled,
+        attempted: said.attempted,
+        skipped: said.skipped || null,
+      });
+      send(session, {
+        type: "recon_progress",
+        ok: !said.skipped,
+        message: said.skipped
+          ? `Consultant and Shop were left blank — ${said.skipped}`
+          : `Consultant and Shop filled in for ${said.filled} of ${said.attempted} row(s).`,
+      });
+    });
 }
 
 /**
@@ -738,6 +854,32 @@ async function handleMintRun(session, msg) {
   session.reconRunning = true;
 
   const run = openRun(session, source, msg, rows.map((r) => ({ ...r, src: source })));
+
+  /* SAY WHICH SHEET, AND WHERE IT CAME FROM.
+     `cheatSheetFor()` prefers a sheet somebody uploaded through the page over
+     the one shipped in cheat-sheets/, and the two can disagree with nothing on
+     screen saying so: a row's remark quotes the candidates it tried but never
+     names their source. Editing the shipped file, re-running, and reading the
+     same "cheat sheet disagrees" is then indistinguishable from the edit not
+     having worked.
+
+     Measured 25-08-2026. A sheet uploaded at 12:17 was the one in use; the file
+     on disk had been corrected at 12:12 and was never consulted, and the run at
+     12:19 reported the old candidates — correctly, about a sheet nobody
+     realised was in play. One line naming it is the whole fix. */
+  const sheet = cheatSheetFor();
+  const sheetCount = (sheet.pairs || []).length;
+  const sheetFrom = sheet.shipped
+    ? "shipped with the app"
+    : `uploaded ${(sheet.uploadedAt || "").slice(0, 10) || "earlier"} — upload again to change it`;
+  send(session, {
+    type: "recon_progress",
+    ok: sheetCount > 0,
+    message: sheetCount
+      ? `Supplier cheat sheet: ${sheet.name || "(unnamed)"} — ${sheetCount} supplier${sheetCount === 1 ? "" : "s"}, ${sheetFrom}.`
+      : "No supplier cheat sheet — every row will be matched on the supplier name exactly as the file spells it.",
+  });
+
   try {
     const out = await runMintReconciliation({
       rows,
@@ -758,7 +900,7 @@ async function handleMintRun(session, msg) {
          names creditors by trading name, so without this a perfectly good row
          reads "Supplier does not match". ONE sheet for both reports — RAA's is
          headed "SUPPLIER NAME IN MINT / TRAVELPAY". */
-      cheatSheet: cheatSheetFor(),
+      cheatSheet: sheet,
       // Checks only: the run does everything except press Issue and Done.
       dryRun: !!msg.dryRun,
       callbacks: callbacks(session, run),
