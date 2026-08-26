@@ -2604,9 +2604,13 @@ function noStatementMessage(source, statementDate, pages, accountLabel = "The ac
     .map((p) => `${toTramadaDate(p.statementDate) || p.statementDate} (page ${p.pageNo})`)
     .slice(-5);
   return (
-    `${accountLabel} has no bank statement for ${toTramadaDate(statementDate)}. ` +
+    // The first sentence is the wording RAA asked for in the POC feedback
+    // (BPAY 01) and is quoted exactly; the rest is the detail that makes it
+    // actionable rather than just a refusal.
+    `BPAY needs to be reconciled first for today. ` +
+    `${accountLabel} has no bank statement for ${toTramadaDate(statementDate)}, and ` +
     `${source === "travelpay" ? "TravelPay" : "MINT"} reconciles the statement the BPay run creates ` +
-    `and never creates one itself, so run BPay for that date first. ` +
+    `rather than creating one itself. ` +
     (recent.length ? `The most recent statements are ${recent.join(", ")}.` : "There are no statements at all.")
   );
 }

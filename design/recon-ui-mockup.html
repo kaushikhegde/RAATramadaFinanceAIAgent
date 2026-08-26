@@ -4,10 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RAA Travel · Reconciliation Agent — UI Mockup</title>
+<!-- Roboto, per POC feedback General 01. Loaded from Google Fonts rather than
+     self-hosted: the page is served from the container but the FONT is fetched
+     by the viewer's browser, so it costs the image nothing. `display=swap` so a
+     slow font never leaves the page blank — the fallback stack renders first
+     and is replaced when Roboto arrives. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
 <style>
 /* ═══════════════════════════════════════════════════════════════
    RAA brand tokens — sampled from www.raa.com.au theme CSS.
-   Brand typeface is National 2 Web (licensed); fallback stack below.
+   Typeface is Roboto (POC feedback General 01), loaded from Google Fonts.
+   RAA's brand face National 2 Web is licensed and is NOT used here.
 
    Interaction patterns informed by booke.ai:
      /xero                → triage inbox (Need reaction / Under review),
@@ -28,7 +37,13 @@
   --purple:#7266a2; --purple-dk:#533f8c;
   --maroon:#9f2241; --sand:#e8e2d3; --cream:#f9f7f4;
 
-  --ink:#1a1a26; --ink-2:#4d4d5c; --ink-3:#7b7b8a;
+  --ink:#1a1a26; --ink-2:#4d4d5c;
+  /* --ink-3 was #7b7b8a: 4.16:1 on white and 3.83:1 on the page's own
+     #f5f5f8, against the 4.5:1 WCAG 2.1 AA needs for text this size.
+     Every muted label, card blurb and footer on the app failed on it.
+     #6b6b7a is 5.24:1 and 4.81:1 — clears AA on both with headroom, so a
+     later background tweak cannot quietly push it back under. */
+  --ink-3:#6b6b7a;
   --line:#e2e2e8; --line-2:#eeeef2; --bg:#f5f5f8; --white:#fff;
 
   --ok:#0f7a52; --ok-bg:#e7f4ee;
@@ -36,10 +51,18 @@
   --err:#9f2241; --err-bg:#fbe9ed;
 
   --r:10px; --shadow:0 1px 2px rgba(19,0,100,.05),0 6px 20px rgba(19,0,100,.055);
-  --font:"National 2 Web","National 2",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --font:"Roboto",-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",Arial,sans-serif;
   --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
 }
 *{box-sizing:border-box}
+/* WCAG 2.4.7 Focus Visible. The app painted `outline:none` on its controls and
+   never replaced it, so tabbing through was invisible. :focus-visible, not
+   :focus — the ring appears for keyboard and assistive tech, not on mouse
+   clicks, which is what the original `outline:none` was trying to avoid.
+   Two-tone so it stays visible on both the white cards and the indigo rail. */
+:focus-visible{outline:2px solid var(--indigo);outline-offset:2px;border-radius:3px}
+.side :focus-visible,.nav-item:focus-visible{outline:2px solid #ffe600;outline-offset:2px}
+@media (prefers-contrast:more){:focus-visible{outline-width:3px}}
 html,body{margin:0;padding:0}
 body{font-family:var(--font);background:var(--bg);color:var(--ink);font-size:14px;line-height:1.45;-webkit-font-smoothing:antialiased}
 button,input,select{font:inherit}
@@ -47,17 +70,12 @@ button{cursor:pointer}
 a{color:var(--blue);text-decoration:none}
 
 /* ─────────── Shell ─────────── */
-.app{display:grid;grid-template-columns:52px 228px 1fr;min-height:100vh}
-.rail{background:var(--indigo-700);display:flex;flex-direction:column;align-items:center;gap:4px;padding:14px 0;position:sticky;top:0;height:100vh}
-.rail .rmark{width:30px;height:30px;border-radius:8px;background:var(--yellow);display:grid;place-items:center;font-size:10px;font-weight:800;color:var(--indigo);letter-spacing:-.03em;margin-bottom:10px}
-.rbtn{width:34px;height:34px;border-radius:8px;border:0;background:none;color:#a99fd6;font-size:15px;display:grid;place-items:center;position:relative}
-.rbtn:hover{background:rgba(255,255,255,.1);color:#fff}
-.rbtn.on{background:rgba(255,255,255,.16);color:var(--yellow)}
-.rbtn .rdot{position:absolute;top:5px;right:5px;width:6px;height:6px;border-radius:50%;background:#ff6b81}
-.rail .spacer{flex:1}
+.app{display:grid;grid-template-columns:228px 1fr;min-height:100vh}
+.brand .rmark{width:30px;height:30px;border-radius:8px;background:var(--yellow);display:grid;place-items:center;
+  font-size:10px;font-weight:800;color:var(--indigo);letter-spacing:-.03em;flex:none}
 
 .side{background:var(--indigo);color:#fff;display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
-.brand{padding:16px 16px 12px}
+.brand{padding:16px 16px 12px;display:flex;align-items:center;gap:10px}
 .brand b{display:block;font-size:14px;letter-spacing:-.01em}
 .brand small{display:block;font-size:11px;color:#a99fd6;margin-top:1px}
 .side nav{padding:6px 9px 0;flex:1;overflow:auto}
@@ -123,7 +141,7 @@ a{color:var(--blue);text-decoration:none}
 .g-inbox{grid-template-columns:minmax(0,1fr) 316px}
 @media(max-width:1280px){.g-4{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:1180px){.g-3,.g-main,.g-inbox{grid-template-columns:1fr}}
-@media(max-width:860px){.grid{grid-template-columns:1fr!important}.app{grid-template-columns:1fr}.side,.rail{display:none}}
+@media(max-width:860px){.grid{grid-template-columns:1fr!important}.app{grid-template-columns:1fr}.side{display:none}}
 
 /* ─────────── Hero ─────────── */
 .hero{background:linear-gradient(105deg,var(--indigo) 0%,#2a1590 60%,#3d21ad 100%);color:#fff;border-radius:var(--r);padding:18px 20px;margin-bottom:14px;display:flex;gap:24px;align-items:center;flex-wrap:wrap}
@@ -613,20 +631,21 @@ tr.cited{animation:cpulse 1.5s ease-out 2}
 <body>
 <div class="app">
 
-<!-- ══════════ ICON RAIL ══════════ -->
-<div class="rail">
-  <div class="rmark">RAA</div>
-  <button class="rbtn on" data-go="overview" title="Run overview">◧</button>
-  <button class="rbtn" data-go="inbox" title="Reconciliation inbox">⇄<span class="rdot"></span></button>
-  <button class="rbtn" data-go="sources" title="Sources &amp; upload">⇪</button>
-  <div class="spacer"></div>
-</div>
+<!-- The icon-only rail that used to sit here is gone (POC feedback General 03).
+     Its three buttons were the same three destinations as the sidebar items
+     beside them — two controls for every screen, and a second thing to keep in
+     sync on every navigation. The RAA mark it carried has moved into the brand
+     block below, next to the product name, which is where it reads as a logo
+     rather than as a fourth button. -->
 
 <!-- ══════════ SIDEBAR ══════════ -->
 <aside class="side">
   <div class="brand">
-    <b>Reconciliation Agent</b>
-    <small>RAA Travel · Accounts</small>
+    <div class="rmark" aria-hidden="true">RAA</div>
+    <div>
+      <b>Reconciliation Agent</b>
+      <small>RAA Travel · Accounts</small>
+    </div>
   </div>
 
   <div class="brain">
@@ -652,7 +671,7 @@ tr.cited{animation:cpulse 1.5s ease-out 2}
 </aside>
 
 <!-- ══════════ MAIN ══════════ -->
-<div class="main">
+<main class="main">
   <header class="top">
     <h1 id="topTitle">Run overview</h1>
     <div class="stmt">Statement page 1552 <em>·</em> 29-07-2026 <span style="opacity:.5">▾</span></div>
@@ -1094,7 +1113,7 @@ tr.cited{animation:cpulse 1.5s ease-out 2}
   </p>
 
   </div><!-- /wrap -->
-</div><!-- /main -->
+</main><!-- /main -->
 
 <!-- ══════════ ASK THE AGENT ══════════ -->
 <aside class="askp" id="askPanel" aria-label="Ask the agent">

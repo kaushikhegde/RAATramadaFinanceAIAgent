@@ -375,7 +375,14 @@ console.log("\nno statement for the day is a hard stop, not a workaround");
     [{ statementDate: "18-08-2026", pageNo: 12 }], "Trust Account");
   ok("it names the date asked for", /20-08-2026/.test(m), m);
   ok("it names the report that cannot proceed", /\bMINT\b/.test(m), m);
-  ok("it says to run BPay first, in those words", /run BPay for that date first/.test(m), m);
+  /* USED TO ASSERT /run BPay for that date first/. RAA's POC feedback (BPAY 01)
+     asked for a specific sentence — "BPAY needs to be reconciled first for
+     today" — and asked for it to LEAD, because it is the bit somebody reads
+     at 8am when the day will not start. The detail that follows is unchanged. */
+  ok("it opens with the wording RAA asked for",
+    /^BPAY needs to be reconciled first for today\./.test(m), m);
+  ok("and still explains that BPay is what creates the statement",
+    /statement the BPay run creates/.test(m), m);
   ok("and shows what dates DO have a statement", /18-08-2026 \(page 12\)/.test(m), m);
 
   const t = C.noStatementMessage("travelpay", "20-08-2026", [], "Trust Account");

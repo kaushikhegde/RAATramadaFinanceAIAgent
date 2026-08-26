@@ -1221,6 +1221,52 @@ async function openStatementForDate(page, o) {
   return { pageNumber: Number(want.pageNo), statementDate: want.statementDate, reused: true };
 }
 
+/**
+ * The day's statement: OPEN the one that exists, CREATE one only if none does.
+ *
+ * POC feedback General 04 — "Could be that agent checks whether bank statement
+ * already exists for that day — if yes, do not create new bank statement, use
+ * existing." A combined run carries BPay, so creating is legitimate here in a
+ * way it never is for a Mint-only run; but if BPay already ran this morning and
+ * somebody adds Mint at lunchtime, the day must not gain a second statement.
+ *
+ * This is the one place the two existing behaviours meet:
+ *   `openStatementForDate`  reuses, and throws when there is nothing to reuse
+ *   `openFreshStatementPage` creates, and throws when the date is already taken
+ * Either alone is wrong for a combined run. Together, in this order, they are
+ * the rule the feedback asked for.
+ *
+ * MORE THAN ONE STATEMENT FOR THE DATE STILL STOPS. `openStatementForDate` says
+ * why: pages 10, 11 and 12 all carried 12-08-2026 on the live account, and the
+ * next thing this run does is tick transactions and commit them.
+ */
+async function openOrCreateDayStatement(page, o) {
+  const say = o.say || (() => {});
+  const accountLabel = o.accountLabel || "[TRUST] Trust Account";
+
+  const found = await readExistingPages(page, accountLabel);
+  if (!found.pages.length && !found.saysEmpty) {
+    throw new Error(
+      `Couldn't read the existing statement pages for ${accountLabel}, and this run will ` +
+      "not guess whether the day already has a statement."
+    );
+  }
+  const already = core.pagesForDate(found.pages, o.statementDate);
+
+  if (already.length) {
+    say(`${accountLabel} already has a statement for ${core.toTramadaDate(o.statementDate)} — ` +
+      "reconciling that one rather than creating a second.", true);
+    const opened = await openStatementForDate(page, o);
+    /* No balances come back from a reused page, and none should be typed into
+       it: the run that created it set them. The caller reads them off the
+       screen instead of writing over a figure Finance already entered. */
+    return { ...opened, carriedBalance: null, closingBalance: null, reused: true };
+  }
+
+  say(`No statement for ${core.toTramadaDate(o.statementDate)} yet — BPay creates it.`);
+  return { ...(await openFreshStatementPage(page, o)), reused: false };
+}
+
 /* ── phase one: the receipts ─────────────────────────────────────────────── */
 
 /**
@@ -1797,11 +1843,12 @@ async function runCombinedReconciliation(o = {}) {
        Opening Balance from the account itself, that figure is carried into
        Closing, and it comes back here so the reconcile screen can be made to
        agree with it. Nothing typed on the Sources screen reaches either form. */
-    const { pageNumber, carriedBalance, closingBalance } = await openFreshStatementPage(page, {
+    const { pageNumber, carriedBalance, closingBalance, reused } = await openOrCreateDayStatement(page, {
       accountLabel,
       statementDate: o.statementDate,
+      source: "bpay",
       // Step 27 — Finance's figure off the Westpac statement, not a copy of
-      // the opening balance.
+      // the opening balance. Only used when this run CREATES the page.
       closingBalance: o.closingBalance,
       say,
     });
@@ -1885,10 +1932,15 @@ async function runCombinedReconciliation(o = {}) {
       futureDated = futureDated.concat(sel.futureDated);
     }
 
-    const balances = await setStatementBalances(page, {
-      openingBalance: carriedBalance,
-      closingBalance,
-    }, say, dryRun);
+    /* Balances are only ours to set on a page this run CREATED. On a reused one
+       they were entered by whoever created it — typing over them would replace
+       Finance's Westpac figure with whatever was on this screen. */
+    const balances = reused
+      ? (say("Reusing the existing statement — its balances are left as they were.", true), null)
+      : await setStatementBalances(page, {
+          openingBalance: carriedBalance,
+          closingBalance,
+        }, say, dryRun);
 
     const selection = { ticked, missing, futureDated };
     const finished = await finishStatementPage(page, ticked.length, say, dryRun);

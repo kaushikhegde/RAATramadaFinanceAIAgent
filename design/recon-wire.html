@@ -272,11 +272,11 @@ header.top { display: none !important }
       const box = document.createElement('div');
       box.style.cssText = 'display:flex;gap:10px;align-items:flex-end';
       box.innerHTML =
-        '<div><label class="field-lbl" style="margin:0 0 3px;display:block">Statement date</label>' +
+        '<div><label class="field-lbl" for="rcDate" style="margin:0 0 3px;display:block">Statement date</label>' +
         '<input class="btn" id="rcDate" style="width:130px" value="' + dmy + '"></div>' +
-        '<div><label class="field-lbl" style="margin:0 0 3px;display:block">Opening balance</label>' +
+        '<div><label class="field-lbl" for="rcOpening" style="margin:0 0 3px;display:block">Opening balance</label>' +
         '<input class="btn" id="rcOpening" style="width:130px" placeholder="0.00"></div>' +
-        '<div><label class="field-lbl" style="margin:0 0 3px;display:block">Closing balance</label>' +
+        '<div><label class="field-lbl" for="rcClosing" style="margin:0 0 3px;display:block">Closing balance</label>' +
         '<input class="btn" id="rcClosing" style="width:130px" placeholder="0.00"></div>' +
         /* MINT BR02 / TravelPay BR02 — "Total Transaction to be a required
            field in the AI Reconciliation Dashboard ... to be calculated and
@@ -284,7 +284,7 @@ header.top { display: none !important }
            added up against, and the check is reported once on the run rather
            than down every row. Shown only when one of those two reports is
            loaded, because BPay has no such rule. */
-        '<div id="rcTotalBox" style="display:none"><label class="field-lbl" style="margin:0 0 3px;display:block">Transaction total</label>' +
+        '<div id="rcTotalBox" style="display:none"><label class="field-lbl" for="rcTotal" style="margin:0 0 3px;display:block">Transaction total</label>' +
         /* Numbers only — this is BR01/step 3's NUVEI figure, typed by a human
            off the bank statement and compared to the cent against the file's
            own total. type=number rejects letters at the keyboard rather than
@@ -620,12 +620,15 @@ header.top { display: none !important }
     grid.innerHTML = Object.keys(SOURCES).map((kind) => {
       const def = SOURCES[kind];
       const s = source[kind];
-      const head = '<h4>' + def.title + ' ';
+      // WCAG 1.3.1 — these sit directly under the page's <h2>, so they are
+      // h3. They were h4, which skipped a level and made the outline read
+      // as though a heading had gone missing.
+      const head = '<h3>' + def.title + ' ';
       const hintSeed = kind === 'ipsi' ? ipsiWarn : '';
 
       if (!s) {
         return '<div class="dz" data-kind="' + kind + '"><div class="di">⇪</div><div style="flex:1">' +
-          head + '<span class="badge b-mute">not uploaded</span></h4>' +
+          head + '<span class="badge b-mute">not uploaded</span></h3>' +
           '<p>' + def.blurb + '</p>' +
           '<span class="file">' + def.columns + '</span>' +
           (kind === 'ipsi' ? ipsiNuveiField() : '') +
@@ -650,7 +653,7 @@ header.top { display: none !important }
       return '<div class="dz done" data-kind="' + kind + '"' +
         (s.previewOpen ? ' style="grid-column:1/-1"' : '') + '>' +
         '<div class="di">' + (isActive && running ? '◐' : '✓') + '</div><div style="flex:1">' +
-        head + state + '</h4>' +
+        head + state + '</h3>' +
         '<p>' + def.blurb + '</p>' +
         '<span class="file">' + esc(s.file.name) + ' · ' + s.rows.length + ' row' +
         (s.rows.length === 1 ? '' : 's') + ' · ' + kb(s.file.size) + esc(balances) + '</span>' +
@@ -674,12 +677,31 @@ header.top { display: none !important }
        unpresented transaction on the account, so the BPay receipts and the Mint
        creditor payments are both on it — one page, one Done. */
     if (loaded().length > 1) {
+      /* POC feedback BPAY 01 asked for this sentence, near enough verbatim:
+         "BPAY reconciliation will run first, followed by <Mint/TravelPay/IPSI>
+         reconciliation for today's date." The old wording — "Both reports will
+         run together" — said the opposite of the thing RAA most wanted to be
+         sure of, which is that BPay goes first because it is what creates the
+         bank statement the others reconcile against.
+
+         The other reports are NAMED rather than listed generically, because
+         which ones are loaded is exactly what the person is checking. */
+      const others = loaded().filter((k) => k !== 'bpay').map((k) => (SOURCES[k] || {}).title || k);
+      const list = others.length > 1
+        ? others.slice(0, -1).join(', ') + ' and ' + others[others.length - 1]
+        : (others[0] || 'the other report');
+      const hasBpay = loaded().indexOf('bpay') >= 0;
       grid.insertAdjacentHTML('beforeend',
         '<div class="note" style="grid-column:1/-1;padding:10px 14px;border-radius:10px;' +
         'background:#EAF3FF;border:1px solid #B9D4F5;color:#1B4A7A;font-size:13px">' +
-        '<b>Both reports will run together</b> on one statement page — the BPay rows are ' +
-        'filed as receipts first, then each report is matched under its own filter and ' +
-        'the page is committed once.</div>');
+        (hasBpay
+          ? '<b>BPAY reconciliation will run first</b>, followed by ' + esc(list) +
+            ' reconciliation for ' + esc(($('#rcDate') || {}).value || 'that date') + '. BPay creates the bank statement ' +
+            'the others reconcile against, so it cannot be the other way round.'
+          : '<b>' + esc(list) + '</b> will reconcile against the bank statement BPAY created ' +
+            'for ' + esc(($('#rcDate') || {}).value || 'that date') + '. If BPAY has not run for that date yet, this will stop ' +
+            'and say so rather than creating a second statement.') +
+        '</div>');
     }
 
     grid.querySelectorAll('[data-choose]').forEach((b) => {
@@ -1519,7 +1541,6 @@ header.top { display: none !important }
   function go(screen) {
     document.querySelectorAll('.screen').forEach((s) => s.classList.toggle('on', s.id === 's-' + screen));
     document.querySelectorAll('.nav-item').forEach((n) => n.classList.toggle('on', n.dataset.go === screen));
-    document.querySelectorAll('.rbtn').forEach((n) => n.classList.toggle('on', n.dataset.go === screen));
     const t = document.getElementById('topTitle');
     if (t && TITLES[screen]) t.textContent = TITLES[screen];
     window.scrollTo({ top: 0 });
