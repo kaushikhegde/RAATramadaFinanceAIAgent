@@ -1,4 +1,18 @@
 <!--@CSS-->
+/* ── The "still reading" spinner ──
+   Consultant and Shop are read off Tramada AFTER the upload is answered, so
+   there is a window where the file is on screen and two of its columns are not
+   filled in yet. A line of text alone reads as a finished state; this says the
+   page is still doing something. `prefers-reduced-motion` stops it turning
+   rather than hiding it — the indicator still has to be visible. */
+.rc-spin {
+  display: inline-block; width: 11px; height: 11px; margin-right: 7px;
+  vertical-align: -1px; border: 2px solid currentColor; border-right-color: transparent;
+  border-radius: 50%; animation: rc-spin 0.7s linear infinite;
+}
+@keyframes rc-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .rc-spin { animation-duration: 3s; } }
+
 /* ── The top bar is hidden ──
    The mockup's header carried the app switcher (Chat / Bank statements), the
    screen title and a statement chip. This project is one page, so the switcher
@@ -294,7 +308,7 @@ header.top { display: none !important }
       // in the page header, outside #tileGrid.
       ['#rcDate', '#rcOpening', '#rcClosing'].forEach((sel) => {
         const el = $(sel);
-        if (el) el.oninput = () => { if (loaded().length) renderSource(); };
+        if (el) el.oninput = () => { syncActive(); if (loaded().length) renderSource(); };
       });
     }
 
@@ -399,46 +413,142 @@ header.top { display: none !important }
      and the date and time when it was uploaded", and "if there is an existing
      one, it will get replaced".
 
-     ONE panel, not one per report. The guides each name their own sheet as
-     though there were two; RAA's actual file is headed "SUPPLIER NAME IN MINT /
-     TRAVELPAY" and covers both, so it is uploaded once and both reports use it.
-     Excel or CSV, like every other upload here. IPSI does none of this — its
-     own guide has no supplier-name step — so it gets its own list rather than
-     riding along on WANTS_TOTAL. */
-  const WANTS_CHEAT_SHEET = ['mint', 'travelpay'];
+     ONE sheet, not one per report. The guides each name their own as though
+     there were two; RAA's actual file is headed "SUPPLIER NAME IN MINT /
+     TRAVELPAY" and covers both, so it is uploaded once and MINT and TravelPay
+     both use it. Excel or CSV, like every other upload here. IPSI does none of
+     this — its own guide has no supplier-name step.
+
+     Lives on its own tab on the Reconciliation inbox screen (`#ibTabs`, below)
+     rather than beside the MINT/TravelPay cards on Sources & upload. It used to
+     sit there, one copy per card, which put a spreadsheet-editing job in the
+     middle of a drag-and-drop screen and meant it vanished the moment neither
+     card was loaded — exactly when someone arriving to fix a stale mapping
+     would go looking for it. */
   let cheatSheet = null;                   // what the server has on file
+  /* The table's own working copy — `{from, to}` only; `try` is server-derived
+     and rebuilt from `to` on save (see `cheatSheetCandidates`), so the table
+     never has to know it exists. Rebuilt from `cheatSheet.pairs` whenever
+     `cheatSheet` changes identity (a fresh fetch, an upload, a save's own
+     reply) — see the `cheatDraftFrom` guard in `renderCheatSheetPane`. */
+  let cheatDraft = [];
+  let cheatDraftFrom = null;
 
   function loadCheatSheets() {
     fetch('/api/cheat-sheet/suppliers')
       .then((r) => r.json())
-      .then((d) => { cheatSheet = d && d.pairs && d.pairs.length ? d : null; renderCheatSheets(); })
+      .then((d) => { cheatSheet = d && d.pairs && d.pairs.length ? d : null; renderCheatSheetPane(); })
       .catch(() => {});
   }
 
-  function renderCheatSheets() {
-    const host = $('#cheatSheets');
-    if (!host) return;
-    const on = loaded().filter((k) => WANTS_CHEAT_SHEET.indexOf(k) >= 0);
-    host.style.display = on.length ? '' : 'none';
-    if (!on.length) return;
+  /* The name/count/timestamp line only — NOT the table. A save fires on every
+     field's blur (see `saveCheatDraft`), and rebuilding the table from the
+     reply would tear out the input the person just moved to, mid-row, the same
+     failure `saveCell`'s own comment describes for the recon table. So a save's
+     reply updates this line and leaves the inputs alone; only a deliberate
+     replace-by-file, or the tab being (re)opened, rebuilds the table itself. */
+  function refreshCheatMeta() {
+    const el = $('#csMeta');
+    if (!el) return;
     const cs = cheatSheet;
     const when = cs && cs.uploadedAt ? new Date(cs.uploadedAt).toLocaleString() : '';
-    host.innerHTML = '<div class="card" style="padding:12px 14px;margin-bottom:8px">' +
-      '<b>Supplier name cheat sheet</b> <span class="muted">· MINT and TravelPay</span>' +
-      '<div class="muted" style="margin:4px 0 8px">' +
-      (cs
-        ? esc(cs.name) + ' · ' + esc(String(cs.pairs.length)) + ' supplier' +
-          (cs.pairs.length === 1 ? '' : 's') +
-          (cs.shipped ? ' · supplied with the app' : ' · uploaded ' + esc(when)) +
-          (cs.skipped ? ' · ' + cs.skipped + ' line(s) skipped' : '')
-        : 'None on file. Supplier names must then match Tramada exactly, ' +
-          'so a trading name like "Viva Holidays II Limited T/A Ready Rooms" ' +
-          'will read as "Supplier does not match".') +
+    el.innerHTML = cs
+      ? esc(cs.name || 'Supplier cheat sheet') + ' · ' + esc(String(cs.pairs.length)) + ' supplier' +
+        (cs.pairs.length === 1 ? '' : 's') +
+        (cs.shipped ? ' · supplied with the app' : ' · last saved ' + esc(when)) +
+        (cs.skipped ? ' · ' + cs.skipped + ' line(s) skipped' : '')
+      : 'None on file. Supplier names must then match Tramada exactly, ' +
+        'so a trading name like "Viva Holidays II Limited T/A Ready Rooms" ' +
+        'will read as "Supplier does not match".';
+  }
+
+  /* Off by default — the table opens read-only and "Edit" turns the cells
+     into inputs. A mapping like this is read far more often than it is
+     changed, and a screenful of live inputs invites a stray click to nudge a
+     character in a name nobody meant to touch; read-only text does not. */
+  let cheatEditing = false;
+
+  function renderCheatSheetPane() {
+    const host = $('#cheatSheetPane');
+    if (!host) return;
+    if (cheatDraftFrom !== cheatSheet) {
+      cheatDraft = (cheatSheet && cheatSheet.pairs ? cheatSheet.pairs : [])
+        .map((p) => ({ from: p.from, to: p.to }));
+      cheatDraftFrom = cheatSheet;
+    }
+    const rows = cheatDraft.map((p, i) => cheatEditing
+      ? '<tr>' +
+        '<td style="width:44%"><input class="cellIn" style="width:100%;box-sizing:border-box" ' +
+          'data-i="' + i + '" data-k="from" value="' + esc(p.from) +
+          '" placeholder="Name in MINT / TravelPay"></td>' +
+        '<td style="width:44%"><input class="cellIn" style="width:100%;box-sizing:border-box" ' +
+          'data-i="' + i + '" data-k="to" value="' + esc(p.to) +
+          '" placeholder="Tramada creditor name"></td>' +
+        '<td class="rowact"><button class="btn sm ghost" data-cheat-del="' + i + '">Remove</button></td>' +
+        '</tr>'
+      : '<tr><td style="width:44%">' + esc(p.from) + '</td>' +
+        '<td style="width:44%">' + esc(p.to) + '</td><td></td></tr>').join('');
+
+    // "+ Add supplier" lives at the top, beside the other actions, rather than
+    // under the table — the table can run to dozens of rows, and an "add"
+    // control below all of them means scrolling past every existing mapping
+    // to reach it. Using it drops the table into edit mode along with it: an
+    // added row is a blank pair of inputs, and showing that beside read-only
+    // text elsewhere on the page would say two different things about
+    // whether this table can be typed into.
+    host.innerHTML =
+      '<div class="card-h"><h3>Supplier cheat sheet</h3><span class="muted">· MINT and TravelPay</span>' +
+      '<div class="spacer"></div>' +
+      '<button class="btn sm ghost" data-cheat-add="1">+ Add supplier</button>' +
+      '<button class="btn sm ghost" data-cheat-export="1">Export CSV</button>' +
+      '<button class="btn sm" data-cheat="1">' + (cheatSheet ? 'Replace file' : 'Upload file') + '</button>' +
+      '<button class="btn sm' + (cheatEditing ? ' primary' : '') + '" data-cheat-toggle="1">' +
+      (cheatEditing ? 'Done editing' : 'Edit') + '</button>' +
       '</div>' +
-      '<button class="btn sm" data-cheat="1">' +
-      (cs ? 'Replace' : 'Upload') + ' cheat sheet</button>' +
-      '<span class="muted" id="csHint" style="margin-left:8px"></span></div>';
+      '<div class="muted" id="csMeta" style="padding:0 14px 10px"></div>' +
+      '<div style="overflow-x:auto"><table style="min-width:100%;table-layout:fixed"><thead><tr>' +
+      '<th>Name in MINT / TravelPay</th><th>Tramada creditor</th><th style="width:90px"></th>' +
+      '</tr></thead><tbody>' +
+      (rows || '<tr><td colspan="3" style="padding:26px;text-align:center" class="muted">' +
+        'No mappings yet — upload a file, or Add supplier above.</td></tr>') +
+      '</tbody></table></div>' +
+      '<div style="padding:10px 14px"><span class="muted" id="csHint"></span>' +
+      (cheatEditing ? '<div class="muted" style="margin-top:6px">A row needs both names before it is ' +
+        'saved; a blank row is dropped rather than kept as a half mapping.</div>' : '') + '</div>';
+    refreshCheatMeta();
+
     host.querySelectorAll('[data-cheat]').forEach((b) => { b.onclick = pickCheatSheet; });
+    const exportBtn = host.querySelector('[data-cheat-export]');
+    if (exportBtn) exportBtn.onclick = () => { window.location.href = '/api/cheat-sheet/suppliers/export'; };
+    const toggleBtn = host.querySelector('[data-cheat-toggle]');
+    if (toggleBtn) toggleBtn.onclick = () => { cheatEditing = !cheatEditing; renderCheatSheetPane(); };
+    const addBtn = host.querySelector('[data-cheat-add]');
+    if (addBtn) addBtn.onclick = () => {
+      cheatEditing = true;
+      cheatDraft.push({ from: '', to: '' });
+      renderCheatSheetPane();
+      const ins = host.querySelectorAll('.cellIn[data-k="from"]');
+      if (ins.length) ins[ins.length - 1].focus();
+    };
+    host.querySelectorAll('[data-cheat-del]').forEach((b) => {
+      b.onclick = () => { cheatDraft.splice(Number(b.dataset.cheatDel), 1); saveCheatDraft(); renderCheatSheetPane(); };
+    });
+    // Same input/change split as `saveCell`: every keystroke updates the row in
+    // memory so Remove and Export always see what is on screen; only change/blur
+    // goes down the socket, so a save is never sent mid-word.
+    host.querySelectorAll('.cellIn').forEach((el) => {
+      const i = Number(el.dataset.i), k = el.dataset.k;
+      el.oninput = () => { cheatDraft[i][k] = el.value; };
+      el.onchange = () => saveCheatDraft();
+      el.onblur = () => saveCheatDraft();
+      el.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); el.blur(); } };
+    });
+  }
+
+  function saveCheatDraft() {
+    if (!ws || ws.readyState !== 1) { csHint('not connected to the server', true); return; }
+    csHint('saving…');
+    ws.send(JSON.stringify({ type: 'cheat_sheet_save', pairs: cheatDraft }));
   }
 
   /* ── IPSI's own NUVEI amount ──
@@ -539,17 +649,37 @@ header.top { display: none !important }
       .catch(() => {});
   }
 
-  /* The panel host and its own file input, built here rather than added to the
-     mockup — that file is client-supplied and generated from, not edited. */
-  function mountCheatSheets() {
-    if ($('#cheatSheets')) return;
-    const grid = $('#tileGrid');
-    if (!grid || !grid.parentNode) return;
-    const host = document.createElement('div');
-    host.id = 'cheatSheets';
-    host.style.display = 'none';
-    host.style.marginTop = '14px';
-    grid.parentNode.insertBefore(host, grid.nextSibling);
+  /* Its own screen, alongside Run overview / Sources & upload / Reconciliation
+     inbox — not a tab inside any of those. Built here rather than added to
+     either mockup file, which are client-supplied and generated from, not
+     edited: a rail button, a sidebar entry and a `.screen` section, the same
+     three pieces `s-overview`/`s-sources`/`s-inbox` each already have, plus the
+     panel's own file input. `go()` and `mountNav()` already switch on
+     `[data-go]`/`.screen` generically — nothing there has to know this screen
+     exists. */
+  function mountCheatSheetScreen() {
+    if ($('#s-suppliers')) return;
+
+    const rail = document.querySelector('.rail .spacer');
+    if (rail) rail.insertAdjacentHTML('beforebegin',
+      '<button class="rbtn" data-go="suppliers" title="Supplier cheat sheet">✎</button>');
+
+    const inboxNav = document.querySelector('.nav-item[data-go="inbox"]');
+    if (inboxNav) inboxNav.insertAdjacentHTML('afterend',
+      '<button class="nav-item" data-go="suppliers"><span class="ico">✎</span> Supplier cheat sheet</button>');
+
+    const wrap = document.querySelector('.wrap');
+    if (!wrap) return;
+    const section = document.createElement('section');
+    section.className = 'screen';
+    section.id = 's-suppliers';
+    section.innerHTML =
+      '<div class="page-h"><div><h2>Supplier cheat sheet</h2>' +
+      '<p>Maps a spreadsheet\'s own supplier name to the name Tramada uses, so MINT and ' +
+      'TravelPay match on the trading name rather than the legal entity. Used by both reports.</p>' +
+      '</div></div>' +
+      '<div class="card" id="cheatSheetPane"></div>';
+    wrap.appendChild(section);
 
     const picker = document.createElement('input');
     picker.type = 'file';
@@ -575,6 +705,8 @@ header.top { display: none !important }
       fr.readAsArrayBuffer(file);
     };
     document.body.appendChild(picker);
+
+    renderCheatSheetPane();
   }
 
   function csHint(text, bad) {
@@ -593,7 +725,6 @@ header.top { display: none !important }
     const grid = $('#tileGrid');
     if (!grid) return;
     syncTotalField();
-    renderCheatSheets();
     const op = ($('#rcOpening') || {}).value, cl = ($('#rcClosing') || {}).value;
     const balances = op && cl ? ' · opening ' + dollars(op) + ' → closing ' + dollars(cl) : '';
 
@@ -617,6 +748,7 @@ header.top { display: none !important }
           '<p>' + def.blurb + '</p>' +
           '<span class="file">' + def.columns + '</span>' +
           (kind === 'ipsi' ? ipsiNuveiField() : '') +
+          '<div class="muted rc-figs" data-figs="' + kind + '" style="margin-top:8px"></div>' +
           '<div class="muted rc-hint" data-hint="' + kind + '" style="margin-top:8px">' + hintSeed + '</div>' +
           '<div class="actions"><button class="btn sm indigo" data-choose="' + kind + '">Choose file</button></div>' +
           (kind === 'ipsi' ? ipsiPendingBlock() : '') +
@@ -644,7 +776,8 @@ header.top { display: none !important }
         (s.rows.length === 1 ? '' : 's') + ' · ' + kb(s.file.size) + esc(balances) + '</span>' +
         '<span class="result">✓ ' + sourceStats(kind) + '</span>' +
         (kind === 'ipsi' ? ipsiNuveiField() : '') +
-        '<div class="muted rc-hint" data-hint="' + kind + '" style="margin-top:8px">' + hintSeed + '</div>' +
+        '<div class="muted rc-figs" data-figs="' + kind + '" style="margin-top:8px"></div>' +
+          '<div class="muted rc-hint" data-hint="' + kind + '" style="margin-top:8px">' + hintSeed + '</div>' +
         '<div class="actions">' +
         '<button class="btn sm" data-go="inbox">View rows</button>' +
         '<button class="btn sm ghost" data-preview="' + kind + '">' +
@@ -699,6 +832,14 @@ header.top { display: none !important }
     const nuveiField = grid.querySelector('#ipsiNuvei');
     if (nuveiField) nuveiField.oninput = () => { ipsiNuvei = nuveiField.value; syncIpsiTotal(); };
 
+    /* The hints are rebuilt empty above (`hintSeed`), so anything a card was
+       saying has just been thrown away — including "still reading the
+       consultant names", which must not vanish while the read is still going.
+       Put them back. This is the last thing renderSource does, so it runs
+       after every path that rebuilds the grid. */
+    loaded().forEach(paintHint);
+    paintFigures();
+
     // Drop on a tile loads THAT tile's report — the card decides the parser,
     // never the file's contents.
     grid.querySelectorAll('.dz[data-kind]').forEach((dz) => {
@@ -710,6 +851,40 @@ header.top { display: none !important }
       }));
       dz.addEventListener('drop', (ev) => load(ev.dataTransfer.files[0], dz.dataset.kind));
     });
+  }
+
+  /* What a card is currently saying, kept so a repaint can put it back.
+     Two things want to speak on the same line — "still reading Consultant and
+     Shop" and "the balances are blank" — and before this the second silently
+     replaced the first, so the spinner vanished while it was still reading.
+     They stack now, and whatever the card was already saying stays underneath. */
+  const cardNote = {};
+
+  /* Everything a card has to say, in one repaint.
+     Nothing is written when there is nothing to say, so a transient message —
+     "Reading mint.xlsx…", a rejection — is not wiped by an unrelated repaint. */
+  /* The missing-figures warning — ON THE CARD, but in its OWN element.
+     It used to share `.rc-hint` with the "still reading the consultant names"
+     line and the two overwrote each other; moving it to the page header fixed
+     that and broke the layout instead, because the header is a flex row and a
+     full-width child forces a break in it. Its own div inside the card is both:
+     a separate line that cannot clobber the hint, and nothing the header has to
+     make room for. */
+  function paintFigures() {
+    const gaps = missingFigures();
+    const html = gaps ? '<span style="color:var(--err)">' + esc(gaps) + '</span>' : '';
+    document.querySelectorAll('.rc-figs').forEach((el) => { el.innerHTML = html; });
+  }
+
+  function paintHint(kind) {
+    if (!kind || kind === 'both') return;
+    const lines = [];
+    if (enriching[kind]) {
+      lines.push('<span class="rc-spin"></span>Reading the consultant and shop names from Tramada — ' +
+        '<strong>do not press Start run until they have been matched.</strong>');
+    }
+    if (cardNote[kind]) lines.push(cardNote[kind]);
+    if (lines.length) hint(kind, lines.join('<br>'));
   }
 
   function hint(kind, html) {
@@ -777,6 +952,34 @@ header.top { display: none !important }
 
   /* `active` is whichever single report is loaded. With none or with two there
      is nothing to run, and results belong to no one. */
+  /* Reports whose Consultant and Shop are still being read off Tramada.
+     The upload is answered before that read starts (see server.js `enrich`), so
+     between those two moments the file is on screen and its two columns are
+     not filled in yet. Start run is held for that window — a run started inside
+     it would read the same fields off the same bookings and the two passes
+     would race to write the same cells. */
+  const enriching = {};
+
+  /* The three header fields a bank-statement run cannot proceed without.
+     Checked HERE as well as in `start()` so it is visible before the button is
+     pressed rather than after: a person filling in a card should be told what is
+     missing while they are looking at it, not when they try to run.
+     `start()` keeps its own copy — that one guards the run, this one guards the
+     button, and the run must not depend on a button being drawn correctly. */
+  function missingFigures() {
+    if (!active || active === 'ipsi') return '';
+    const date = ($('#rcDate') || {}).value, op = ($('#rcOpening') || {}).value,
+          cl = ($('#rcClosing') || {}).value;
+    const gaps = [];
+    if (!date) gaps.push('statement date');
+    if (!op) gaps.push('opening balance');
+    if (!cl) gaps.push('closing balance');
+    if (!gaps.length) return '';
+    const last = gaps.pop();
+    return (gaps.length ? gaps.join(', ') + ' and ' + last : last) +
+      (gaps.length ? ' are' : ' is') + ' needed before a run.';
+  }
+
   function syncActive() {
     const on = loaded();
     const invalidCombo = ipsiCombo();
@@ -787,7 +990,17 @@ header.top { display: none !important }
     rows = on.reduce((a, k) => a.concat(source[k].rows || []), []);
     if (!on.length) results = [];
     const run = $('#startRun');
-    if (run) run.disabled = !on.length || running || invalidCombo || ipsiBad;
+    const busy = Object.keys(enriching).some((k) => enriching[k]);
+    const gaps = missingFigures();
+    /* The button is held for the CONSULTANT read, not for the missing figures.
+       A blank balance is told to the person and left to them — they may be
+       about to type it — whereas a run started mid-read would have two passes
+       writing the same two cells. So `gaps` is said out loud below and does not
+       disable anything; `start()` still refuses the run if they are still blank
+       when it is pressed. */
+    if (run) run.disabled = !on.length || running || invalidCombo || ipsiBad || busy;
+    paintFigures();
+    if (!invalidCombo) on.forEach(paintHint);
   }
 
   /* Re-checks BR01 on every keystroke in the NUVEI field WITHOUT a full
@@ -854,10 +1067,11 @@ header.top { display: none !important }
     // Skipped rows are said out loud. A quietly shortened file reads as "that
     // was all there was".
     if (skipped && skipped.length) {
-      hint(kind, '<span style="color:var(--warn,#8a6d00)">Skipped ' +
+      cardNote[kind] = ('<span style="color:var(--warn,#8a6d00)">Skipped ' +
         (skipped.length === 1 ? 'line ' : 'lines ') + skipped.join(', ') + ' — ' +
         (checksOnly(kind) ? 'missing a reference or amount, or the transaction did not succeed.'
                          : 'missing a reference, booking number or amount.') + '</span>');
+      paintHint(kind);
     }
   }
 
@@ -1468,7 +1682,8 @@ header.top { display: none !important }
      there), so the one piece of it the page genuinely needs is reimplemented
      here: show one screen, light the matching sidebar item and rail button,
      retitle the top bar. Same class names, same behaviour, no demo state. */
-  const TITLES = { overview: 'Run overview', sources: 'Sources & upload', inbox: 'Reconciliation inbox' };
+  const TITLES = { overview: 'Run overview', sources: 'Sources & upload', inbox: 'Reconciliation inbox',
+    suppliers: 'Supplier cheat sheet' };
 
   function go(screen) {
     document.querySelectorAll('.screen').forEach((s) => s.classList.toggle('on', s.id === 's-' + screen));
@@ -1602,9 +1817,39 @@ header.top { display: none !important }
          and for BPay each one already holds its BR01 remark. Passing the rows
          through is what puts a line with no booking number back in front of
          Finance instead of quietly shortening the file. */
+      if (m.enriching) enriching[kind] = true;
       accept(kind, f, m.rows, (m.problems || []).map((p) => p.line),
         (m.problems || []).map((p) => p.row).filter(Boolean),
         m.columns || [], m.format || 'csv');
+      if (m.enriching) {
+        syncActive();
+      }
+      return;
+    }
+    if (m.type === 'recon_enriched') {
+      /* The same rows back with two more cells filled. Merged by LINE rather
+         than by position: `problems` rows travel in this frame too, and they do
+         not sit at the same index in `source[kind].rows`. */
+      const kind = SOURCES[m.source] ? m.source : 'bpay';
+      enriching[kind] = false;
+      const src = source[kind];
+      if (src && Array.isArray(m.rows)) {
+        const byLine = {};
+        m.rows.forEach((r) => { if (r && r.line != null) byLine[r.line] = r; });
+        (src.rows || []).forEach((r) => {
+          const got = byLine[r.line];
+          if (!got) return;
+          if (got.consultant) r.consultant = got.consultant;
+          if (got.shop) r.shop = got.shop;
+        });
+      }
+      cardNote[kind] = m.skipped
+        ? '<span style="color:var(--warn,#8a6d00)">Consultant and Shop were left blank — ' + esc(m.skipped) + '</span>'
+        : 'Consultant and Shop filled in for ' + m.filled + ' of ' + m.attempted + ' row(s).';
+      paintHint(kind);
+      results = allResults();
+      syncActive();
+      render();
       return;
     }
     if (m.type === 'recon_row') {
@@ -1624,7 +1869,11 @@ header.top { display: none !important }
     } else if (m.type === 'cheat_sheet') {
       if (m.error) { csHint(m.error, true); return; }
       cheatSheet = m;
-      renderCheatSheets();
+      // An upload replaces the whole sheet, so the table is rebuilt from it.
+      // An edit's own reply is just this same edit coming back — the table
+      // already shows it, and rebuilding would tear out whatever field the
+      // person has since moved on to (see `refreshCheatMeta`'s comment).
+      if (m.via === 'upload') renderCheatSheetPane(); else refreshCheatMeta();
       csHint('saved');
       note('Supplier cheat sheet updated — ' +
         m.pairs.length + ' supplier' + (m.pairs.length === 1 ? '' : 's') +
@@ -2012,7 +2261,7 @@ header.top { display: none !important }
     // s-overview joined these once its last invented panel was wired. The
     // banner is not decoration — it is a claim, and it stops being true the
     // moment every figure on a screen comes from a run.
-    const WIRED = ['s-sources', 's-inbox', 's-overview'];
+    const WIRED = ['s-sources', 's-inbox', 's-overview', 's-suppliers'];
     for (const sec of document.querySelectorAll('section.screen')) {
       if (WIRED.includes(sec.id)) continue;
       if (sec.querySelector('.sample-tag')) continue;
@@ -2155,7 +2404,7 @@ header.top { display: none !important }
   document.addEventListener('DOMContentLoaded', () => {
     // renderOverview first: the overview is wired now, and markSamples is only
     // allowed to be right about screens that still are not.
-    mountCheatSheets();
+    mountCheatSheetScreen();
     mountNav(); mountSources(); renderOverview(); markSamples(); hideUnwired();
     render(); connect(); loadOverview(); loadCheatSheets(); loadIpsiPending();
     /* Open on Sources & upload, not on Run overview.

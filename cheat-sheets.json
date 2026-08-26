@@ -1,0 +1,222 @@
+{
+  "suppliers": {
+    "source": "suppliers",
+    "name": "Supplier Cheat Sheet UPDATED.xlsx",
+    "uploadedAt": "2026-08-26T05:02:23.722Z",
+    "pairs": [
+      {
+        "from": "Metro 1 Travel and Technology Pty Ltd",
+        "to": "Rail On-line",
+        "try": [
+          "Rail On-line"
+        ]
+      },
+      {
+        "from": "Websource Pacific Pty Limited",
+        "to": "Stuba",
+        "try": [
+          "Stuba"
+        ]
+      },
+      {
+        "from": "Great Southern Rail Travel Pty Ltd",
+        "to": "Journey Beyond (JBRE) / Great Southern Rail",
+        "try": [
+          "Journey Beyond (JBRE) / Great Southern Rail",
+          "Journey Beyond (JBRE)",
+          "Great Southern Rail"
+        ]
+      },
+      {
+        "from": "Circuit Travel Pty Ltd",
+        "to": "Cosmos Tours, Globus, Avalon Waterways",
+        "try": [
+          "Cosmos Tours, Globus, Avalon Waterways",
+          "Cosmos Tours",
+          "Globus",
+          "Avalon Waterways"
+        ]
+      },
+      {
+        "from": "Wave Hospitality Group Pty Ltd",
+        "to": "Omniche",
+        "try": [
+          "Omniche"
+        ]
+      },
+      {
+        "from": "ITC Pacific Pty Ltd",
+        "to": "Sno'n'Ski",
+        "try": [
+          "Sno'n'Ski"
+        ]
+      },
+      {
+        "from": "Australian Pacific Tours - APT",
+        "to": "TravelMarvel",
+        "try": [
+          "TravelMarvel"
+        ]
+      },
+      {
+        "from": "RCL CRUISES LTD",
+        "to": "Royal Caribbean / Celebrity Cruises",
+        "try": [
+          "Royal Caribbean / Celebrity Cruises",
+          "Royal Caribbean",
+          "Celebrity Cruises"
+        ]
+      },
+      {
+        "from": "Top Deck Tours Pty Ltd",
+        "to": "Backroads",
+        "try": [
+          "Backroads"
+        ]
+      },
+      {
+        "from": "Kangaroo Island Sealink Pty Ltd",
+        "to": "Sealink",
+        "try": [
+          "Sealink"
+        ]
+      },
+      {
+        "from": "Trafalgar Tours",
+        "to": "Costsaver / Luxury Gold",
+        "try": [
+          "Costsaver / Luxury Gold",
+          "Costsaver",
+          "Luxury Gold"
+        ]
+      },
+      {
+        "from": "G'Day Rail",
+        "to": "Vintage Rail Journeys",
+        "try": [
+          "Vintage Rail Journeys"
+        ]
+      },
+      {
+        "from": "the Travel Junction",
+        "to": "Infinity Holidays",
+        "try": [
+          "Infinity Holidays"
+        ]
+      },
+      {
+        "from": "Southern Cross Safaris Australia Pty Ltd",
+        "to": "Bench International",
+        "try": [
+          "Bench International"
+        ]
+      },
+      {
+        "from": "SP Cruises OPCP Limited",
+        "to": "Azamara Cruises",
+        "try": [
+          "Azamara Cruises"
+        ]
+      },
+      {
+        "from": "Great Canadian Railtour Company Ltd",
+        "to": "Rocky Mountaineer",
+        "try": [
+          "Rocky Mountaineer"
+        ]
+      },
+      {
+        "from": "Emerald Cruises",
+        "to": "Scenic Tours",
+        "try": [
+          "Scenic Tours"
+        ]
+      },
+      {
+        "from": "Magic Tours International P/L",
+        "to": "Europe Holidays",
+        "try": [
+          "Europe Holidays"
+        ]
+      },
+      {
+        "from": "Gregory John Wilson",
+        "to": "Wide Eye Tours",
+        "try": [
+          "Wide Eye Tours"
+        ]
+      },
+      {
+        "from": "NCL Cruises",
+        "to": "Oceania Cruises",
+        "try": [
+          "Oceania Cruises"
+        ]
+      },
+      {
+        "from": "Viva Holidays",
+        "to": "My Way Travel & Events Pty Ltd",
+        "try": [
+          "My Way Travel & Events Pty Ltd"
+        ]
+      },
+      {
+        "from": "Contiki",
+        "to": "Busabout",
+        "try": [
+          "Busabout"
+        ]
+      },
+      {
+        "from": "H.D.R. International Pty Ltd",
+        "to": "South America Tourism Office",
+        "try": [
+          "South America Tourism Office"
+        ]
+      },
+      {
+        "from": "HX AU Pty Ltd",
+        "to": "Hurtigruten",
+        "try": [
+          "Hurtigruten"
+        ]
+      },
+      {
+        "from": "Yankee Leisure Group Pty Ltd (Railbookers)",
+        "to": "Wendy Wu",
+        "try": [
+          "Wendy Wu"
+        ]
+      },
+      {
+        "from": "Aurora Travel Pty Ltd",
+        "to": "Aurora Expeditions",
+        "try": [
+          "Aurora Expeditions"
+        ]
+      },
+      {
+        "from": "JTB Australia Pty Ltd",
+        "to": "Japan Travel Bureau",
+        "try": [
+          "Japan Travel Bureau"
+        ]
+      },
+      {
+        "from": "World Expeditions Travel Group Pty Ltd",
+        "to": "Utracks",
+        "try": [
+          "Utracks"
+        ]
+      },
+      {
+        "from": "RCL CRUISES LTD",
+        "to": "ROYAL CARIBBEAN INTERNATIONAL",
+        "try": [
+          "ROYAL CARIBBEAN INTERNATIONAL"
+        ]
+      }
+    ],
+    "skipped": 0
+  }
+}

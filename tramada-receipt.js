@@ -1396,6 +1396,15 @@ module.exports = {
   resolveTxnType,
   allocateSegments,
   readBookingReceipts,
+  /* Step 7's consultant (`Cons1`) lives on the booking summary and nowhere else,
+     so a caller that wants Consultant WITHOUT raising a receipt — filling the
+     BPay report's Consultant column ahead of the run — had no way to reach it
+     and would have had to re-scrape the summary itself. That is the copy-of-the-
+     thing-being-probed trap `tramada-payment.js` names in its own exports: a
+     second scraper succeeds exactly where the real one fails, and the label
+     regex here is the part that has already been wrong twice ("Debtors" matching
+     "Debtor", a `<select>` rendering as all of its options). One reader. */
+  getBookingDetails,
   getBookingBranch,
   centsOf,
   TXN_TYPE,
