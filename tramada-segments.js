@@ -274,6 +274,30 @@ async function readCreditorOptions(page, selector, typed) {
 }
 
 /**
+ * Did an autocomplete pick actually commit?  [fix: 26-08-2026]
+ *
+ * The old test was `currentValue !== typed` — a pick counted only if the field
+ * TEXT changed from what we typed. That is true for the airline field
+ * ("QANTAS" → "QANTAS AIRWAYS(QF)") but WRONG for a city-CODE field, whose
+ * committed value IS the code: type "MEL", pick Melbourne, the box still reads
+ * "MEL". So every flight died at `#departureCityCode: could not select "MEL"
+ * (no click registered)` even though the click had worked, and
+ * `make-fixtures bpay` could not create a single booking.
+ *
+ * An unchanged value is a failure ONLY when no dropdown row was clicked. If a
+ * real row was found and clicked and the box is non-empty, a value equal to the
+ * typed code is the expected committed state — accept it. A genuine non-commit
+ * still cannot file a bad segment: the city is a required field and
+ * saveSegmentForm/assertSaved reject an uncommitted one before it saves.
+ */
+function autocompletePickResult(typed, currentValue, suggestionClicked) {
+  const v = String(currentValue == null ? "" : currentValue).trim();
+  if (!v) return null; // empty box → nothing was selected
+  if (v.toUpperCase() !== String(typed).trim().toUpperCase()) return v; // changed → committed
+  return suggestionClicked ? v : null; // unchanged: a pick only if a row was clicked
+}
+
+/**
  * Fill a Tramada autocomplete field reliably.
  *
  * Per attempt (max 2, re-typing between attempts):
@@ -296,11 +320,8 @@ async function pickAutocomplete(page, selector, value) {
   const first = el.first();
   const typed = String(value).trim().toUpperCase();
 
-  // The pick "registered" iff the field no longer holds just the raw typed text.
-  const registered = async () => {
-    const v = ((await first.inputValue().catch(() => "")) || "").trim();
-    return v && v.toUpperCase() !== typed ? v : null;
-  };
+  const fieldValue = async () => ((await first.inputValue().catch(() => "")) || "").trim();
+  let sawMatch = false; // did a real dropdown row ever appear for this value?
 
   for (let attempt = 1; attempt <= 2; attempt++) {
     await first.click();
@@ -326,15 +347,20 @@ async function pickAutocomplete(page, selector, value) {
       // No dropdown — maybe an inline-expanding field (Airline). Blur and check.
       await first.evaluate((n) => n.blur()).catch(() => {});
       await sleep(800);
-      const v = await registered();
-      if (v) return v; // widget expanded it itself, e.g. "QANTAS" → "QANTAS AIRWAYS(QF)"
+      // No row was clicked, so only a CHANGED value counts (suggestionClicked=false):
+      // "QANTAS" → "QANTAS AIRWAYS(QF)" passes; a field that ignored us does not.
+      const v = autocompletePickResult(typed, await fieldValue(), false);
+      if (v) return v;
       continue; // re-type and try again
     }
+    sawMatch = true;
 
     // (a) Synthetic in-page click — the method that worked for city/supplier.
+    // Accept only a CHANGED value here (suggestionClicked=false) so a code-field
+    // whose value stays "MEL" still falls through to the stronger real click.
     await page.evaluate(_findSuggestion, { sel: selector, raw: String(value), doClick: true }).catch(() => null);
     await sleep(500);
-    let v = await registered();
+    let v = autocompletePickResult(typed, await fieldValue(), false);
     if (v) return v;
 
     // (b) Real mouse click at FRESH coordinates — needed by the Creditor widget.
@@ -345,12 +371,20 @@ async function pickAutocomplete(page, selector, value) {
     await sleep(150);
     await page.mouse.click(fresh.x, fresh.y);
     await sleep(600);
-    v = await registered();
+    // A real dropdown row has now been found and clicked (synthetic + real), so a
+    // value that still equals the typed code IS a code-field's committed state —
+    // accept it (suggestionClicked=true). This is the MEL fix; assertSaved is the
+    // backstop if it somehow did not commit.
+    v = autocompletePickResult(typed, await fieldValue(), true);
     if (v) return v;
-    // Neither click registered — loop re-types and tries once more.
+    // Nothing took — loop re-types and tries once more.
   }
 
-  throw new Error(`Autocomplete ${selector}: could not select "${value}" (no click registered after 2 attempts)`);
+  const finalVal = await fieldValue();
+  throw new Error(
+    `Autocomplete ${selector}: could not select "${value}" ` +
+      `(field holds "${finalVal}"; ${sawMatch ? "a dropdown row appeared but the pick never took" : "no dropdown row ever appeared"})`
+  );
 }
 
 // Set a date input the PROVEN way: native setter + input/change/blur events
@@ -2145,6 +2179,8 @@ module.exports = {
   runAddCostings,
   closeSegmentPage,
   runAddCostingLines,
+  // pure helper (offline-testable — see test/test-autocomplete-pick.js)
+  autocompletePickResult,
   // page-level (for composing on a shared page / testing)
   addPassenger,
   addFlightSegment,
