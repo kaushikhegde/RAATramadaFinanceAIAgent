@@ -176,7 +176,19 @@ async function tramadaIsAuthed(page) {
 async function tramadaIsAuthedQuietly(page) {
   try {
     const res = await page.request.get(`${TRAMADA_BASE_URL}/home/home.htm`, { timeout: 15000 });
-    return !res.url().includes("login.htm");
+    // The URL is not the answer, for the same reason tramadaIsAuthed above stops
+    // trusting it: measured 25-08-2026, signed out this GET comes back 200 with
+    // the address still .../home/home.htm and the LOGIN FORM in the body — no
+    // redirect to login.htm. A url-only check read that as "signed in", so the
+    // wait loop's confirm-navigation fired every three seconds and reloaded the
+    // login form under the human, wiping the password before it could be typed.
+    // So read the BODY the way tramadaIsAuthed reads the DOM: a password field
+    // or the login form means NOT signed in, whatever the address bar says.
+    if (res.url().includes("login.htm")) return false;
+    const body = await res.text();
+    const showingLogin =
+      /type=["']?password|name=["']?password|loginForm_login|action=["'][^"']*login\.htm/i.test(body);
+    return !showingLogin;
   } catch {
     // A probe that could not run has not proved anything — least of all that
     // somebody is signed in (CLAUDE.md §6).

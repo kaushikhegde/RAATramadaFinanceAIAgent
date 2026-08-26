@@ -1,0 +1,90 @@
+<!-- VERBATIM capture of GET /ttms/raatravelsandbox/home/home.htm while SIGNED OUT.
+     Source: raatravelsandbox TTMS, via page.request.get(), 25-08-2026.
+     The point of keeping it: the response is 200 with the address bar still on
+     .../home/home.htm (NOT redirected to login.htm) yet the body IS the login
+     form. tramadaIsAuthedQuietly used to decide on the URL alone and so read
+     this as "signed in", which made ensureLoggedIn navigate on every poll and
+     reload the login form under the human — see test/test-login-frames.js. -->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+		<meta http-equiv="Cache-Control" content="no-cache, must-revalidate, proxy-revalidate">
+		<meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1" />
+		<meta data-key="context-path" data-value="/ttms/raatravelsandbox"/>
+		<title>Tramada - Login</title> <link type="text/css" rel="stylesheet" href="/ttms/raatravelsandbox/click/control.css"/>
+<link rel="stylesheet" type="text/css" href="/ttms/raatravelsandbox/css/picasso.css"/>
+<link rel="stylesheet" type="text/css" href="/ttms/raatravelsandbox/css/icons.css"/>
+		<script type="text/javascript" src="/ttms/raatravelsandbox/js/jquery-1.2.6.min.js"></script>
+		<script type="text/javascript" src="/ttms/raatravelsandbox/click/control.js"></script>
+<script type="text/javascript" src="/ttms/raatravelsandbox/js/picasso-common.js"></script>
+<script type="text/javascript" src="/ttms/raatravelsandbox/js/readonly-fix.js"></script><script type="text/javascript" src="/ttms/raatravelsandbox/js/tinymce/tinymce.min.js"></script>
+<script type="text/javascript" src="/ttms/raatravelsandbox/js/ui/control/html-text-area.js"></script><script type="text/javascript" src="/ttms/raatravelsandbox/js/click-common.js"></script>
+<script type="text/javascript" src="/ttms/raatravelsandbox/js/ui/control/control-events.js"></script>
+		<script type="text/javascript" src="/ttms/raatravelsandbox/js/quipt.js"></script>
+		<script type="text/javascript" src="/ttms/raatravelsandbox/js/login.js"></script>
+		<link rel="stylesheet" type="text/css"
+			href="/ttms/raatravelsandbox/css/stylish-select.css" />
+		<script type="text/javascript"
+			src="/ttms/raatravelsandbox/js/jquery.stylish-select.js"></script>
+	</head>
+	<body>
+
+		<div id="site-login-container-form-errors"
+			class="site-login-container-form-errors">
+			 		 	 	<div id="loginForm-form">
+	 	 		</div>
+		</div>
+
+		<div id="site-login-container" class="site-login-container hidden">
+
+			<form method="post" name="loginForm" id="loginForm" action="/ttms/raatravelsandbox/login.htm" data-field-type="ctrl-type-HtmlForm" autocomplete="off" class="common-form">
+<input type="hidden" name="form_name" id="loginForm_form_name" value="loginForm"/>
+<input type="hidden" name="userURL" id="loginForm_userURL" value="/ttms/raatravelsandbox/home/home.htm"/>
+
+
+			<fieldset>
+
+				<!-- To disable Google Chrome autofill feature  -->
+				<input type="text" name="fakeusername" id="fakeusername" class="text visibility-hidden-height-0px-width-0px-position-absolute" />
+				<input value="" size="20" maxlength="255" type="password" name="fakepassword0" id="fakepassword0"  class="text visibility-hidden-height-0px-width-0px-position-absolute" />
+
+				<dl class="edit login-username">
+					<dd>
+							<label for="username">
+					<b>User Name&nbsp;</b>
+			</label>
+					</dd>
+					<dt class="input">
+						<input type="text" name="username" id="username" value="" size="20" data-field-type="ctrl-type-TextField" class="text"/>
+					</dt>
+				</dl>
+				<dl class="edit login-password">
+					<dd>
+							<label for="password">
+					<b>Password&nbsp;</b>
+			</label>
+					</dd>
+					<dt class="input">
+						<input type="password" name="password" id="loginForm_password" value="" size="20" data-field-type="ctrl-type-PasswordField" class="text"/>
+					</dt>
+				</dl>
+								<div class="login-link-container">
+					<dl class="link">
+						<dd>
+							<a href="/ttms/raatravelsandbox/reset-password-request.htm?userType=AGENCY_USER" data-field-type="ctrl-type-PageLink">Forgot your password</a>
+						</dd>
+					</dl>
+				</div>
+				<div class="login-button-container">
+					<dl class="button">
+						<dd>
+							<input type="submit" name="login" id="loginForm_login" value="Login" data-field-type="ctrl-type-Submit" class="button"/>
+						</dd>
+					</dl>
+				</div>
+			</fieldset>
+			</form>
+
+		</div>
+</body>
+</html>

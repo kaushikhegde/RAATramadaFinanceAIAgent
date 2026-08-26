@@ -90,6 +90,47 @@ for (const f of REACHABLE) {
     "a goto inside the wait reloads the login form and wipes what the human typed");
 }
 
+/* THE RELOAD CAME BACK ON 25-08-2026, and this is why. The quiet probe decided
+   whether you were signed in from the URL alone: `!res.url().includes("login.htm")`.
+   But this Tramada serves the LOGIN FORM at the protected .../home/home.htm URL
+   when signed out — a 200, address bar unchanged, no redirect. So url-only read
+   a logged-out page as signed in, ensureLoggedIn fell into its confirm-navigation
+   on every poll, and the login form reloaded every three seconds under whoever
+   was trying to type a password. The fix reads the response BODY. These check no
+   copy drifts back to trusting the URL, and — against the captured bytes — that
+   the body check actually fires on the page that fooled the old one. */
+console.log("\nthe quiet auth probe reads the body, not just the URL");
+for (const f of REACHABLE) {
+  const src = read(f);
+  const m = src.match(/async function tramadaIsAuthedQuietly\s*\([^)]*\)\s*\{[\s\S]*?\n\}/);
+  ok(`${f}: has tramadaIsAuthedQuietly`, !!m);
+  if (!m) continue;
+  const q = m[0];
+  ok(`${f}: quiet probe reads the response body`, /\.text\(\)/.test(q),
+    "decides on res.url() alone — a login form served at the protected URL then reads as signed in and reloads every poll");
+  ok(`${f}: quiet probe looks for the login form`, /password|loginForm_login|login\.htm/i.test(q));
+}
+
+/* Behaviour, against the exact bytes that caused it — a 200 whose URL never says
+   login.htm, so the fix has to catch it by CONTENT. The regex tested is the one
+   the code runs, lifted out of recon-run.js, so loosening it there breaks here. */
+console.log("\nthe fix classifies the real logged-out page as a login screen");
+const loggedOut = read("fixtures/tramada-home-loggedout.html");
+const reSrc = read("recon-run.js")
+  .match(/const showingLogin\s*=\s*\n?\s*(\/[\s\S]*?\/[a-z]*)\.test\(body\)/);
+ok("the login-detection regex was found in recon-run.js", !!reSrc);
+if (reSrc) {
+  const re = eval(reSrc[1]); // the literal from the source, evaluated as itself
+  ok("it matches the captured logged-out home.htm (so: NOT signed in)", re.test(loggedOut),
+    "the quiet probe would call a page that is plainly the login form 'signed in'");
+  // And it must NOT fire on a page with no login form — otherwise every authed
+  // poll reads as logged out and the run waits five minutes for a login already
+  // done. "logout.htm" deliberately included: it must not be mistaken for login.
+  const dashboard = '<html><body><a href="/ttms/raatravelsandbox/logout.htm">Log out</a><div id="home-dashboard">Bookings</div></body></html>';
+  ok("it does NOT match a dashboard with no login form (so: signed in)", !re.test(dashboard),
+    "a logged-in home page is being read as the login screen");
+}
+
 console.log("\nthe server sends both, and the page listens for both");
 const server = read("server.js");
 ok("server.js builds a recon_login frame", /type: "recon_login"/.test(server));

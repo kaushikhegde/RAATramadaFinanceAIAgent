@@ -1294,9 +1294,25 @@ async function addPassenger(page, bookingNo, { source = "This Client" } = {}) {
   // A passenger-profile confirm form (pre-filled from the client) may appear — save it.
   const save = page.locator("#save");
   if (await save.count()) {
-    await save.first().click();
-    await page.waitForLoadState("domcontentloaded");
+    /* NO AUTO-WAIT FOR A NAVIGATION THAT MAY NOT COME.
+     *
+     * `click()` waits for "scheduled navigations to finish" before it returns.
+     * This form does not always navigate: a validation error re-renders it in
+     * place, nothing is scheduled, and the click sits there until Playwright
+     * gives up 30 seconds later with a call log instead of a reason. Measured
+     * 24-08-2026 on booking 13712 — the run died at "Adding passenger..." and
+     * the only thing it could say was "Timeout 30000ms exceeded".
+     *
+     * So: click without the auto-wait, allow for a navigation if there is one,
+     * then ASK THE PAGE what happened. `readSaveErrors` is already here for
+     * exactly this and was simply never used on this form. */
+    await save.first().click({ noWaitAfter: true });
+    await page.waitForLoadState("domcontentloaded").catch(() => {});
     await sleep(800);
+    const errs = await readSaveErrors(page);
+    if (errs.length) {
+      throw new Error(`The passenger profile would not save: ${errs.join("; ")}`);
+    }
   }
   return { source };
 }

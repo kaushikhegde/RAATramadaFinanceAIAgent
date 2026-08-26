@@ -56,7 +56,17 @@ async function openBrowser() {
 
 async function tramadaIsAuthed(page) {
   await page.goto(`${TRAMADA_BASE_URL}/home/home.htm`, { waitUntil: "domcontentloaded" }).catch(() => {});
-  return !page.url().includes("login.htm");
+  // The URL alone is not the answer. Measured 25-08-2026: signed OUT, this
+  // instance serves the LOGIN FORM at the protected .../home/home.htm URL — no
+  // redirect to login.htm, the address bar stays put. A url-only check reads
+  // that as signed in, ensureLoggedIn returns, and every row of the run then
+  // fails while nobody is ever asked to sign in. So the presence of a password
+  // field is the answer — the same tightening tramada-receipt.js already made.
+  if (page.url().includes("login.htm")) return false;
+  const showingLogin = await page
+    .evaluate(() => !!document.querySelector("input[type=password], #loginForm_login"))
+    .catch(() => false);
+  return !showingLogin;
 }
 
 /* The same question as tramadaIsAuthed, asked WITHOUT touching the page.
@@ -72,7 +82,20 @@ async function tramadaIsAuthed(page) {
 async function tramadaIsAuthedQuietly(page) {
   try {
     const res = await page.request.get(`${TRAMADA_BASE_URL}/home/home.htm`, { timeout: 15000 });
-    return !res.url().includes("login.htm");
+    // The URL is not the answer. Measured 25-08-2026: signed out, this GET comes
+    // back 200 with the address still .../home/home.htm and the LOGIN FORM in
+    // the body — it never redirects to login.htm. The old url-only check read
+    // that as "signed in", so ensureLoggedIn's confirm-navigation below fired
+    // every three seconds and reloaded the login form under the human, wiping
+    // the password before it could be typed — the EXACT bug this quiet probe was
+    // added to prevent, quietly reintroduced by trusting the URL. So read the
+    // BODY the way tramadaIsAuthed reads the DOM: a password field or the login
+    // form means NOT signed in, whatever the address bar says.
+    if (res.url().includes("login.htm")) return false;
+    const body = await res.text();
+    const showingLogin =
+      /type=["']?password|name=["']?password|loginForm_login|action=["'][^"']*login\.htm/i.test(body);
+    return !showingLogin;
   } catch {
     // A probe that could not run has not proved anything — least of all that
     // somebody is signed in (CLAUDE.md §6).
