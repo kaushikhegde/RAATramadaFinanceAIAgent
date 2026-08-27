@@ -1354,17 +1354,33 @@ async function fileReceipts(results, { auth, cb, say, row }) {
       }
 
       /* THE BOOKING CANNOT TAKE A DEBTOR PAYMENT RECEIPT.
-         Its client is a retail account, not a debtor one, so `#receiptCategory`
-         offers the Client variants and nothing else. A BPay payment does not
-         belong there, so nothing is filed and the row says what was on offer
-         instead — filing it under whatever type happened to be available would
-         put the money somewhere the reconcile filter never looks. */
+
+         WHY, in RAA's own words (confirmed 27-Aug-2026): the option depends on
+         the client, and THE CLIENT HAS TO BE A RETAIL CLIENT. Create the
+         booking against a retail client and "Debtor Payment Receipt" appears
+         in `#receiptCategory`; create it against anything else and the form
+         offers the Client variants and nothing else.
+
+         The comment that stood here said the reverse — "its client is a retail
+         account, not a debtor one" — which reads as retail being the PROBLEM.
+         It is the requirement. That inversion is how `BPAY_RECEIPT.label` got
+         changed to "Client Payment Receipt" once already, on the evidence of
+         sandbox bookings that simply had the wrong client on them.
+
+         So this is NOT a signal to change the receipt type. It is a booking
+         set up against the wrong client. Nothing is filed, because filing a
+         BPay payment under whatever type happened to be on offer would put the
+         money somewhere the reconcile filter never looks. */
       if (probe && probe.skipped && probe.reason === "receipt category unavailable") {
         r.allocation = "Not allocated";
         r.remark = core.REMARKS.noDebtorReceipt;
+        /* Says the CAUSE, not just the symptom. "Debtor Payment Receipt not
+           available" sends someone looking for a missing dropdown option; the
+           option is not missing, the booking is on the wrong client. */
         r.why = `no receipt raised — booking ${r.bookingNo} offers ` +
           `${(probe.offered || []).map((x) => `"${x}"`).join(", ") || "no receipt types"} ` +
-          `but not "${core.BPAY_RECEIPT.label}"`;
+          `but not "${core.BPAY_RECEIPT.label}". That option only appears when the ` +
+          `booking's client is a Retail Client (${core.RETAIL_DEBTOR}) — check the client on this booking.`;
         r.noReceipt = true;
         row(r.n, { allocation: r.allocation, remark: r.remark, why: r.why,
           consultant: r.consultant, shop: r.shop });
@@ -1759,7 +1775,10 @@ async function runCombinedReconciliation(o = {}) {
   // Several reports on one page: no filter — see filterFor().
   const doFilter = filterFor(true);
   const byReport = o.byReport || {};
-  const order = Object.keys(core.REPORTS).filter((k) => (byReport[k] || []).length);
+  /* RUN_ORDER, not Object.keys(REPORTS) — BPay first is a rule RAA stated, so
+     it is written down in one place and tested, rather than being a property of
+     the order somebody typed an object literal in. See recon-core.js. */
+  const order = core.RUN_ORDER.filter((k) => (byReport[k] || []).length);
   const results = order
     .flatMap((k) => byReport[k].map((r) => ({ ...r, src: k })))
     .map((r, i) => ({ ...r, n: i + 1 }));

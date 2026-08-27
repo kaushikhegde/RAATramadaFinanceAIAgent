@@ -158,7 +158,18 @@ const CSV_DIR = path.resolve(valueOf("--out-dir", path.join(__dirname, "..", "cs
  * `--client X` overrides it for whatever is being generated.
  */
 const CLIENT_FOR = {
-  bpay: "GRAY/MEGAN",
+  /* "GRAY/MEGAN DR" — THE " DR" IS THE WHOLE POINT AND IT WAS MISSING.
+     `GRAY/MEGAN` and `GRAY/MEGAN DR` are two different clients in the sandbox.
+     The first is a retail account; only the second is a debtor account, and the
+     account type is what decides `#receiptCategory` (§4d of the field map).
+     Verified live 27-Aug-2026:
+       booking 13703, client GRAY/MEGAN     → Client Payment Receipt, and no Debtor variant
+       booking 13115, client GRAY/MEGAN DR  → Debtor Payment Receipt
+     With the suffix dropped, every BPay fixture was built on a client that
+     cannot take the receipt BPay files, so a correct run reported "Debtor
+     Payment Receipt not available" on all three rows and filed nothing —
+     which reads as the receipt type being wrong rather than the client. */
+  bpay: "GRAY/MEGAN DR",
   travelpay: "GRAY/SPIDER",
   mint: "GRAY/SPIDER",
   ipsi: "GRAY/SPIDER",

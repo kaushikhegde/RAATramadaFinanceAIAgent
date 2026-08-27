@@ -958,14 +958,35 @@ function daysBefore(value, days) {
 function mapColumns(headers, spec, fallbacks) {
   const hs = (headers || []).map((h) =>
     String(h == null ? "" : h).replace(/\s+/g, " ").trim().toLowerCase());
+  /* SPACES IN A HEADING ARE NOT PART OF THE HEADING.
+   *
+   * TravelPay's standard template writes them closed up — `PaymentReference`,
+   * `ProcessedAmount` — while the spec here spells them open, and the two never
+   * met: "paymentreference" is not "payment reference" and does not start with
+   * it either, so the column came back -1 and the file was refused as missing a
+   * column it plainly had (POC feedback, TravelPay 02).
+   *
+   * The evidence this had been met before is three lines up in
+   * TRAVELPAY_COLUMNS: `toCompany` lists BOTH "merchantcompanyname" and
+   * "merchant company name". That is this bug, patched one column at a time.
+   * Fixing the matcher fixes it for every column of every report at once —
+   * MINT's "Transaction ID", IPSI's "Booking Number" and the rest are all one
+   * template revision away from the same thing.
+   *
+   * Tried in order, so nothing that matched before can start matching something
+   * else now: exact, then prefix, then the same two ignoring spaces. */
+  const tight = hs.map((h) => h.replace(/\s+/g, ""));
   const fb = fallbacks || {};
   const out = {};
   for (const [key, names] of Object.entries(spec || {})) {
     let idx = -1;
     for (const name of names) {
       const want = String(name).toLowerCase();
+      const wantTight = want.replace(/\s+/g, "");
       idx = hs.indexOf(want);
       if (idx < 0) idx = hs.findIndex((h) => h.startsWith(want));
+      if (idx < 0) idx = tight.indexOf(wantTight);
+      if (idx < 0) idx = tight.findIndex((h) => h.startsWith(wantTight));
       if (idx >= 0) break;
     }
     out[key] = idx >= 0 ? idx : (key in fb ? fb[key] : -1);
@@ -1911,6 +1932,50 @@ const REPORTS = {
 };
 
 /**
+ * WHAT ORDER A COMBINED RUN GOES IN — and BPay is first, deliberately.
+ *
+ * RAA's POC feedback, BPAY 01: "If more than 1 statement for different payment
+ * type is being upload (e.g. BPAY and Mint), and user hit Start run, BPAY
+ * reconciliation should start first, after it finishes, then run the next
+ * automation."
+ *
+ * That is not a preference. BPay is what CREATES the day's bank statement;
+ * Mint and TravelPay reconcile against the statement it created. Run them the
+ * other way round and the second report opens a page that does not exist yet,
+ * or worse, creates a second one for the same day.
+ *
+ * This used to be `Object.keys(REPORTS)` — the run order was whatever order
+ * somebody happened to type the REPORTS object literal in. It was correct, but
+ * only by luck: alphabetising that object, or adding a new report above `bpay`,
+ * would have silently made Mint run first. Nothing would have thrown and no
+ * test would have failed; the only symptom would have been a wrong
+ * reconciliation, found by Finance, days later.
+ *
+ * The browser has its own copy of this list in `recon-wire.html` (it numbers
+ * the rows before the server ever sees them, and `n` has to mean the same thing
+ * at both ends). `test/test-run-order.js` reads that file and fails if the two
+ * lists drift apart.
+ */
+const RUN_ORDER = ["bpay", "mint", "ipsi", "travelpay"];
+
+/* A report defined but never ordered would be dropped from every combined run
+   without a word. Caught at require time rather than at 3pm on a Friday. */
+{
+  const ordered = [...RUN_ORDER].sort().join(",");
+  const defined = Object.keys(REPORTS).sort().join(",");
+  if (ordered !== defined) {
+    throw new Error(
+      `RUN_ORDER and REPORTS disagree: RUN_ORDER has [${RUN_ORDER.join(", ")}], ` +
+      `REPORTS defines [${Object.keys(REPORTS).join(", ")}]. ` +
+      `Every report needs a place in the run order — add it to RUN_ORDER in recon-core.js.`
+    );
+  }
+  if (RUN_ORDER[0] !== "bpay") {
+    throw new Error("RUN_ORDER must start with bpay — it creates the statement the others reconcile against.");
+  }
+}
+
+/**
  * Which matcher a report reconciles with, and which column it reads.
  *
  * This lives here, once, because it was decided in two different places and
@@ -2600,9 +2665,22 @@ function checkTransactionTotal(rows, entered, opts = {}) {
  * the sentence somebody reads at 8am when the day will not start.
  */
 function noStatementMessage(source, statementDate, pages, accountLabel = "The account") {
+  /* THE MOST RECENT FIVE, and they have to actually be the most recent.
+     This was `.slice(-5)` on the list as Tramada hands it over — which is
+     NEWEST FIRST, so it took the five at the END and called them recent. A live
+     Mint run on an account with 17 statement pages reported "the most recent
+     statements are 20-03-2020 (page 5) … 29-02-2020 (page 1)": the five OLDEST,
+     from six years earlier, while pages 6-17 sat there unmentioned. Finance
+     reads that as a dead account rather than a missing day.
+
+     Sorted here rather than trusting the caller's order, because the two
+     callers reach this from different screens and only one of them controls
+     the sort. */
   const recent = (pages || [])
-    .map((p) => `${toTramadaDate(p.statementDate) || p.statementDate} (page ${p.pageNo})`)
-    .slice(-5);
+    .slice()
+    .sort((a, b) => (Number(b.pageNo) || 0) - (Number(a.pageNo) || 0))
+    .slice(0, 5)
+    .map((p) => `${toTramadaDate(p.statementDate) || p.statementDate} (page ${p.pageNo})`);
   return (
     // The first sentence is the wording RAA asked for in the POC feedback
     // (BPAY 01) and is quoted exactly; the rest is the detail that makes it
@@ -2693,7 +2771,7 @@ module.exports = {
   MINT_COLUMNS, csvGrid, parseMintRows, matchMintAgainstStatement, summariseMint,
   matchTravelPayAgainstStatement, MATCHERS, matcherFor, matchesOn, SORT_BY,
   BOOKING_RECEIPT_COLUMNS, findFiledReceipt,
-  TRAVELPAY_COLUMNS, parseTravelPayRows, serialDate, bookingFromReference, REPORTS,
+  TRAVELPAY_COLUMNS, parseTravelPayRows, serialDate, bookingFromReference, REPORTS, RUN_ORDER,
   IPSI_COLUMNS, IPSI_REMARKS, isPreAuth, parseIpsiRows, matchIpsiAgainstReceipts,
   matchIpsiAgainstPayments, filterIpsiSettlementDate, checkIpsiFileTotal, checkIpsiAllocatedTotal, summariseIpsi,
   tidyError,

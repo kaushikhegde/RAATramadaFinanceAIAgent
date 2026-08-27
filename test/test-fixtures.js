@@ -195,8 +195,23 @@ console.log("\nthe fixtures seed the type the run goes looking for");
       seeds, core.REPORTS[report].recPayType);
   }
 
-  // And the client has to be able to offer that category at all.
-  check("bpay builds under a debtor-account client", F.CLIENT_FOR.bpay, "GRAY/MEGAN");
+  /* And the client has to be able to offer that category at all.
+
+     THE " DR" SUFFIX IS LOad-BEARING. `GRAY/MEGAN` and `GRAY/MEGAN DR` are two
+     different clients: the first is a retail account, the second a debtor one,
+     and `#receiptCategory` is decided by the account type. This assertion used
+     to read `"GRAY/MEGAN"` — it pinned the wrong value and passed happily while
+     every BPay fixture was built on a client that cannot take a Debtor Payment
+     Receipt. Verified live 27-Aug-2026 on bookings 13703 (no Debtor variant)
+     and 13115 (Debtor variants only).
+
+     Asserted as the suffix rather than the whole string as well, so that
+     renaming the client keeps the rule while dropping "DR" fails. */
+  check("bpay builds under a debtor-account client", F.CLIENT_FOR.bpay, "GRAY/MEGAN DR");
+  ok("and that client code is marked as a debtor account (the DR suffix)",
+    / DR$/.test(F.CLIENT_FOR.bpay),
+    `CLIENT_FOR.bpay is "${F.CLIENT_FOR.bpay}" — without the DR suffix this is the retail client, ` +
+    `and every BPay fixture will refuse with "Debtor Payment Receipt not available"`);
   check("travelpay builds under a retail one", F.CLIENT_FOR.travelpay, "GRAY/SPIDER");
   // And the two creditor reports agree with each other, because they are the
   // same shape of job — a receipt in, a payment out, filtered to the payment.

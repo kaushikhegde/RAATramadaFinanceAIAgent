@@ -94,6 +94,21 @@ header.top { display: none !important }
     },
   };
 
+  /* THE ORDER A COMBINED RUN GOES IN — BPay first, because BPay is what creates
+     the day's bank statement and the others reconcile against it (RAA POC
+     feedback, BPAY 01).
+
+     This is the browser's copy of `RUN_ORDER` in recon-core.js. It has to be a
+     copy: this file runs in a browser and cannot require() anything, and the
+     rows are NUMBERED here, before the server has seen them. `n` is what the
+     server patches results back by — so if these two lists ever disagree, row 4
+     in this table is row 4 of a different report on the server, and every
+     result lands on the wrong line.
+
+     `test/test-run-order.js` reads this array out of this file and fails if it
+     drifts from core's. Do not reorder one without the other. */
+  const RUN_ORDER = ['bpay', 'mint', 'ipsi', 'travelpay'];
+
   const source = { bpay: null, mint: null, travelpay: null, ipsi: null };  // each: { file, rows, previewOpen }
   let active = null;              // a report key, or 'both' when more than one is loaded
 
@@ -286,25 +301,25 @@ header.top { display: none !important }
       const box = document.createElement('div');
       box.style.cssText = 'display:flex;gap:10px;align-items:flex-end';
       box.innerHTML =
-        '<div><label class="field-lbl" for="rcDate" style="margin:0 0 3px;display:block">Statement date</label>' +
-        '<input class="btn" id="rcDate" style="width:130px" value="' + dmy + '"></div>' +
-        '<div><label class="field-lbl" for="rcOpening" style="margin:0 0 3px;display:block">Opening balance</label>' +
-        '<input class="btn" id="rcOpening" style="width:130px" placeholder="0.00"></div>' +
-        '<div><label class="field-lbl" for="rcClosing" style="margin:0 0 3px;display:block">Closing balance</label>' +
-        '<input class="btn" id="rcClosing" style="width:130px" placeholder="0.00"></div>' +
+        '<div id="rcDateBox"><label class="field-lbl" for="rcDate" style="margin:0 0 3px;display:block">Statement date<span class="req" aria-hidden="true">*</span></label>' +
+        '<input class="btn" id="rcDate" aria-required="true" style="width:130px" value="' + dmy + '"></div>' +
+        '<div id="rcOpeningBox"><label class="field-lbl" for="rcOpening" style="margin:0 0 3px;display:block">Opening balance<span class="req" aria-hidden="true">*</span></label>' +
+        '<input class="btn" id="rcOpening" aria-required="true" style="width:130px" placeholder="0.00"></div>' +
+        '<div id="rcClosingBox"><label class="field-lbl" for="rcClosing" style="margin:0 0 3px;display:block">Closing balance<span class="req" aria-hidden="true">*</span></label>' +
+        '<input class="btn" id="rcClosing" aria-required="true" style="width:130px" placeholder="0.00"></div>' +
         /* MINT BR02 / TravelPay BR02 — "Total Transaction to be a required
            field in the AI Reconciliation Dashboard ... to be calculated and
            entered by a human". It is what the uploaded file's own amounts are
            added up against, and the check is reported once on the run rather
            than down every row. Shown only when one of those two reports is
            loaded, because BPay has no such rule. */
-        '<div id="rcTotalBox" style="display:none"><label class="field-lbl" for="rcTotal" style="margin:0 0 3px;display:block">Transaction total</label>' +
+        '<div id="rcTotalBox" style="display:none"><label class="field-lbl" for="rcTotal" style="margin:0 0 3px;display:block">Transaction total<span class="req" aria-hidden="true">*</span></label>' +
         /* Numbers only — this is BR01/step 3's NUVEI figure, typed by a human
            off the bank statement and compared to the cent against the file's
            own total. type=number rejects letters at the keyboard rather than
            catching a typo after the fact; step/min keep it to a plain
            non-negative amount, the same shape core.cents() already expects. */
-        '<input class="btn" id="rcTotal" type="number" step="0.01" min="0" inputmode="decimal" ' +
+        '<input class="btn" id="rcTotal" aria-required="true" type="number" step="0.01" min="0" inputmode="decimal" ' +
         'style="width:130px" placeholder="0.00"></div>' +
         /* One checkbox, called Dry run. A fourth field in the row this script
            already builds, wearing the same .btn as the three beside it. The
@@ -327,10 +342,25 @@ header.top { display: none !important }
     const note = $('#readyNote');
     if (note) {
       note.querySelector('div').innerHTML =
-        '<b>Drop the statement CSV in.</b> Start run files the receipts in Tramada immediately — ' +
-        'the preview below is the only check before it does. Tick <b>Dry run</b> and it still ' +
-        'files them and still ticks the statement page — it just stops short of pressing Done, ' +
-        'so you can look at the page before it is committed.';
+        /* POC feedback General (06) supplied this wording and it is used almost
+           verbatim — "Upload CSV file or Excel files for one or more payment
+           type/s and select 'Start Run' to reconcile in Tramada. Tick 'Dry run'
+           if you'd like to review matched transactions in Tramada before
+           reconciliation is fully processed."
+
+           ONE CLAUSE IS ADDED, and it is not decoration: a dry run STILL FILES
+           THE RECEIPTS. It holds back exactly two clicks — Done on the bank
+           statement and Issue on a merchant receipt. Read strictly, "before
+           reconciliation is fully processed" invites somebody to tick Dry run
+           expecting a rehearsal that changes nothing, and then find real
+           receipts against real bookings in Tramada. That is a sentence about
+           money on the one control that decides how much of the run is
+           permanent, so it says what the tickbox actually does. Worth putting
+           back to RAA — the wording is theirs, the caveat is the code's. */
+        '<b>Upload CSV or Excel files</b> for one or more payment types and select ' +
+        '<b>Start run</b> to reconcile in Tramada. Tick <b>Dry run</b> to review the matched ' +
+        'transactions in Tramada before reconciliation is fully processed — note that a dry ' +
+        'run still files the receipts, it stops short of committing the statement page.';
     }
 
     renderSource();
@@ -416,8 +446,16 @@ header.top { display: none !important }
   function syncTotalField() {
     const box = $('#rcTotalBox');
     if (!box) return;
-    const on = loaded().some((k) => WANTS_TOTAL.indexOf(k) >= 0);
-    box.style.display = on ? '' : 'none';
+    /* ALWAYS VISIBLE, since it moved into the card. POC feedback asks for it
+       "before the file upload like IPSI", and IPSI's NUVEI amount is on its
+       card whether or not a file has been dropped — you type the figure off the
+       bank statement first and upload second, so a field that only appears
+       after the upload is a field you meet in the wrong order.
+
+       It was hidden until MINT or TravelPay was loaded because it used to sit
+       in the page header, where an unexplained box next to the statement date
+       would have belonged to nothing. On the card it belongs to the card. */
+    box.style.display = '';
   }
 
   /* ── the supplier name cheat sheet ──
@@ -576,8 +614,8 @@ header.top { display: none !important }
 
   function ipsiNuveiField() {
     return '<div style="margin-top:8px;display:flex;align-items:center;gap:8px">' +
-      '<label class="field-lbl" for="ipsiNuvei" style="margin:0">NUVEI amount</label>' +
-      '<input class="btn" id="ipsiNuvei" type="number" step="0.01" min="0" inputmode="decimal" ' +
+      '<label class="field-lbl" for="ipsiNuvei" style="margin:0">NUVEI amount<span class="req" aria-hidden="true">*</span></label>' +
+      '<input class="btn" id="ipsiNuvei" aria-required="true" type="number" step="0.01" min="0" inputmode="decimal" ' +
       'style="width:110px" placeholder="0.00" value="' + esc(ipsiNuvei) + '"></div>';
   }
 
@@ -733,6 +771,107 @@ header.top { display: none !important }
     picker.click();
   }
 
+  /* ── the run's fields live IN the cards ──
+     POC feedback, three items asking for one thing:
+       BPAY 01  "Move Statement Data and Closing Balance from top right into
+                 BPAY section before the file upload button."
+       Mint 01  "Add a Total Transaction field before the file upload like IPSI"
+       TravelPay 01  the same.
+     IPSI already had its NUVEI amount inside its own card, which is the shape
+     the other two are being pointed at.
+
+     THE NODES ARE MOVED, NOT REBUILT, and that is the whole trick. Every card
+     is re-rendered on each keystroke (renderSource re-writes grid.innerHTML),
+     so a field printed INTO the card template would be destroyed and recreated
+     mid-word — losing focus, the caret and anything half-typed. The old code
+     dodged this by keeping the fields in the page header, outside #tileGrid,
+     and said so in a comment. Moving a live element with appendChild keeps the
+     same DOM node, so its value, focus and selection all survive the redraw.
+
+     STATEMENT DATE FOLLOWS THE RUN, NOT BPAY. RAA asked for it in the BPAY
+     section, and that is where it appears whenever BPay is loaded — the normal
+     case, since BPay must run first. But a Mint-only or TravelPay-only run
+     still needs a date to find the day's statement, and a field that only
+     exists when BPay is loaded would leave those runs unable to say which day
+     they mean. So it lands in BPay's card when there is one and in the first
+     loaded card otherwise. */
+  /* Lift the field boxes out of the grid before it is wiped.
+     `grid.innerHTML = …` destroys every descendant, and after placeFields()
+     these ARE descendants. Parked in a hidden holder for the length of one
+     render, they keep their identity — and therefore their value, focus and
+     caret — instead of being rebuilt from a string. */
+  function stashFields() {
+    let home = $('#fieldHome');
+    if (!home) {
+      home = document.createElement('div');
+      home.id = 'fieldHome';
+      home.style.display = 'none';
+      document.body.appendChild(home);
+    }
+    ['rcDateBox', 'rcOpeningBox', 'rcClosingBox', 'rcTotalBox'].forEach((id) => {
+      const box = $('#' + id);
+      if (box) home.appendChild(box);
+    });
+  }
+
+  function placeFields() {
+    const slot = (k) => document.querySelector('.card-slot[data-slot="' + k + '"]');
+    const move = (boxId, kind) => {
+      const box = $('#' + boxId), target = kind && slot(kind);
+      if (!box || !target) return;
+      target.appendChild(box);              // same node, so focus survives
+      box.style.marginTop = '8px';
+    };
+    const on = loaded();
+    const home = on.indexOf('bpay') >= 0 ? 'bpay' : (on[0] || 'bpay');
+
+    move('rcDateBox', home);
+    /* THE BALANCES FOLLOW THE SAME `home` AS THE DATE, and hardcoding them to
+       'bpay' was wrong. Caught on a live Mint-only run: the statement date
+       moved into the Mint card correctly, while Opening and Closing balance —
+       both required for that run — sat in the BPay card, which was showing
+       "not uploaded". Two required fields, in a card the person has not
+       loaded and has no reason to look at.
+
+       BPay is still their home whenever BPay is loaded, because BPay is what
+       creates the statement. It is only the no-BPay case that changes.
+
+       AND IF NOTHING LOADED USES A STATEMENT PAGE, THEY DO NOT APPEAR AT ALL.
+       IPSI reconciles on the Finance Receipts screens and never opens one, so
+       an IPSI-only run has no opening or closing balance to give. Following
+       `home` blindly put both of them, marked required with a red asterisk,
+       into IPSI's card — two fields the run does not read and the person
+       cannot meaningfully fill. `start()` already knows this (`needsStatement`
+       skips them for an IPSI-only run); the screen has to agree with it, or a
+       correct run looks like an incomplete form. */
+    const needsStatement = on.some((k) => k !== 'ipsi');
+    const showBalance = (boxId, show) => {
+      const box = $('#' + boxId);
+      if (box) box.style.display = show ? '' : 'none';
+    };
+    showBalance('rcOpeningBox', needsStatement);
+    showBalance('rcClosingBox', needsStatement);
+    if (needsStatement) {
+      move('rcOpeningBox', home);
+      move('rcClosingBox', home);
+    }
+    /* One Transaction total, and it can only sit in one card. Mint takes it
+       when Mint is loaded, otherwise TravelPay. With BOTH loaded they share a
+       single figure, which was already true before this moved — see
+       syncTotalField. Worth splitting into two fields; noted, not smuggled in
+       under a layout change. */
+    move('rcTotalBox', on.indexOf('mint') >= 0 ? 'mint'
+      : (on.indexOf('travelpay') >= 0 ? 'travelpay' : 'mint'));
+
+    /* Anything still in the holder is invisible, and an invisible required
+       field is a run that cannot be started and cannot be fixed. Every box has
+       a home above, so this should never fire — it is here because "should
+       never" is not a thing to leave unchecked on a screen that files money. */
+    const orphan = $('#fieldHome') &&
+      [...$('#fieldHome').children].filter((c) => c.style.display !== 'none').length;
+    if (orphan) console.warn('[recon] ' + orphan + ' run field(s) had no card to live in');
+  }
+
   function renderSource() {
     const grid = $('#tileGrid');
     if (!grid) return;
@@ -748,6 +887,7 @@ header.top { display: none !important }
       ? '<span style="color:var(--err)">IPSI runs alone — remove the other loaded report before starting this one.</span>'
       : (ipsiTotalMismatch() ? '<span style="color:var(--err)">' + esc(ipsiTotalMismatch()) + '</span>' : '');
 
+    stashFields();
     grid.innerHTML = Object.keys(SOURCES).map((kind) => {
       const def = SOURCES[kind];
       const s = source[kind];
@@ -765,6 +905,7 @@ header.top { display: none !important }
           (kind === 'ipsi' ? ipsiNuveiField() : '') +
           '<div class="muted rc-figs" data-figs="' + kind + '" style="margin-top:8px"></div>' +
           '<div class="muted rc-hint" data-hint="' + kind + '" style="margin-top:8px">' + hintSeed + '</div>' +
+          '<div class="card-slot" data-slot="' + kind + '"></div>' +
           '<div class="actions"><button class="btn sm indigo" data-choose="' + kind + '">Choose file</button></div>' +
           (kind === 'ipsi' ? ipsiPendingBlock() : '') +
           '</div></div>';
@@ -793,6 +934,7 @@ header.top { display: none !important }
         (kind === 'ipsi' ? ipsiNuveiField() : '') +
         '<div class="muted rc-figs" data-figs="' + kind + '" style="margin-top:8px"></div>' +
           '<div class="muted rc-hint" data-hint="' + kind + '" style="margin-top:8px">' + hintSeed + '</div>' +
+        '<div class="card-slot" data-slot="' + kind + '"></div>' +
         '<div class="actions">' +
         '<button class="btn sm" data-go="inbox">View rows</button>' +
         '<button class="btn sm ghost" data-preview="' + kind + '">' +
@@ -836,6 +978,8 @@ header.top { display: none !important }
             'and say so rather than creating a second statement.') +
         '</div>');
     }
+
+    placeFields();
 
     grid.querySelectorAll('[data-choose]').forEach((b) => {
       b.onclick = () => openPicker(b.dataset.choose);
@@ -919,6 +1063,57 @@ header.top { display: none !important }
     }
     if (cardNote[kind]) lines.push(cardNote[kind]);
     if (lines.length) hint(kind, lines.join('<br>'));
+  }
+
+  /* ── the run alert, and the fields it points at ──
+     POC feedback General 07 and 09. Before this, a refusal to start was written
+     into the CARD's hint line via hint(kind, …) — and on a combined run `kind`
+     is 'both', for which no `.rc-hint[data-hint="both"]` element exists. The
+     message went into nothing. That is exactly the reported bug: "if uploading
+     BPay and Mint in same session, error message does not display if opening
+     and closing balance are left blank, but error message does appear if only
+     uploading BPay receipts."
+
+     So the alert lives in ONE place that is always on the page, rather than on
+     whichever card happens to be active. */
+  const FIELD_LABEL = { rcDate: 'Statement date', rcOpening: 'Opening balance',
+                        rcClosing: 'Closing balance', ipsiNuvei: 'NUVEI amount',
+                        rcTotal: 'Transaction total' };
+
+  function clearFieldErrors() {
+    document.querySelectorAll('.field-bad').forEach((e) => e.classList.remove('field-bad'));
+    document.querySelectorAll('.field-err').forEach((e) => e.remove());
+  }
+
+  /* Red outline, ⚠ and a sentence under the field — the three cues the feedback
+     asks for. Never colour alone. */
+  function markField(id, why) {
+    const el = $('#' + id);
+    if (!el) return;
+    el.classList.add('field-bad');
+    el.setAttribute('aria-invalid', 'true');
+    if (el.parentNode && !el.parentNode.querySelector('.field-err')) {
+      const m = document.createElement('span');
+      m.className = 'field-err';
+      m.textContent = '⚠ ' + (why || (FIELD_LABEL[id] || 'This') + ' is needed before a run.');
+      el.parentNode.appendChild(m);
+    }
+  }
+
+  function clearAlert() {
+    const bar = $('#runAlert');
+    if (bar) { bar.style.display = 'none'; bar.className = 'alertbar'; }
+    clearFieldErrors();
+  }
+
+  /** kind: 'ok' | 'err'. `html` is trusted markup built here, never user text. */
+  function alertBar(kind, html) {
+    const bar = $('#runAlert');
+    if (!bar) return;
+    bar.className = 'alertbar ' + kind;
+    bar.querySelector('.ab-ico').textContent = kind === 'ok' ? '✓' : '⚠';
+    bar.querySelector('.ab-body').innerHTML = html;
+    bar.style.display = '';
   }
 
   function hint(kind, html) {
@@ -1055,7 +1250,7 @@ header.top { display: none !important }
      overwrite each other in the inbox and in runs.json alike. */
   function allResults() {
     let n = 0;
-    const runnable = Object.keys(SOURCES).reduce((acc, kind) => {
+    const runnable = RUN_ORDER.reduce((acc, kind) => {
       if (!source[kind]) return acc;
       return acc.concat((source[kind].rows || []).map((x) => (checksOnly(kind)
         ? { ...x, n: ++n, src: kind, reconciliation: 'Pending' }
@@ -1068,7 +1263,7 @@ header.top { display: none !important }
        Their `n` continues past the last runnable row on purpose — the server
        numbers what it runs 1..N and patches rows by that number, so anything
        sharing an `n` with a real row would be overwritten by it mid-run. */
-    const skipped = Object.keys(SOURCES).reduce((acc, kind) => {
+    const skipped = RUN_ORDER.reduce((acc, kind) => {
       if (!source[kind] || checksOnly(kind)) return acc;
       return acc.concat((source[kind].skippedRows || []).map((x) => ({
         ...x, n: ++n, src: kind, skipped: true,
@@ -1210,24 +1405,40 @@ header.top { display: none !important }
   /* Each report gets its own chips. A Mint run allocates nothing, so offering
      "Not allocated 0" beside its rows would be describing a step that never
      happens. */
-  const FILTER_SETS = {
-    bpay: [
-      ['all', 'All rows', () => true],
-      ['need', 'Not allocated', (r) => r.allocation === 'Not allocated'],
-      ['part', 'Part allocated', (r) => r.allocation === 'Part allocated'],
-      ['notrec', 'Not reconciled', (r) => r.reconciliation === 'Not reconciled'],
-      ['done', 'Allocated & reconciled', (r) => r.allocation === 'Allocated' && r.reconciliation === 'Reconciled'],
-    ],
-    mint: [
-      ['all', 'All rows', () => true],
-      ['notrec', 'Not on the page', (r) => r.reconciliation === 'Not reconciled'],
-      ['diff', 'Check the difference', (r) => !!r.mismatch],
-      ['done', 'Reconciled', (r) => r.reconciliation === 'Reconciled'],
-    ],
-  };
-  // A run with any BPay in it needs the allocation chips; one without cannot
-  // use them, because nothing in it allocates.
-  const filters = () => FILTER_SETS[viewWrites() ? 'bpay' : 'mint'];
+  /* ONE SET OF TABS, whatever the report — POC feedback names them: All,
+     Action required, Receipted, Reconciled.
+     
+     There used to be two sets, one for BPay and one for everything else, and
+     the chips changed under you when the report picker moved. RAA asked for
+     four tabs, so four is what there is.
+
+     "PART ALLOCATED" IS GONE — "there will be no part allocation at this
+     stage". It is not merely hidden: `decideAllocation` cannot return it any
+     more (BR07–BR11 allow one whole segment, all of them, or nothing), so a
+     tab for it would have sat at zero for ever.
+
+     ACTION REQUIRED is the one that needed defining, because the feedback names
+     it without saying what falls in it. It is every row a person has to touch:
+     anything that failed, anything the run refused to allocate, anything not
+     reconciled, and anything carrying a remark — the remarks ARE the business
+     rules' way of saying "a human decides this one".
+
+     RECEIPTED means a receipt reached Tramada. Only BPay files receipts, so on
+     a Mint or TravelPay run this tab is legitimately empty rather than wrong. */
+  const NEEDS_ACTION = (r) =>
+    !!r.error ||
+    !!r.mismatch ||
+    r.allocation === 'Not allocated' ||
+    r.reconciliation === 'Not reconciled' ||
+    !!(r.remark && String(r.remark).trim());
+
+  const TABS = [
+    ['all', 'All', () => true],
+    ['action', 'Action required', NEEDS_ACTION],
+    ['receipted', 'Receipted', (r) => !!(r.receiptNo && String(r.receiptNo).trim())],
+    ['done', 'Reconciled', (r) => r.reconciliation === 'Reconciled'],
+  ];
+  const filters = () => TABS;
 
   // The search box searches what a person has in front of them: the reference
   // they were given, the booking they are chasing, the receipt number they are
@@ -1277,6 +1488,7 @@ header.top { display: none !important }
     sel.title = 'Which run';
     sel.style.display = '';
     const draw = () => {
+      sel.title = 'Session';
       sel.innerHTML = '<option value="">This run</option>' +
         runList.map((r) => '<option value="' + esc(r.id) + '">' + esc(runLabel(r)) + '</option>').join('');
       sel.value = viewing ? viewing.id : '';
@@ -1308,6 +1520,7 @@ header.top { display: none !important }
     } catch (e) { runList = []; }
     const sel = $('#ibDate');
     if (sel) {
+      sel.title = 'Session';
       sel.innerHTML = '<option value="">This run</option>' +
         runList.map((r) => '<option value="' + esc(r.id) + '">' + esc(runLabel(r)) + '</option>').join('');
       sel.value = viewing ? viewing.id : '';
@@ -1318,23 +1531,46 @@ header.top { display: none !important }
      reports in one table; this is how you look at one of them. The options are
      the reports THAT RUN actually carried — offering IPSI on a run that had no
      IPSI in it is a filter that can only ever show nothing. */
+  /* Short names for the filter only. The cards on Sources & upload keep their
+     full titles — "BPay receipts CSV" tells you what to drop on it — but a
+     dropdown does not need the word CSV four times, and the full set wrapped
+     the filter row onto a second line. RAA writes them this way too. */
+  const PAY_TYPE = { bpay: 'BPay', mint: 'Mint', ipsi: 'IPSI', travelpay: 'TravelPay' };
+
   function drawReportPicker() {
     const sel = $('#ibReport');
     if (!sel) return;
     const present = [];
     for (const r of viewRows()) if (r.src && !present.includes(r.src)) present.push(r.src);
-    sel.style.display = present.length > 1 ? '' : 'none';
-    if (present.length <= 1) { reportOnly = ''; return; }
-    sel.innerHTML = '<option value="">All reports</option>' +
-      present.map((k) => '<option value="' + esc(k) + '">' +
-        esc((SOURCES[k] || {}).title || k) + '</option>').join('');
+    /* ALWAYS ON SCREEN, AND ALWAYS THE FULL LIST.
+       
+       Built from `present` — the reports in the current run — this listed
+       nothing at all before a file was uploaded, so the control read as broken:
+       a "Payment type" dropdown whose only option is "All payment types".
+       RAA's feedback names the thing they expect to see in it ("E.g. BPay,
+       MINT"), which is the payment types this agent handles, not the ones that
+       happen to be loaded this minute.
+
+       So every report is listed. The ones NOT in the run are marked rather than
+       hidden — picking one and getting an empty table is a fair answer to
+       "show me TravelPay", where a dropdown that silently omitted TravelPay
+       would leave somebody wondering whether the agent supports it at all. */
+    sel.style.display = '';
+    if (!present.length) reportOnly = '';
+    sel.innerHTML = '<option value="">All payment types</option>' +
+      Object.keys(SOURCES).map((k) => {
+        const here = present.indexOf(k) >= 0;
+        return '<option value="' + esc(k) + '">' +
+          esc(PAY_TYPE[k] || (SOURCES[k] || {}).title || k) + (here ? '' : ' — none') +
+          '</option>';
+      }).join('');
     sel.value = reportOnly;
   }
 
   function mountReportPicker() {
     const sel = $('#ibReport');
     if (!sel) return;
-    sel.title = 'Report';
+    sel.title = 'Payment type';
     sel.onchange = () => { reportOnly = sel.value; render(); };
     drawReportPicker();
   }
@@ -1356,7 +1592,12 @@ header.top { display: none !important }
       tri.innerHTML = SET.map(([k, label, fn]) =>
         '<button class="tri' + (filter === k ? ' on' : '') + '" data-f="' + k + '">' + label +
         ' <span class="n">' + all.filter(fn).length + '</span></button>').join('') +
-        '<div class="spacer"></div><span class="badge ' + (running && !viewing ? 'b-ai' : 'b-mute') +
+        /* POC feedback — "'Finished' pill in Run activity and tab bar to have
+           light green background". `b-ok` is the palette's existing light
+           green; a finished run reading grey said "nothing here" when it meant
+           "this worked". Live stays indigo, past runs and no-run stay grey. */
+        '<div class="spacer"></div><span class="badge ' +
+        (running && !viewing ? 'b-ai' : (!viewing && results.length ? 'b-ok' : 'b-mute')) +
         '" style="margin-bottom:8px">' +
         (viewing ? 'past run' : running ? '✦ live run' : results.length ? 'run finished' : 'no run yet') +
         '</span>';
@@ -1465,18 +1706,28 @@ header.top { display: none !important }
      columns that read as data that went missing — and neither guide has any
      such column. Consultant and Shop are BPay's steps 7 and 9 and mean nothing
      to a creditor payment either. */
+  /* NOT EDITABLE — POC feedback: "Not sure why Consultant, Shop and Remarks
+     column have open textfield. They should just display text info."
+     Consultant and Shop are read off the booking (BPay steps 7 and 9) and
+     Remarks is the business rules' own vocabulary; a text box next to each one
+     invites a person to type a fourth thing that then disagrees with both the
+     run and the spreadsheet it exports. Read-only is also what makes the screen
+     and the returned file say the same thing, which is what BR14 is for.
+
+     WHY IS GONE. "Remarks and Why column seem to share the same thing. Please
+     follow the error messages for Remarks stated in the Business Rules." They
+     did overlap: Why is the run's own sentence, Remarks is BR01–BR11's fixed
+     wording, and two columns of nearly the same thing is what made the overlap
+     read as a bug. Remarks survives because it is the one that also goes in the
+     spreadsheet. The run's reasoning is still on the row — `title` on the
+     Remarks cell — so nothing is lost, it just stops being a column. */
   const RUN_COLUMNS = [
-    { key: 'consultant', label: 'Consultant', edit: true, only: ['bpay'] },
-    { key: 'shop', label: 'Shop', edit: true, only: ['bpay'] },
+    { key: 'consultant', label: 'Consultant', only: ['bpay'] },
+    { key: 'shop', label: 'Shop', only: ['bpay'] },
     { key: 'receiptNo', label: 'Receipt No', mono: true, only: ['bpay'] },
-    { key: 'allocation', label: 'Allocation', badge: true, only: ['bpay'] },
+    { key: 'allocation', label: 'Allocated', badge: true, only: ['bpay'] },
     { key: 'reconciliation', label: 'Reconciled', badge: true },
-    /* Editable, like the two above it. The agent's remark is a starting point:
-       Finance are the ones who know whether a row really does need review, and
-       they are the ones sending the file on. The vocabulary is the agent's
-       suggestion, not a lock. */
-    { key: 'remark', label: 'Remarks', edit: true, strong: true },
-    { key: 'why', label: 'Why', muted: true },
+    { key: 'remark', label: 'Remarks', strong: true, tip: 'why' },
   ];
 
   const normHead = (h) => String(h == null ? '' : h).trim().toLowerCase().replace(/[\s._-]+/g, '');
@@ -1532,8 +1783,14 @@ header.top { display: none !important }
       }
       if (c.badge) return '<td>' + (checksOnly(r.src) && c.key === 'allocation'
         ? '<span class="muted">—</span>' : badge(v)) + '</td>';
-      if (c.strong) return '<td>' + (v ? '<b>' + esc(v) + '</b>' : '<span class="muted">—</span>') + '</td>';
-      // (unreached for editable columns — the edit branch above returns first)
+      if (c.strong) {
+        /* The run's own sentence rides along as a tooltip. Remarks is the BR
+           vocabulary and stays short and groupable; `why` is the paragraph that
+           explains this particular row. Losing the Why COLUMN should not mean
+           losing the reasoning. */
+        const tip = c.tip && r[c.tip] ? ' title="' + esc(String(r[c.tip])) + '"' : '';
+        return '<td' + tip + '>' + (v ? '<b>' + esc(v) + '</b>' : '<span class="muted">—</span>') + '</td>';
+      }
       if (c.mono) return '<td class="mono">' + esc(v) + '</td>';
       return '<td class="muted">' + esc(v) + '</td>';
     };
@@ -1615,15 +1872,23 @@ header.top { display: none !important }
   function afterTable(pane, all, shown) {
     const mint = !viewWrites();
     const t = $('#ibTitle'), l = $('#ibLede'), a = $('#ibActions');
-    if (t) t.textContent = 'Reconciliation inbox';
+    if (t) t.textContent = 'Reconciliation report';
     if (l) {
-      const al = all.filter((r) => r.allocation === 'Allocated').length;
+      /* POC feedback: the header wants an alert bar that "summarises how many
+         receipted, how many reconciled, and how many require review and
+         action". Those three, in that order, and the third one counted by the
+         SAME predicate the Action required tab uses — a header that disagreed
+         with the tab beneath it would be worse than no header. */
+      const rec = all.filter((r) => !!(r.receiptNo && String(r.receiptNo).trim())).length;
       const rc = all.filter((r) => r.reconciliation === 'Reconciled').length;
-      const diff = all.filter((r) => r.mismatch).length;
+      const act = all.filter(NEEDS_ACTION).length;
       const n = all.length;
       const counts = n + ' row' + (n === 1 ? '' : 's') + ' · ' +
-        (mint ? rc + ' reconciled' + (diff ? ' · ' + diff + ' to check' : '')
-              : al + ' allocated · ' + rc + ' reconciled');
+        // Only BPay files receipts, so on a checks-only run that number is not
+        // "0 receipted", it is a number that does not apply.
+        (mint ? '' : rec + ' receipted · ') +
+        rc + ' reconciled' +
+        (act ? ' · ' + act + ' need review' : '');
       // The stop reason outranks the counts. It used to be written into this
       // element directly and then wiped by the next render, so a failed run
       // reported "0 allocated, 0 reconciled" and never said why.
@@ -1750,7 +2015,7 @@ header.top { display: none !important }
      there), so the one piece of it the page genuinely needs is reimplemented
      here: show one screen, light the matching sidebar item and rail button,
      retitle the top bar. Same class names, same behaviour, no demo state. */
-  const TITLES = { overview: 'Run overview', sources: 'Sources & upload', inbox: 'Reconciliation inbox',
+  const TITLES = { overview: 'Run overview', sources: 'Sources & upload', inbox: 'Reconciliation report',
     suppliers: 'Supplier cheat sheet' };
 
   function go(screen) {
@@ -1773,25 +2038,49 @@ header.top { display: none !important }
   /* ── the run ── */
   function start() {
     const kind = active;
-    const stop = (why) => { hint(kind || 'bpay', '<span style="color:var(--err)">' + why + '</span>'); go('sources'); };
+    /* Refusals go to the ALERT BAR, which is always on the page, and to the
+       card's own hint when there is a card to put it on. The old version only
+       did the second, keyed on `active` — which is 'both' for a combined run
+       and matches no hint element, so a BPay+Mint run with blank balances was
+       refused in total silence (POC feedback General 08). */
+    const stop = (why, fields) => {
+      alertBar('err', esc(why));
+      (fields || []).forEach((f) => markField(f));
+      if (kind && kind !== 'both') hint(kind, '<span style="color:var(--err)">' + esc(why) + '</span>');
+      go('sources');
+      const first = (fields || [])[0] && $('#' + fields[0]);
+      if (first) first.focus();
+    };
     if (running) return;
     if (!kind || !results.length) return;
+    clearAlert();
 
     const date = ($('#rcDate') || {}).value, op = ($('#rcOpening') || {}).value, cl = ($('#rcClosing') || {}).value;
-    // IPSI touches no bank statement, so it has no opening or closing balance
-    // to type in — only the settlement date (guide step 4) and its own NUVEI
-    // amount (BR01/step 3, typed into the card's own field, not #rcTotal).
-    if (kind === 'ipsi') {
-      if (!date) { stop('Settlement date is needed before a run.'); return; }
-      if (!ipsiNuvei) { stop('The NUVEI amount is needed before a run.'); return; }
+    const on = loaded();
+    /* WHAT IS REQUIRED FOLLOWS WHAT IS LOADED, not which card is active.
+       IPSI touches no bank statement, so on its own it needs only the
+       settlement date and its NUVEI amount. But loaded ALONGSIDE BPay it
+       shares BPay's statement page, and the balances are needed again — which
+       the old `active === 'ipsi'` branch skipped entirely. */
+    const needsStatement = on.some((k) => k !== 'ipsi');
+    const gaps = [];
+    if (!date) gaps.push('rcDate');
+    if (needsStatement && !op) gaps.push('rcOpening');
+    if (needsStatement && !cl) gaps.push('rcClosing');
+    if (gaps.length) {
+      const names = gaps.map((f) => FIELD_LABEL[f]);
+      const last = names.pop();
+      stop((names.length ? names.join(', ') + ' and ' + last : last) +
+        (names.length ? ' are needed before a run.' : ' is needed before a run.'), gaps);
+      return;
+    }
+    if (on.includes('ipsi')) {
+      if (!ipsiNuvei) { stop('The NUVEI amount is needed before a run.', ['ipsiNuvei']); return; }
       // BR01, checked again here — Start is already disabled while this is
       // true (see syncIpsiTotal), but that only guards the button; this
       // guards the run itself against whatever got it clicked anyway.
       const mismatch = ipsiTotalMismatch();
-      if (mismatch) { stop(mismatch); return; }
-    } else if (!date || !op || !cl) {
-      stop('Statement date, opening balance and closing balance are all needed before a run.');
-      return;
+      if (mismatch) { stop(mismatch, ['ipsiNuvei']); return; }
     }
     if (!ws || ws.readyState !== 1) {
       stop('Not connected to the server — is it still running?');
@@ -1859,7 +2148,7 @@ header.top { display: none !important }
     ws.send(JSON.stringify(kind === 'both'
       ? {
           type: 'recon_run', source: 'both',
-          byReport: Object.keys(SOURCES).reduce((a, k) => {
+          byReport: RUN_ORDER.reduce((a, k) => {
             a[k] = (source[k] || {}).rows || [];
             return a;
           }, {}),
@@ -1972,6 +2261,22 @@ header.top { display: none !important }
       vncOpen = false;
       $('#startRun').disabled = false;
       stopped = m.error || null;
+      /* POC feedback General 07 — "Once files uploaded -> 'Start run' ->
+         Reconciliation done, include a green success bar with a tick and a link
+         to the reconciliation inbox page. If reconciliation could not process,
+         show error alert bar."
+
+         The link is a real navigation to the report screen rather than an
+         anchor, because these screens are sections of one page. */
+      if (stopped) {
+        alertBar('err', '<b>Reconciliation could not be completed.</b> ' + esc(firstSentence(stopped)) +
+          ' <a href="#" data-go="inbox">See the report</a> for what did and did not go through.');
+      } else {
+        const n = results.length;
+        alertBar('ok', '<b>Reconciliation done.</b> ' + n + ' row' + (n === 1 ? '' : 's') +
+          ' processed' + (m.pageNumber ? ' on statement page ' + esc(String(m.pageNumber)) : '') +
+          '. <a href="#" data-go="inbox">Open the reconciliation report</a>.');
+      }
       // The run is in runs.json now, whether it worked or not, so the overview
       // is stale the moment this frame lands — and so is the run picker, which
       // has just gained the run that finished. An IPSI attempt is a NEW

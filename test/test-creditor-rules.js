@@ -385,6 +385,27 @@ console.log("\nno statement for the day is a hard stop, not a workaround");
     /statement the BPay run creates/.test(m), m);
   ok("and shows what dates DO have a statement", /18-08-2026 \(page 12\)/.test(m), m);
 
+/* THE FIVE IT NAMES MUST BE THE FIVE MOST RECENT.
+   A live Mint run against an account with 17 statement pages reported "the most
+   recent statements are 20-03-2020 (page 5) … 29-02-2020 (page 1)" — the five
+   OLDEST, six years stale, while pages 6-17 went unmentioned. The cause was
+   `.slice(-5)` on a list Tramada hands over newest-first. Finance reads a
+   message like that as a dead account, not a missing day. */
+{
+  const newestFirst = [];
+  for (let i = 17; i >= 1; i--) newestFirst.push({ pageNo: i, statementDate: `2026-08-${String((i % 28) + 1).padStart(2, "0")}` });
+  const m = C.noStatementMessage("mint", "28-08-2026", newestFirst, "[TRUST] Trust Account");
+  const named = (m.match(/page (\d+)/g) || []).map((x) => Number(x.replace("page ", "")));
+  check("it names the five highest page numbers, not the five last in the array", named, [17, 16, 15, 14, 13]);
+  ok("and never the oldest", !named.includes(1) && !named.includes(5),
+    `named pages ${named.join(", ")}`);
+
+  // Same answer whichever way round the caller hands them over.
+  const oldestFirst = newestFirst.slice().reverse();
+  const m2 = C.noStatementMessage("mint", "28-08-2026", oldestFirst, "[TRUST] Trust Account");
+  check("the order the pages arrive in does not change the answer", m2, m);
+}
+
   const t = C.noStatementMessage("travelpay", "20-08-2026", [], "Trust Account");
   ok("TravelPay is named as itself, not as MINT", /TravelPay/.test(t) && !/MINT/.test(t), t);
   ok("and an empty account says so rather than trailing off",

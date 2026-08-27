@@ -255,5 +255,43 @@ ok("so BPay is filtered separately from the two creditor reports",
 check("Mint has its own", C.REPORTS.mint.recPayType, "Creditor Payment");
 check("only BPay writes", Object.keys(C.REPORTS).filter((k) => C.REPORTS[k].files), ["bpay"]);
 
+console.log("\nthe standard template writes its headings closed up");
+{
+  /* POC feedback, TravelPay 02: "Standard TravelPay spreadsheet template has no
+     spaces for column headings. Instead of seeking 'Payment Reference' as
+     column heading, look for 'PaymentReference'."
+
+     This is the file that was REFUSED. `mapColumns` lowercased and collapsed
+     runs of whitespace but never removed it, so "paymentreference" was neither
+     equal to nor a prefix of "payment reference", the column came back -1, and
+     Finance's own template was rejected for missing a column it had.
+
+     Both spellings are asserted, because the fix must not swap one failure for
+     the other. */
+  const row = [["TP-9001", "262.24", "Viva Holidays", "Successful", "46204"]];
+  const closed = ["PaymentReference", "ProcessedAmount", "MerchantCompanyName",
+                  "TransactionStatus", "ProcessingDate"];
+  const spaced = ["Payment Reference", "Processed Amount", "Merchant Company Name",
+                  "Transaction Status", "Processing Date"];
+
+  const a = C.parseTravelPayRows(closed, row);
+  check("the closed-up template is read", a.problems.length, 0);
+  check("and its reference lands in the right field", a.rows[0].transNo, "TP-9001");
+  check("and its amount does too", a.rows[0].amountCents, 26224);
+  check("and the merchant name", a.rows[0].toCompany, "Viva Holidays");
+
+  const b = C.parseTravelPayRows(spaced, row);
+  check("the spaced template still works", b.problems.length, 0);
+  check("and reads the same reference", b.rows[0].transNo, "TP-9001");
+  check("and the same amount", b.rows[0].amountCents, 26224);
+
+  /* A heading that is genuinely absent must still be reported absent — the
+     space-insensitive pass makes matching looser, and looser must not mean
+     "matches anything". */
+  const missing = C.parseTravelPayRows(["PaymentReference"], [["TP-1"]]);
+  ok("a truly missing column is still refused", missing.problems.length > 0,
+    JSON.stringify(missing.problems));
+}
+
 console.log(`\n${fail ? "❌" : "✅"} ${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

@@ -87,11 +87,6 @@ a{color:var(--blue);text-decoration:none}
 .ico{width:16px;flex:none;text-align:center;font-size:13px;opacity:.95}
 .pill-n{margin-left:auto;background:var(--yellow);color:var(--indigo);font-size:10px;font-weight:700;border-radius:20px;padding:1px 6px}
 .pill-n.red{background:#ff6b81;color:#fff}
-.side-foot{padding:11px;border-top:1px solid rgba(255,255,255,.14)}
-.who{display:flex;gap:9px;align-items:center}
-.av{width:30px;height:30px;border-radius:50%;background:var(--sky);color:var(--indigo);display:grid;place-items:center;font-weight:700;font-size:11px;flex:none}
-.who b{display:block;font-size:12.5px}
-.who small{display:block;font-size:10.5px;color:#a79fd0}
 .brain{margin:10px 9px 0;background:rgba(255,255,255,.09);border-radius:9px;padding:11px}
 .brain b{display:block;font-size:11.5px;color:#fff}
 .brain small{display:block;font-size:10.5px;color:#a99fd6;margin-top:2px;line-height:1.4}
@@ -188,7 +183,21 @@ a{color:var(--blue);text-decoration:none}
 .tl li{display:flex;gap:10px;padding:8px 0;border-bottom:1px dashed var(--line-2)}
 .tl li:last-child{border:0}
 .tl time{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);flex:none;padding-top:1px}
-.tl p{margin:0;font-size:12px;color:var(--ink-2)}
+/* POC feedback General 05 / 07 — "text should wrap within the component".
+   It did not, and the reason is a flexbox default rather than anything about
+   the copy. `.tl li` is display:flex, which makes this <p> a flex item, and a
+   flex item's min-width is `auto` — it refuses to shrink below the widest
+   thing it contains that cannot break. Run messages carry exactly that: URLs,
+   `browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:9222`, long
+   references. Measured on the live page, a 308px activity column: one URL made
+   this <p> 485px and pushed the whole card to scrollWidth 558 against
+   clientWidth 338.
+
+   min-width:0      lets the paragraph shrink back to its column
+   overflow-wrap    breaks the token that could not break on its own
+   anywhere, not break-word: it also lets the token shrink the box's intrinsic
+   minimum, which is the half break-word leaves out. */
+.tl p{margin:0;font-size:12px;color:var(--ink-2);min-width:0;overflow-wrap:anywhere}
 .tl b{color:var(--ink);font-weight:600}
 
 .badge{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:600;border-radius:20px;padding:2px 8px;white-space:nowrap}
@@ -197,6 +206,23 @@ a{color:var(--blue);text-decoration:none}
 .b-err{background:var(--err-bg);color:var(--err)}
 .b-info{background:var(--blue-lt);color:var(--blue)}
 .b-mute{background:#f0f0f3;color:var(--ink-2)}
+/* The run alert (POC feedback General 07 / 09). Two states, both readable at a
+   glance from across a desk: green for a run that finished, red for one that
+   could not start or stopped. Colour is never the ONLY signal — each state
+   carries its own icon and its own words (WCAG 1.4.1). */
+.alertbar{display:flex;gap:10px;align-items:flex-start;padding:11px 14px;border-radius:10px;
+  margin:0 0 14px;font-size:13px;border:1px solid transparent}
+.alertbar .ab-ico{flex:none;font-weight:700;line-height:1.4}
+.alertbar .ab-body{min-width:0;overflow-wrap:anywhere}
+.alertbar a{color:inherit;font-weight:600}
+.alertbar.ok{background:var(--ok-bg);border-color:#9ed6b4;color:#14532d}
+.alertbar.err{background:var(--err-bg);border-color:#e3a3b4;color:var(--err)}
+/* A field the run refused to start without (POC feedback General 09). The red
+   outline is paired with the ⚠ and the sentence below the field, so it does not
+   depend on someone seeing red. */
+.field-bad{border-color:var(--err)!important;box-shadow:0 0 0 3px rgba(159,34,65,.12)!important}
+.field-err{display:block;font-size:11px;color:var(--err);margin-top:4px}
+.req{color:var(--err);margin-left:2px}
 .b-ai{background:var(--indigo-050);color:var(--indigo)}
 
 /* ─────────── Tables ─────────── */
@@ -659,15 +685,13 @@ tr.cited{animation:cpulse 1.5s ease-out 2}
     <div class="nav-lbl">Daily run</div>
     <button class="nav-item on" data-go="overview"><span class="ico">◧</span> Run overview</button>
     <button class="nav-item" data-go="sources"><span class="ico">⇪</span> Sources &amp; upload</button>
-    <button class="nav-item" data-go="inbox"><span class="ico">⇄</span> Reconciliation inbox <span class="pill-n red">27</span></button>
+    <button class="nav-item" data-go="inbox"><span class="ico">⇄</span> Reconciliation report <span class="pill-n red">27</span></button>
   </nav>
 
-  <div class="side-foot">
-    <div class="who">
-      <div class="av">JS</div>
-      <div><b>Jill S.</b><small>Accounts · RAA Travel</small></div>
-    </div>
-  </div>
+  <!-- The signed-in-user block was here and is gone (POC feedback). There are
+       no per-person logins: the run drives one Tramada session a human signs
+       into, and this app never learns who that is. A name in the corner claimed
+       otherwise. -->
 </aside>
 
 <!-- ══════════ MAIN ══════════ -->
@@ -801,7 +825,7 @@ tr.cited{animation:cpulse 1.5s ease-out 2}
             <li><time>08:45</time><p>Created <b>7 Debtor Payment Receipts</b> (EFT, payer “BPay”) — queued for approval</p></li>
             <li><time>08:44</time><p>Normalised 45 BPay references to booking numbers — <b>2 unresolved</b></p></li>
             <li><time>08:43</time><p>Pulled 489 transactions from Tramada statement page 1552 <span class="badge b-info">API</span></p></li>
-            <li><time>08:41</time><p>Run started by <b>Jill S.</b></p></li>
+            <li><time>08:41</time><p>Run started</p></li>
           </ul>
         </div>
       </div>
@@ -827,6 +851,13 @@ tr.cited{animation:cpulse 1.5s ease-out 2}
       <div>
         <!-- readiness strip -->
         <div class="note" id="readyNote"><span>ℹ</span><div></div></div>
+        <!-- POC feedback General 07 / 09: the run's own alert, directly below the
+             instructions and above the cards. Empty and hidden until there is
+             something to say. `role="status"` so a screen reader announces it
+             when it appears, which is the whole point of an alert bar. -->
+        <div class="alertbar" id="runAlert" role="status" aria-live="polite" style="display:none">
+          <span class="ab-ico" aria-hidden="true"></span><div class="ab-body"></div>
+        </div>
 
         <!-- detect-and-confirm panel, revealed after an ad-hoc drop -->
         <div class="detect" id="detectPanel" style="display:none"></div>
@@ -842,7 +873,7 @@ tr.cited{animation:cpulse 1.5s ease-out 2}
   <!-- ═══════════ RECONCILIATION INBOX ═══════════ -->
   <section class="screen" id="s-inbox">
     <div class="page-h">
-      <div><h2 id="ibTitle">Reconciliation inbox</h2>
+      <div><h2 id="ibTitle">Reconciliation report</h2>
         <p id="ibLede">Every statement line, triaged by what the agent needs from you. Recurring work is grouped and handled in bulk; auto-completed lines stay out of your way; only uncertain items surface.</p></div>
       <div class="spacer"></div>
       <div id="ibActions" style="display:flex;gap:8px;flex-wrap:wrap">
@@ -854,6 +885,23 @@ tr.cited{animation:cpulse 1.5s ease-out 2}
     <div class="grid g-inbox" id="inboxGrid">
       <div class="card" style="overflow:visible">
 
+        <!-- Filters ABOVE the tabs (POC feedback). The tab counts are counts of
+             what these leave behind, so they have to be set first. -->
+        <div class="filters">
+          <select id="ibDate" title="Session"></select>
+          <select id="ibReport" title="Payment type">
+            <option value="">All payment types</option>
+          </select>
+          <select id="ibShop" title="Shop"><option value="">All shops</option></select>
+          <select id="ibState" title="Status">
+            <option value="">Any status</option>
+            <option value="unalloc">Not allocated</option>
+            <option value="unrec">Not reconciled</option>
+            <option value="both">Allocated &amp; reconciled</option>
+          </select>
+          <input class="search" id="ibSearch" placeholder="Search receipt, consultant, shop, booking…">
+        </div>
+
         <div class="triage">
           <button class="tri on" data-tri="need"><span class="tdot need"></span> Need reaction <span class="n">27</span></button>
           <button class="tri" data-tri="rev"><span class="tdot rev"></span> Under review <span class="n">9</span></button>
@@ -861,25 +909,6 @@ tr.cited{animation:cpulse 1.5s ease-out 2}
           <button class="tri" data-tri="all">All lines <span class="n">489</span></button>
           <div class="spacer"></div>
           <span class="badge b-ai" style="margin-bottom:8px">✦ coding as it goes</span>
-        </div>
-
-        <div class="filters">
-          <select id="ibReport" title="Report type">
-            <option value="">Agent triage — all reports</option>
-            <option value="bpay">BPay report</option>
-            <option value="mint">Mint daily settlement</option>
-            <option value="merchant">Merchant settlements</option>
-            <option value="refunds">Passenger refund report</option>
-          </select>
-          <select id="ibDate" title="Report date"></select>
-          <select id="ibShop"><option value="">All shops</option></select>
-          <select id="ibState">
-            <option value="">Any status</option>
-            <option value="unalloc">Not allocated</option>
-            <option value="unrec">Not reconciled</option>
-            <option value="both">Allocated &amp; reconciled</option>
-          </select>
-          <input class="search" id="ibSearch" placeholder="Search receipt, consultant, shop, booking…">
         </div>
 
         <!-- per-transaction view for a single uploaded report -->
@@ -1172,7 +1201,7 @@ tr.cited{animation:cpulse 1.5s ease-out 2}
 const titles = {
   overview:'Run overview',
   sources:'Sources & upload',
-  inbox:'Reconciliation inbox'
+  inbox:'Reconciliation report'
 };
 function go(id){
   document.querySelectorAll('.screen').forEach(s=>s.classList.toggle('on', s.id==='s-'+id));
@@ -1332,7 +1361,7 @@ function renderTiles(){
    read without a library, so they fall back to the sample below. */
 
 const SAMPLE_BPAY = {
-  cols:['B/PAY FILE DATE','RECEIPT NO','AMOUNT','CONSULTANT','SHOP','TRAMADA BKG NO','REMARKS'],
+  cols:['BPAY FILE DATE','RECEIPT NO','AMOUNT','CONSULTANT','SHOP','TRAMADA BKG NO','REMARKS'],
   rows:[
     ['46238','CBA040820260747711356',700,'Amy D','ADL','110984','Please allocate'],
     ['46238','WBC040820268073618INT',18295,'Ashley F','ADL','117376',''],
@@ -1710,7 +1739,7 @@ function renderReport(){
     if(selbar) selbar.style.display = '';
     if(rail) rail.style.display = '';
     if(grid) grid.style.gridTemplateColumns = '';
-    $('#ibTitle').textContent = 'Reconciliation inbox';
+    $('#ibTitle').textContent = 'Reconciliation report';
     $('#ibLede').textContent  = 'Every statement line, triaged by what the agent needs from you. '
       + 'Recurring work is grouped and handled in bulk; auto-completed lines stay out of your way; '
       + 'only uncertain items surface.';
@@ -1893,7 +1922,7 @@ function renderReadiness(){
 /* ── type detection from filename + CSV headers ── */
 const TYPE_RULES = [
   {id:'bpay',    name:'BPay report',              route:'Stream B · BPay',
-   fn:/bpay|b_pay/i, cols:['B/PAY FILE DATE','RECEIPT NO','AMOUNT','CONSULTANT','SHOP','TRAMADA BKG NO']},
+   fn:/bpay|b_pay/i, cols:['BPAY FILE DATE','RECEIPT NO','AMOUNT','CONSULTANT','SHOP','TRAMADA BKG NO']},
   {id:'mint',    name:'Mint daily settlement',    route:'Stream A · Mint & creditors',
    fn:/mint|settle(ment)?_?2?0?2?/i,
    cols:['TRANSACTION REFERENCE','TO COMPANY','AMOUNT','CURRENCY','STATUS','RECIPIENT REFERENCE']},
