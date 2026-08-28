@@ -299,6 +299,7 @@ header.top { display: none !important }
       const d = new Date(Date.now() + 864e5);
       const dmy = `${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}`;
       const box = document.createElement('div');
+      box.id = 'rcFieldRow';          // the page header — where the date lives
       box.style.cssText = 'display:flex;gap:10px;align-items:flex-end';
       box.innerHTML =
         '<div id="rcDateBox"><label class="field-lbl" for="rcDate" style="margin:0 0 3px;display:block">Statement date<span class="req" aria-hidden="true">*</span></label>' +
@@ -825,7 +826,28 @@ header.top { display: none !important }
     const on = loaded();
     const home = on.indexOf('bpay') >= 0 ? 'bpay' : (on[0] || 'bpay');
 
-    move('rcDateBox', home);
+    /* THE STATEMENT DATE STAYS AT THE TOP. 28-Aug: BPAY 03 asks for it to move
+       into the BPAY section, but Pippa's comment on that same line says
+       "won't the statement date be the same for all payment types? In which
+       case we should keep at top", and Alan agreed it is shared. Priyansh has
+       parked the question with the client, and the instruction until they
+       answer is: leave it at the top.
+
+       That resolves the awkwardness the move created anyway — the date is the
+       one field on this screen that is NOT per payment type, so a Mint-only or
+       TravelPay-only run needed it just as much as BPay did and it had to be
+       given a fallback card to live in.
+
+       The BALANCES still go into the card below, which is the half nobody
+       disagreed about: Pippa's own comment says "transaction totals and/or
+       opening/closing balances fields should be aligned to each payment type,
+       that part makes sense." */
+    const dateRow = document.querySelector('#rcFieldRow');
+    const dateBox = $('#rcDateBox');
+    if (dateRow && dateBox && dateBox.parentNode !== dateRow) {
+      dateRow.insertBefore(dateBox, dateRow.firstChild);
+      dateBox.style.marginTop = '';
+    }
     /* THE BALANCES FOLLOW THE SAME `home` AS THE DATE, and hardcoding them to
        'bpay' was wrong. Caught on a live Mint-only run: the statement date
        moved into the Mint card correctly, while Opening and Closing balance —
@@ -2085,7 +2107,25 @@ header.top { display: none !important }
       if (first) first.focus();
     };
     if (running) return;
-    if (!kind || !results.length) return;
+    /* WHAT IS LOADED, not what is in `results`.
+
+       This read `!results.length` and meant "nothing to run". That was true
+       while an upload prepopulated the report — but General 14 stopped it
+       doing that, so `results` is now empty until a run STARTS, and this guard
+       fired on every single press. Start run did nothing at all, and did it
+       silently: no alert, no field marked, no reason. Caught by running it
+       rather than by reading the diff.
+
+       `loaded()` is the honest question. The message below is belt and braces:
+       #startRun is already disabled while nothing is loaded (verified — the
+       click never reaches this handler), so in practice nobody sees it. It is
+       here so that if that button is ever enabled by another change, this
+       fails loudly instead of going quiet again the way it just did. */
+    if (!loaded().length) {
+      stop('Load at least one report on this page before starting a run.');
+      return;
+    }
+    if (!kind) return;
     clearAlert();
 
     const date = ($('#rcDate') || {}).value, op = ($('#rcOpening') || {}).value, cl = ($('#rcClosing') || {}).value;

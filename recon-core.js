@@ -2664,6 +2664,10 @@ function checkTransactionTotal(rows, entered, opts = {}) {
  * Here rather than in the browser code so the wording can be asserted — it is
  * the sentence somebody reads at 8am when the day will not start.
  */
+/* How each report names itself when it is refused for want of a statement.
+   IPSI is deliberately absent — see the comment inside noStatementMessage. */
+const REPORT_TITLE_FOR_REFUSAL = { mint: "MINT", travelpay: "TravelPay" };
+
 function noStatementMessage(source, statementDate, pages, accountLabel = "The account") {
   /* THE MOST RECENT FIVE, and they have to actually be the most recent.
      This was `.slice(-5)` on the list as Tramada hands it over — which is
@@ -2687,7 +2691,21 @@ function noStatementMessage(source, statementDate, pages, accountLabel = "The ac
     // actionable rather than just a refusal.
     `BPAY needs to be reconciled first for today. ` +
     `${accountLabel} has no bank statement for ${toTramadaDate(statementDate)}, and ` +
-    `${source === "travelpay" ? "TravelPay" : "MINT"} reconciles the statement the BPay run creates ` +
+    /* IPSI CANNOT REACH THIS AND MUST NOT. Confirmed by RAA 28-Aug: "IPSI can
+       still run by itself because it doesn't reference the Tramada bank
+       statement." The POC feedback line for BPAY 02 names IPSI alongside Mint
+       and TravelPay, but the condition it attaches — no bank statement for the
+       day — describes a document IPSI never opens. It reconciles on the Finance
+       Receipts screens (`REPORTS.ipsi.recPayType` is null, which is what routes
+       it away from the statement-page flow), so it is exempt by design, not by
+       oversight.
+
+       The ternary below used to read `travelpay ? "TravelPay" : "MINT"`, so an
+       IPSI source arriving here would have called itself MINT. That is now
+       impossible to reach, and if it ever does the sentence says which report
+       it really was instead of blaming the wrong one. */
+    `${REPORT_TITLE_FOR_REFUSAL[source] || String(source || "That report").toUpperCase()} ` +
+    `reconciles the statement the BPay run creates ` +
     `rather than creating one itself. ` +
     (recent.length ? `The most recent statements are ${recent.join(", ")}.` : "There are no statements at all.")
   );

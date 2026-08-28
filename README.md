@@ -29,9 +29,17 @@ npm install
 npx playwright install chromium      # only if you have no Chrome to drive
 cp .env.example .env                 # nothing in it is required to start
 
-npm run start:chrome                 # opens Chrome with CDP on 9222
+npm run start:chrome                 # opens Chrome OR EDGE with CDP on 9222
+npm run start:edge                   # Edge specifically (RAA's default browser)
 #   ↳ SIGN INTO TRAMADA IN THAT WINDOW. The run waits for you and never
 #     types credentials itself.
+#   ↳ Edge is fine. It is Chromium, speaks the same debugging protocol, and
+#     the run cannot tell the difference. The script prefers Chrome only
+#     because that is what this was tested against; on a machine with just
+#     Edge it uses Edge. `start:edge` asks for Edge and REFUSES to fall back
+#     to Chrome — asking for one browser and silently getting the other is
+#     the failure this is here to prevent. Add a port if 9222 is taken:
+#         ./start-chrome.sh --edge 9333   +   CDP_PORT=9333 npm start
 
 npm start                            # http://localhost:3000
 ```

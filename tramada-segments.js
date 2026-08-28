@@ -30,6 +30,11 @@ const TRAMADA_BASE_URL =
 const CDP_PORT = parseInt(process.env.CDP_PORT || "9222", 10);
 const CDP_HOST = process.env.CDP_HOST || "127.0.0.1";
 const CDP_MODE = process.env.CDP_MODE || "external";
+/* Chrome by default, Edge when that is what the machine has. Playwright takes
+   "msedge" as a channel and drives it identically — Edge is Chromium. RAA's
+   machines default to Edge, and `channel: "chrome"` on a machine without Chrome
+   fails at launch with a Playwright error about a missing browser rather than
+   anything a person can act on. Override with BROWSER_CHANNEL=msedge. */
 const BROWSER_CHANNEL = process.env.BROWSER_CHANNEL || "chrome";
 const HEADLESS = process.env.HEADLESS === "true";
 

@@ -78,8 +78,9 @@ async function openBrowser() {
     // and "not logged into Tramada" is a far more confusing thing to debug
     // than "I couldn't reach your Chrome".
     throw new Error(
-      `Could not connect to Chrome on ${CDP_HOST}:${CDP_PORT}. ` +
-      `Run "npm run start:chrome" and sign into Tramada in that window. [${err.message}]`
+      `Could not connect to the browser on ${CDP_HOST}:${CDP_PORT}. ` +
+      `Run "npm run start:chrome" and sign into Tramada in that window. ` +
+      `(That opens Chrome, or Edge if Chrome is not installed — either works.) [${err.message}]`
     );
   }
 }

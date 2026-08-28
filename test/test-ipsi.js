@@ -373,6 +373,30 @@ console.log("\nIPSI is not a statement-page report, and a combined run has to kn
      — the wrong automation, then blaming the data. What separates it is
      `recPayType: null`: there is no filter for it because there is no page.
      The combined run splits on exactly that. */
+/* IPSI IS EXEMPT FROM THE "BPAY FIRST" GATE, ON PURPOSE.
+
+   RAA's POC feedback BPAY 02 reads: "If BPAY has not been run yet, and a new
+   bank statement has not been created in Tramada for the day, then user cannot
+   run Mint, TravelPay and/or IPSI." It names IPSI. RAA then confirmed on
+   28-Aug: "IPSI can still run by itself because it doesn't reference the
+   Tramada bank statement."
+
+   So the feedback line and the intended behaviour differ, and the difference is
+   deliberate. Anyone reading that line later will reasonably reach for a gate.
+   This is what stops them adding one without noticing: `recPayType: null` is
+   the single fact that routes IPSI away from the statement-page flow, and if it
+   is ever given a value IPSI joins that flow and starts being refused on days
+   BPay has not run. */
+{
+  ok("IPSI has no recPayType, which is what keeps it off the statement page",
+    C.REPORTS.ipsi.recPayType == null,
+    `REPORTS.ipsi.recPayType is ${JSON.stringify(C.REPORTS.ipsi.recPayType)} — ` +
+    `give it a value and IPSI gets swept into the BPay-statement flow and refused ` +
+    `with "BPAY needs to be reconciled first", which RAA has said it must not be`);
+  ok("...unlike Mint and TravelPay, which do reconcile against that page",
+    C.REPORTS.mint.recPayType != null && C.REPORTS.travelpay.recPayType != null);
+}
+
   const onThePage = Object.keys(C.REPORTS).filter((k) => C.REPORTS[k].recPayType);
   const ownFlow = Object.keys(C.REPORTS).filter((k) => !C.REPORTS[k].recPayType);
   check("IPSI is the one with its own flow", ownFlow, ["ipsi"]);

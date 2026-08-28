@@ -8,6 +8,7 @@
     "start": "CDP_MODE=external node server.js",
     "dev": "CDP_MODE=external DEBUG=true node --watch server.js",
     "start:chrome": "./start-chrome.sh",
+    "start:edge": "./start-chrome.sh --edge",
     "build": "node tools/build-recon.js",
     "docker:build": "docker compose build",
     "docker:up": "docker compose up --build",
