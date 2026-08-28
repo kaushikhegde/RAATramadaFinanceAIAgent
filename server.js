@@ -36,8 +36,7 @@ const reconCore = require("./recon-core");
 const xlsxLite = require("./xlsx-lite");
 const xlsxWrite = require("./xlsx-write");
 const store = require("./run-store");
-const { runReconciliation, runMintReconciliation, runCombinedReconciliation,
-        fillConsultantAndShop } = require("./recon-run");
+const { runReconciliation, runMintReconciliation, runCombinedReconciliation } = require("./recon-run");
 const { runIpsiReconciliation } = require("./tramada-ipsi");
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
@@ -413,66 +412,21 @@ function handleReconParse(session, msg) {
        the page so the inbox can show the spreadsheet as Finance wrote it, and
        so the export can hand back that same spreadsheet with the run's columns
        filled in rather than a new file of this code's own devising. */
-    /* STEPS 7-9 RUN AFTER THIS REPLY, NOT BEFORE IT.
-       Consultant and Shop are knowable the moment the file names a booking, but
-       reading them costs two page loads each — so doing it first made a
-       drag-and-drop sit for half a minute looking like it had hung. The rows go
-       back now, and the two columns arrive when they arrive.
-
-       `enriching` tells the page to hold Start run until they do. That is not
-       cosmetic: a run started mid-lookup reads the same two fields off the same
-       bookings, and the two passes would race to write the same cells. */
-    const enriching = source === "bpay" && rows.length > 0;
+    /* Consultant and Shop are left blank here, for both .xlsx and .csv BPay
+       uploads alike — they are filled by the run itself, off the live receipt
+       form probe, the same way a CSV upload has always worked. An eager lookup
+       used to run right after upload for .xlsx only (querying Tramada a second
+       time before Start run was even pressed), which made the two formats
+       behave differently and made the reviewer wait on a spinner for no
+       reason the run itself doesn't already handle. */
     reply({
       rows, problems, settlement, columns: columns || sheet.headers,
       format: isZip ? "xlsx" : "csv",
       headers: sheet.headers, sheetRows: sheet.rows.length,
-      enriching,
     });
-
-    if (enriching) enrich(session, source, rows, problems);
   } catch (err) {
     reply({ error: reconCore.tidyError(err.message) });
   }
-}
-
-
-/**
- * Fill Consultant and Shop after the upload has already been answered.
- *
- * Deliberately NOT awaited by its caller: the point is that the page has the
- * file on screen before this starts. It reports progress as it goes and sends
- * the finished rows back in one frame, then releases Start run — which the page
- * has been holding since `enriching` came back true.
- *
- * `recon_enriched` is ALWAYS sent, including when the lookup could not run at
- * all. A page that is told to wait and never told to stop is a Start run button
- * that stays greyed out forever, which is a worse failure than blank columns.
- */
-function enrich(session, source, rows, problems) {
-  const both = rows.concat((problems || []).map((p) => p.row).filter(Boolean));
-  Promise.resolve()
-    .then(() => fillConsultantAndShop(both, {
-      onProgress: (pct, m) => send(session, { type: "recon_progress", message: m, ok: true, pct }),
-    }))
-    .catch((err) => ({ filled: 0, attempted: both.length, skipped: reconCore.tidyError(err.message) }))
-    .then((said) => {
-      send(session, {
-        type: "recon_enriched",
-        source,
-        rows,
-        filled: said.filled,
-        attempted: said.attempted,
-        skipped: said.skipped || null,
-      });
-      send(session, {
-        type: "recon_progress",
-        ok: !said.skipped,
-        message: said.skipped
-          ? `Consultant and Shop were left blank — ${said.skipped}`
-          : `Consultant and Shop filled in for ${said.filled} of ${said.attempted} row(s).`,
-      });
-    });
 }
 
 /**

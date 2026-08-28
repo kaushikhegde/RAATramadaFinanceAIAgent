@@ -722,9 +722,21 @@ async function makeMint() {
   sayPlan("mint");
   if (DRY) return say("Dry run — Tramada was never opened.\n");
 
+  // Sixteen columns, matching the real Mint export (and make-mint-csv.js's own
+  // sample) — this used to stop at twelve, silently dropping Created/
+  // Authorised/Updated/Due Time. The run never reads those four, but the file
+  // is supposed to look like the thing it is imitating.
   const MINT_COLS = ["From Company", "From Company Number", "To Company ", "To Company Number",
-    "Transaction Reference", "Amount", "Currency", "Status", "Recipient Reference",
-    "Sender Reference", "Settlement Amt", "Statement Date"];
+    "Transaction Reference", "Amount", "Currency", "Status",
+    "Created Time", "Authorised Time", "Updated Time", "Due Time",
+    "Recipient Reference", "Sender Reference", "Settlement Amt", "Statement Date"];
+  // "2026-08-01 06:12:14.220" — the sample's own format, to the millisecond.
+  const mintTimestamp = (d) => {
+    const p2 = (n) => String(n).padStart(2, "0");
+    const p3 = (n) => String(n).padStart(3, "0");
+    return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ` +
+      `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}.${p3(d.getMilliseconds())}`;
+  };
   /* Transaction Reference IS the `P.` number Tramada issues, so it is blank
      until the payment goes through. The row still goes down when the booking is
      made: two real bookings once existed with no file naming them at all,
@@ -742,6 +754,12 @@ async function makeMint() {
       Amount: core.money(b.dueCents || 0),
       Currency: "AUD",
       Status: "Pending at Bank",
+      // Filled in once the payment actually goes through, alongside
+      // Transaction Reference — see the success branch below.
+      "Created Time": "",
+      "Authorised Time": "",
+      "Updated Time": "",
+      "Due Time": "",
       "Recipient Reference": ref("MP", b.bookingNo),
       "Sender Reference": ref("MP", b.bookingNo),
       "Settlement Amt": "",
@@ -832,6 +850,15 @@ async function makeMint() {
          reconciles nothing and looks like a broken matcher. */
       row["Transaction Reference"] = paymentNo;
       row.Amount = amount;
+      // The sample's Created/Authorised Time are identical, Updated Time sits
+      // about an hour later, and Due Time is a bare date — mirrored here, not
+      // measured, since Tramada's payment form doesn't hand any of these back.
+      const now = new Date();
+      const updated = new Date(now.getTime() + 50 * 60 * 1000);
+      row["Created Time"] = mintTimestamp(now);
+      row["Authorised Time"] = mintTimestamp(now);
+      row["Updated Time"] = mintTimestamp(updated);
+      row["Due Time"] = now.toISOString().slice(0, 10);
       csv.update();
     } catch (err) {
       console.error(`     ✗ ${core.tidyError(err.message)}`);

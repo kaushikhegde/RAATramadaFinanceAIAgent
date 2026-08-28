@@ -195,11 +195,18 @@ function _findSuggestion(arg) {
   );
 
   let hit = vis.find((n) => new RegExp("^\\s*[\\(\\[]" + esc + "[\\)\\]]").test(n.textContent || ""));
+  /* VAL as a whole token — bounded by a non-alphanumeric character or the
+     string edge — never as a bare prefix. The old "contains" fallback
+     (`t.includes(val) && t !== val`) let a suggestion for "X1" satisfy a
+     search for "X" just as well as the real "X" entry, and picked whichever
+     the dropdown rendered first — confirmed live 28-Aug-2026 in the sibling
+     copy of this function (tramada-booking.js), where typing the exact,
+     correct client code "GRAY/MEGAN DR" always silently landed on
+     "GRAY/MEGAN DR1" instead. Same risk here for any autocomplete whose
+     values collide by suffix (creditor names, airline codes, etc). */
   if (!hit) {
-    hit = vis.find((n) => {
-      const t = (n.textContent || "").trim().toUpperCase();
-      return t.includes(val) && t !== val; // skip the input's own text echo
-    });
+    const boundary = new RegExp("(^|[^A-Z0-9])" + esc + "([^A-Z0-9]|$)");
+    hit = vis.find((n) => boundary.test((n.textContent || "").trim().toUpperCase()));
   }
   if (!hit) return null;
   const r = hit.getBoundingClientRect();

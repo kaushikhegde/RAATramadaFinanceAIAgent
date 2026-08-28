@@ -204,7 +204,13 @@ function parseReconRows(headers, sheetRows) {
     const row = {
       // The line number a person would count to in the file: the header is 1.
       line: i + 2,
-      date: at(f, col.date),
+      // Straight out of a workbook this is an Excel serial (46204) — measured
+      // on RAA's own "B/PAY FILE DATE" column, which `xlsx-lite` deliberately
+      // does not convert (see `serialDate`). Mint and TravelPay already do
+      // this; BPay's own date column did not, so a real .xlsx (as opposed to
+      // the hand-written CSV fixture) showed the raw serial number instead of
+      // a date. `serialDate` leaves a CSV's already-formatted text untouched.
+      date: serialDate(at(f, col.date)),
       reference: at(f, col.reference),
       recPayType: at(f, col.recPayType),
       amount: at(f, col.amount),
@@ -1498,7 +1504,10 @@ const IPSI_COLUMNS = {
      receipt's Reference field when the Credit Card Swipe receipt is raised.
      Merchant Reference is not read at all now. */
   reference: ["transaction reference"],
-  bookingNo: ["booking number"],
+  // "Booking Number" is the already-cleaned spreadsheet's name for this
+  // column; IPSI's own raw export calls it just "Booking" — same pairing as
+  // `kind` below. Both read so either shape parses.
+  bookingNo: ["booking number", "booking"],
   amount: ["transaction amount"],
   // "Custom 5" is the ALREADY-CLEANED spreadsheet's name for this column;
   // IPSI's own raw "Download Copy" export calls the same thing "Transaction
@@ -1509,7 +1518,9 @@ const IPSI_COLUMNS = {
   settlementDate: ["settlement date"],
   settlementAmount: ["settlement amount"],
   tramadaPaymentNo: ["tramada payment number"],
-  cardHolder: ["card holder name"],
+  // Same cleaned-vs-raw pairing: "Card Holder Name" is the cleaned name,
+  // IPSI's own export calls it "Cardholder".
+  cardHolder: ["card holder name", "cardholder"],
   linked: ["linked transaction"],
 };
 

@@ -50,7 +50,7 @@
 require("dotenv").config();
 const { chromium } = require("playwright");
 const core = require("./recon-core");
-const { runTramadaReceipt, getBookingDetails, getBookingBranch } = require("./tramada-receipt");
+const { runTramadaReceipt } = require("./tramada-receipt");
 /* IPSI never touches a bank statement page — it walks Finance Receipts. A
    combined run has to be able to drive it too, or a loaded IPSI file gets
    matched against a page its transactions can never be on. */
@@ -930,12 +930,30 @@ async function selectMatchedTransactions(page, statementRows, matchedTransNos, s
 
       const box = page.locator(`input[type="checkbox"][name="selected"][value="${row.selectId}"]`).first();
       if (!(await box.count())) { missing.push(shown); continue; }
-      await box.click();
-      await sleep(250);
 
-      // Verify this one before moving on. A tick that did not register is the
-      // difference between committing what we filed and committing nothing.
-      const on = await box.isChecked().catch(() => false);
+      /* Click, then POLL for checked rather than one fixed 250ms wait —
+         the reconcile screen's own click handler reorders the table and does
+         its own bookkeeping (CLAUDE.md §6), and a single 250ms sample caught
+         it mid-settle: the click had genuinely landed, isChecked() just read
+         a moment too early. One retry click covers the other real case, a
+         click that lands before the row has finished rendering and is
+         swallowed outright. Still throws — never silently proceeds — if
+         neither the wait nor the retry produces a checked box; the rule this
+         guards ("a tick that did not register is the difference between
+         committing what we filed and committing nothing") is unchanged. */
+      await box.click();
+      let on = false;
+      for (let i = 0; i < 8 && !on; i++) {
+        await sleep(250);
+        on = await box.isChecked().catch(() => false);
+      }
+      if (!on) {
+        await box.click().catch(() => {});
+        for (let i = 0; i < 8 && !on; i++) {
+          await sleep(250);
+          on = await box.isChecked().catch(() => false);
+        }
+      }
       if (!on) {
         throw new Error(`Ticking transaction ${shown} did not register on the page.`);
       }
@@ -1991,85 +2009,8 @@ async function runCombinedReconciliation(o = {}) {
   }
 }
 
-/**
- * Steps 7-9 for a file that has just been uploaded — read in the BACKGROUND.
- *
- * Consultant and Shop are facts about the booking: true the moment the file
- * names a booking number, and knowable without running anything. But reading
- * them costs two page loads each, so doing it before the upload is acknowledged
- * makes a drag-and-drop sit there for half a minute looking broken.
- *
- * So the upload answers immediately and this runs after it, with the page told
- * to hold Start run until it finishes. That ordering matters: a run started
- * mid-lookup would read the same two fields again off the same bookings, and
- * the two passes would race to write the same cells.
- *
- * READ-ONLY — the summary for `Cons1`, the profile for `#level1Branch`. It
- * raises nothing, ticks nothing and commits nothing.
- *
- * IT MUST NEVER STOP AN UPLOAD. The file has already arrived and already been
- * stored, so every failure here is swallowed and reported:
- *
- *   - Chrome unreachable, or nobody signed in → every row keeps blank columns
- *     and the caller is told which of the two it was. Deliberately NOT
- *     `ensureLoggedIn`, whose five-minute wait belongs to a run somebody is
- *     watching, not to a file that is already on screen.
- *   - one booking that will not open → that row stays blank, the rest continue.
- *
- * A blank cell means "not read". Nothing here guesses, and in particular the
- * consultant's own home branch — the decoy sitting on the same profile page —
- * is never used as a stand-in for the booking's.
- */
-async function fillConsultantAndShop(rows, { onProgress = () => {} } = {}) {
-  const todo = (rows || []).filter((r) => r && r.bookingNo);
-  if (!todo.length) return { filled: 0, attempted: 0, skipped: "no row carries a booking number" };
-
-  let browser;
-  try {
-    browser = await openBrowser();
-  } catch (err) {
-    return { filled: 0, attempted: 0, skipped: core.tidyError(err.message) };
-  }
-
-  let page;
-  let filled = 0;
-  try {
-    const context = browser.contexts()[0] || (await browser.newContext());
-    page = await context.newPage();
-
-    if (!(await tramadaIsAuthed(page))) {
-      return {
-        filled: 0, attempted: 0,
-        skipped: `nobody is signed into Tramada in the Chrome on port ${CDP_PORT}`,
-      };
-    }
-
-    for (const [i, row] of todo.entries()) {
-      onProgress(Math.round(((i + 1) / todo.length) * 100),
-        `Reading consultant and shop for booking ${row.bookingNo} (${i + 1} of ${todo.length})...`);
-      try {
-        const details = await getBookingDetails(page, row.bookingNo);
-        if (details && details.consultant) row.consultant = details.consultant;
-      } catch { /* stays blank — the next read may still work */ }
-      // Never throws by contract; a branch it cannot read comes back "".
-      const profile = await getBookingBranch(page, row.bookingNo);
-      const shop = core.branchCode((profile && profile.branch) || "");
-      if (shop) row.shop = shop;
-      if (row.consultant || row.shop) filled++;
-    }
-    return { filled, attempted: todo.length, skipped: null };
-  } catch (err) {
-    return { filled, attempted: todo.length, skipped: core.tidyError(err.message) };
-  } finally {
-    // CDP: drops the connection, never closes the human's Chrome.
-    try { if (page && !page.isClosed()) await page.close(); } catch { /* already gone */ }
-    await browser.close().catch(() => {});
-  }
-}
-
 module.exports = {
   runReconciliation, runMintReconciliation, runCombinedReconciliation,
-  fillConsultantAndShop,
   sortPage, applyFilter, filterFor, readVisibleTransactions, fileReceipts,
   readExistingPages, createStatement, openFreshStatementPage, filterAndRead,
   setStatementBalances, selectMatchedTransactions, finishStatementPage,
