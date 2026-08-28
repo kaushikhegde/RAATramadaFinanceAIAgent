@@ -190,11 +190,18 @@ function _findSuggestion(arg) {
   );
 
   let hit = vis.find((n) => new RegExp("^\\s*[\\(\\[]" + esc + "[\\)\\]]").test(n.textContent || ""));
+  /* VAL as a whole token — bounded by a non-alphanumeric character or the
+     string edge — never as a bare prefix. The old "contains" fallback
+     (`t.includes(val) && t !== val`) let a suggestion for "X1" satisfy a
+     search for "X" just as well as the real "X" entry, and picked whichever
+     the dropdown rendered first — confirmed live 28-Aug-2026 in the sibling
+     copy of this function (tramada-booking.js), where typing the exact,
+     correct client code "GRAY/MEGAN DR" always silently landed on
+     "GRAY/MEGAN DR1" instead. Same risk here for any autocomplete whose
+     values collide by suffix (creditor names, airline codes, etc). */
   if (!hit) {
-    hit = vis.find((n) => {
-      const t = (n.textContent || "").trim().toUpperCase();
-      return t.includes(val) && t !== val; // skip the input's own text echo
-    });
+    const boundary = new RegExp("(^|[^A-Z0-9])" + esc + "([^A-Z0-9]|$)");
+    hit = vis.find((n) => boundary.test((n.textContent || "").trim().toUpperCase()));
   }
   if (!hit) return null;
   const r = hit.getBoundingClientRect();
@@ -296,10 +303,18 @@ async function pickAutocomplete(page, selector, value) {
   const first = el.first();
   const typed = String(value).trim().toUpperCase();
 
-  // The pick "registered" iff the field no longer holds just the raw typed text.
-  const registered = async () => {
+  // The pick "registered" iff the field holds the suggestion's OWN text
+  // (`expected`, when a pick just happened) or, failing that, anything other
+  // than the raw typed text. Comparing only against `typed` was the bug: it
+  // assumed a successful pick always changes the field's text from what was
+  // typed, which is false whenever the typed value is already the complete,
+  // correct name — the field is filled correctly and this returned null every
+  // time. Confirmed live 28-Aug-2026 in the sibling copy of this function.
+  const registered = async (expected) => {
     const v = ((await first.inputValue().catch(() => "")) || "").trim();
-    return v && v.toUpperCase() !== typed ? v : null;
+    if (!v) return null;
+    if (expected) return v.toUpperCase() === expected.toUpperCase() ? v : null;
+    return v.toUpperCase() !== typed ? v : null;
   };
 
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -334,7 +349,7 @@ async function pickAutocomplete(page, selector, value) {
     // (a) Synthetic in-page click — the method that worked for city/supplier.
     await page.evaluate(_findSuggestion, { sel: selector, raw: String(value), doClick: true }).catch(() => null);
     await sleep(500);
-    let v = await registered();
+    let v = await registered(match.text);
     if (v) return v;
 
     // (b) Real mouse click at FRESH coordinates — needed by the Creditor widget.
@@ -345,7 +360,7 @@ async function pickAutocomplete(page, selector, value) {
     await sleep(150);
     await page.mouse.click(fresh.x, fresh.y);
     await sleep(600);
-    v = await registered();
+    v = await registered(fresh.text);
     if (v) return v;
     // Neither click registered — loop re-types and tries once more.
   }

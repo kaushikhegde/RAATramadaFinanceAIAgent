@@ -78,11 +78,23 @@ function _findSuggestion(arg) {
   );
 
   let hit = vis.find((n) => new RegExp("^\\s*[\\(\\[]" + esc + "[\\)\\]]").test(n.textContent || ""));
+  /* VAL as a whole token — bounded by a non-alphanumeric character or the
+     string edge — never as a bare prefix.
+     Client codes collide by numeric suffix in this sandbox: GRAY/MEGAN DR
+     and GRAY/MEGAN DR1 both exist, same for MRS/MRS1-4 and MS/MS1. The old
+     fallback was plain `t.includes(val)`, which a suggestion row for "DR1"
+     satisfies just as well as one for "DR" — "1" is not a word boundary — and
+     `vis.find` took whichever the dropdown happened to render first. Typing
+     "GRAY/MEGAN DR" landed on "GRAY/MEGAN DR1" every time, silently: no
+     error, a real booking created against the wrong client. Confirmed live
+     28-Aug-2026 — GRAY/MEGAN DR1 is a retail-type account and cannot take a
+     Debtor Payment Receipt at all, which is the ONLY reason BPay uses
+     GRAY/MEGAN DR in the first place. An exact full-text match doesn't fix
+     this: the suggestion row carries the client's name and branch after the
+     code, so "GRAY/MEGAN DR" is never the row's whole text either. */
   if (!hit) {
-    hit = vis.find((n) => {
-      const t = (n.textContent || "").trim().toUpperCase();
-      return t.includes(val) && t !== val;
-    });
+    const boundary = new RegExp("(^|[^A-Z0-9])" + esc + "([^A-Z0-9]|$)");
+    hit = vis.find((n) => boundary.test((n.textContent || "").trim().toUpperCase()));
   }
   if (!hit) return null;
   const r = hit.getBoundingClientRect();
@@ -97,9 +109,23 @@ async function pickAutocomplete(page, selector, value) {
   const first = el.first();
   const typed = String(value).trim().toUpperCase();
 
-  const registered = async () => {
+  /* `expected` is the suggestion's OWN text, when a pick just happened —
+     compare the field against THAT rather than against `typed`. The old
+     check (`v.toUpperCase() !== typed`) assumed a successful pick always
+     changes the field's text from what was typed, which is true when a short
+     code expands to a fuller suggestion ("GRAY/SPIDER" -> "GRAY/SPIDER MS")
+     but false whenever the typed code is already the complete, correct one
+     ("GRAY/MEGAN DR") — the field is clicked, filled with the right value,
+     and this returned null every time, so a correct pick looked identical to
+     no pick at all and the whole function threw "could not select" after two
+     attempts. Confirmed live 28-Aug-2026. Only the no-suggestion-in-hand
+     fallback (the blur branch below) still uses the "changed from typed"
+     heuristic, because there is nothing else to check it against there. */
+  const registered = async (expected) => {
     const v = ((await first.inputValue().catch(() => "")) || "").trim();
-    return v && v.toUpperCase() !== typed ? v : null;
+    if (!v) return null;
+    if (expected) return v.toUpperCase() === expected.toUpperCase() ? v : null;
+    return v.toUpperCase() !== typed ? v : null;
   };
 
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -131,7 +157,7 @@ async function pickAutocomplete(page, selector, value) {
 
     await page.evaluate(_findSuggestion, { sel: selector, raw: String(value), doClick: true }).catch(() => null);
     await sleep(500);
-    let v = await registered();
+    let v = await registered(match.text);
     if (v) return v;
 
     const fresh =
@@ -141,7 +167,7 @@ async function pickAutocomplete(page, selector, value) {
     await sleep(150);
     await page.mouse.click(fresh.x, fresh.y);
     await sleep(600);
-    v = await registered();
+    v = await registered(fresh.text);
     if (v) return v;
   }
 
