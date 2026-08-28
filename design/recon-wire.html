@@ -686,7 +686,7 @@ header.top { display: none !important }
         ipsiNuvei = run.transactionTotal || '';
         active = 'ipsi';
         syncActive();
-        results = allResults();
+        clearReport();                   // loading a settlement is not running it
         render();
       })
       .catch(() => {});
@@ -936,7 +936,10 @@ header.top { display: none !important }
           '<div class="muted rc-hint" data-hint="' + kind + '" style="margin-top:8px">' + hintSeed + '</div>' +
         '<div class="card-slot" data-slot="' + kind + '"></div>' +
         '<div class="actions">' +
-        '<button class="btn sm" data-go="inbox">View rows</button>' +
+        /* NO "VIEW ROWS". POC feedback General 13 — Preview shows the file's
+           rows right here, and "View rows" jumped to the report page, which
+           after General 14 has nothing on it until a run has happened. Two
+           buttons, one of which now leads somewhere empty. */
         '<button class="btn sm ghost" data-preview="' + kind + '">' +
         (s.previewOpen ? 'Hide preview' : 'Preview') + '</button>' +
         '<button class="btn sm ghost" data-choose="' + kind + '">Replace file</button>' +
@@ -1248,6 +1251,24 @@ header.top { display: none !important }
      because those are the ones that get FILED, then Mint. Numbered across both
      — `n` is what the server patches rows by, and two rows called 1 would
      overwrite each other in the inbox and in runs.json alike. */
+  /* HAS A RUN ACTUALLY HAPPENED? POC feedback General 14: "When i just upload
+     a spreadsheet, nothing should appear on the Reconciliation Inbox page.
+     Remove any prepopulation of rows."
+
+     Uploading used to fill the report with every row of the file, each one
+     badged "Pending" — a page that looked like a finished run made of rows
+     nothing had yet looked at, and a nav pill counting work that had not
+     started. `results` is now empty until Start run fills it.
+
+     The rows are not lost: they live on `source[kind].rows` and Preview shows
+     them on the card, which is where the file belongs before it is run. */
+  let hasRun = false;
+
+  function clearReport() {
+    results = [];
+    hasRun = false;
+  }
+
   function allResults() {
     let n = 0;
     const runnable = RUN_ORDER.reduce((acc, kind) => {
@@ -1289,7 +1310,7 @@ header.top { display: none !important }
     if (kind === 'ipsi') ipsiNuvei = '';
     active = kind;
     syncActive();
-    results = allResults();
+    clearReport();                       // General 14 — an upload is not a run
     // render() rebuilds the cards, so the hint has to be written after it — the
     // element it goes in does not exist until then.
     render();
@@ -1626,20 +1647,31 @@ header.top { display: none !important }
       return;
     }
 
+    /* NO WHY COLUMN. POC feedback General 07: "Remarks and Why column seem to
+       share the same thing… Remove why column." The sheet-column table lost it
+       first; this compact one kept it, so Mint, TravelPay and IPSI still showed
+       a Why while BPay did not.
+
+       The sentence itself is not thrown away — it becomes the hover title on
+       the cell that carries the row's outcome, the same as `RUN_COLUMNS`'
+       `tip: 'why'` does. Remarks is BR01-BR11's fixed wording and answers
+       "what do I do"; Why is the run's own sentence and answers "what did it
+       see". Losing the column should not mean losing the second one. */
     const head = mint
       ? '<th style="width:16px"></th><th>Transaction</th><th class="num">Amount</th>' +
-        '<th>To company</th><th>Reconciled</th><th>Why</th>'
+        '<th>To company</th><th>Reconciled</th>'
       : '<th style="width:16px"></th><th>Statement line</th><th class="num">Amount</th>' +
         '<th>Booking</th><th>Receipt</th><th>Allocation</th><th>Reconciled</th>' +
-        '<th>Remarks</th><th>Why</th>';
-    const cols = mint ? 6 : 9;
+        '<th>Remarks</th>';
+    const cols = mint ? 5 : 8;
+    // The row's own sentence, as a tooltip rather than a column.
+    const whyTip = (r) => (r && r.why ? ' title="' + esc(String(r.why)) + '"' : '');
     const body = shown.map((r) => mint
       ? '<tr><td><span class="tdot ' + dot(r) + '"></span></td>' +
         '<td><b class="ref">' + esc(r.transNo) + '</b></td>' +
         '<td class="num">' + esc(r.amount) + '</td>' +
         '<td>' + esc(r.toCompany || '') + '</td>' +
-        '<td>' + badge(r.reconciliation) + '</td>' +
-        '<td class="muted">' + esc(r.why || '') + '</td></tr>'
+        '<td' + whyTip(r) + '>' + badge(r.reconciliation) + '</td></tr>'
       /* On a COMBINED run both kinds of row share this table, and a Mint row has
          no reference, no date and no booking — rendered as a BPay row it came
          out as a bare "·" with an empty Booking column and, worse, a "pending"
@@ -1663,14 +1695,15 @@ header.top { display: none !important }
            this is the cell Finance acts on, so it is not left to the working
            file alone. Bold because a remark always means somebody has
            something to do. */
-        '<td>' + (r.remark ? '<b>' + esc(r.remark) + '</b>' : '<span class="muted">—</span>') + '</td>' +
-        '<td class="muted">' + esc(r.why || '') + '</td></tr>').join('');
+        '<td' + whyTip(r) + '>' + (r.remark ? '<b>' + esc(r.remark) + '</b>' : '<span class="muted">—</span>') + '</td></tr>').join('');
 
     pane.innerHTML = '<table><thead><tr>' + head + '</tr></thead><tbody>' +
       (shown.length ? body
         : '<tr><td colspan="' + cols + '" style="padding:26px;text-align:center" class="muted">' +
           (all.length ? 'Nothing matches that filter.'
-            : 'Load a report on Sources &amp; upload.') + '</td></tr>') +
+            : (loaded().length
+                ? 'Nothing here yet — press Start run on Sources &amp; upload.'
+                : 'Load a report on Sources &amp; upload.')) + '</td></tr>') +
       '</tbody></table>';
 
     afterTable(pane, all, shown);
@@ -2101,6 +2134,7 @@ header.top { display: none !important }
        Allocation column is honest where "Pending" forever is not. On a combined
        run both kinds of row sit in one table, so this is decided per ROW rather
        than per run. */
+    hasRun = true;                       // from here the report has something real to show
     results = allResults().map((r) => {
       /* A row the run will never touch is not "running" and is not "pending".
          Lines with no booking number, and the row carrying the file's TOTAL,
@@ -2204,7 +2238,10 @@ header.top { display: none !important }
         ? '<span style="color:var(--warn,#8a6d00)">Consultant and Shop were left blank — ' + esc(m.skipped) + '</span>'
         : 'Consultant and Shop filled in for ' + m.filled + ' of ' + m.attempted + ' row(s).';
       paintHint(kind);
-      results = allResults();
+      /* Enrichment happens BEFORE the run, so it must not put rows on the
+         report either. The names are kept on source[kind].rows and picked up
+         by allResults() when Start run builds the table for real. */
+      if (hasRun) results = allResults();
       syncActive();
       render();
       return;

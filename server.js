@@ -618,7 +618,13 @@ async function handleReconRun(session, msg) {
     closeRun(run, out);
     send(session, {
       type: "recon_progress",
-      message: `${s.allocated} of ${s.total} allocated, ${s.reconciled} reconciled, ${s.both} fully clean` +
+      /* NO "fully clean". POC feedback BPAY 05: "What does 'fully clean' means?
+         Doesn't sound like a term RAA uses, can remove if not needed." It was
+         a third count for rows that were both allocated AND reconciled — which
+         the first two numbers already let you work out, under a name Finance
+         does not use. `s.both` is still computed and still on the run record;
+         it just no longer gets a made-up label in the sentence a person reads. */
+      message: `${s.allocated} of ${s.total} allocated, ${s.reconciled} reconciled` +
         (s.failed ? `, ${s.failed} failed` : ""),
     });
     send(session, { type: "recon_done", pageNumber: out.pageNumber, summary: s, runId: run && run.id });
