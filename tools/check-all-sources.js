@@ -245,7 +245,12 @@ function combined(byReport) {
     console.log(`    ${k.padEnd(10)} → ${msg.slice(0, 76)}…`);
     opens ? good(`${k} is refused with RAA's exact sentence`) : bad(`${k}'s refusal does not open with RAA's sentence`);
   }
-  console.log(`    ipsi       → NOT REFUSED — it never opens a statement page (open gap)`);
+  /* NOT A GAP — a DECISION. RAA, 28-Aug: "IPSI can still run by itself
+     because it doesn't reference the Tramada bank statement." The POC
+     feedback line for BPAY 02 does name IPSI, but the condition it attaches
+     describes a page IPSI never opens. This line used to read "open gap",
+     which invites someone to close it. */
+  console.log(`    ipsi       \u2192 not refused, and correctly so — it never opens a statement page (RAA confirmed 28-Aug)`);
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
