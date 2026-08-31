@@ -4,30 +4,46 @@
  *   node tools/check-booking-clients.js 13115 13703 13706
  *   node tools/check-booking-clients.js --from csv_uploads/tramada-statement-lines.csv
  *
- * Opens each booking's Receipts page and reports two things: the CLIENT on the
- * booking, and what `#receiptCategory` actually offers. Nothing else, and
- * nothing is saved — no receipt is raised, no form is submitted.
+ * Opens each booking's Profile and Receipts pages and reports three things: the
+ * booking's ACCOUNT TYPE, its client, and what `#receiptCategory` actually
+ * offers. Nothing else, and nothing is saved — no receipt is raised, no form is
+ * submitted.
  *
  * ── WHY THIS EXISTS ──────────────────────────────────────────────────────
  * "BPAY has issues, mainly the debtor payment error" is a report we cannot act
  * on, because the same message has two completely different causes and
  * opposite fixes:
  *
- *   1. The BOOKINGS are on the wrong client. `Debtor Payment Receipt` only
- *      appears when the client is a DEBTOR account (e.g. "GRAY/MEGAN DR", with
- *      the DR). On a retail-account client Tramada offers the Client variants
- *      and nothing else, and the run correctly refuses rather than filing a
- *      BPay payment under a type the reconcile filter never looks at.
- *      → Fix the fixtures. The code is right.
+ *   1. The BOOKINGS were opened on the wrong account type. `Debtor Payment
+ *      Receipt` appears only on a CORPORATE booking; a RETAIL one fills
+ *      `#retailDebtor`, leaves `#debtor` empty, and so has no debtor to receipt
+ *      against — Tramada offers the Client variants and nothing else, and the
+ *      run correctly refuses rather than filing a BPay payment under a type the
+ *      reconcile filter never looks at.
+ *      → Fix the fixtures (tools/make-fixtures.js ACCOUNT_FOR). The code is right.
  *
- *   2. Real RAA BPay bookings genuinely are NOT debtor accounts, in which case
- *      `core.BPAY_RECEIPT` is wrong and the whole thing needs revisiting with
- *      Finance.
+ *   2. Real RAA BPay bookings genuinely are NOT debtor-account bookings, in
+ *      which case `core.BPAY_RECEIPT` is wrong and the whole thing needs
+ *      revisiting with Finance.
  *      → Fix the code. The bookings are right.
  *
  * Guessing between those is how `BPAY_RECEIPT.label` got changed once already,
  * on the evidence of whichever bookings happened to be on hand. This asks
  * Tramada instead.
+ *
+ * ── IT IS THE BOOKING, NOT THE CLIENT ────────────────────────────────────
+ * This tool used to print only the client and conclude "this is a CLIENT
+ * problem — the DR suffix matters", which sent you to change the client while
+ * the booking stayed retail and the dropdown never moved. Separated live
+ * 31-Aug-2026, same client on both sides:
+ *
+ *   13115  GRAY/MEGAN DR (client id 415)  booking CORPORATE  → Debtor variants
+ *   14120  GRAY/MEGAN DR (client id 415)  booking RETAIL     → Client variants
+ *   13034  MOULDS/NICHOLAS MR (id 4103)   booking CORPORATE  → Debtor variants
+ *
+ * Both of those clients are CORPORATE account types. The client is still worth
+ * printing — Tramada takes the booking's initial account type from it — but the
+ * account type is the answer, so it gets its own column.
  */
 const fs = require("fs");
 const path = require("path");
@@ -74,37 +90,49 @@ const WANT = core.BPAY_RECEIPT.label;
   const page = await ctx.newPage();
 
   console.log(`\n  Looking for "${WANT}" on ${bookings.length} booking(s).\n`);
-  console.log(`  ${"booking".padEnd(10)}${"client".padEnd(20)}offers`);
-  console.log(`  ${"-".repeat(74)}`);
+  console.log(`  ${"booking".padEnd(10)}${"account".padEnd(11)}${"client".padEnd(20)}offers`);
+  console.log(`  ${"-".repeat(84)}`);
 
   const bad = [];
   for (const b of bookings) {
     try {
-      await page.goto(`${BASE}/booking/booking-receipts.htm?mode=edit&id=${encodeURIComponent(b)}`,
+      /* The account type comes off the PROFILE page's own <select>, never off a
+         name-shaped string in the page text. The old client column was
+         `body.innerText.match(/[A-Z]+\/[A-Z]+.../)` — the first thing on the
+         page that looked like a name, which is a passenger as often as the
+         client. Read the control that decides, and read it by id. */
+      await page.goto(`${BASE}/booking/booking-profile.htm?mode=edit&id=${encodeURIComponent(b)}`,
         { waitUntil: "domcontentloaded", timeout: 45000 });
       if (page.url().includes("login.htm")) {
         console.log(`\n  That browser is not signed into Tramada. Sign in and re-run.\n`);
         break;
       }
-      const info = await page.evaluate(() => {
-        const sel = document.querySelector("#receiptCategory");
-        const txt = document.body.innerText || "";
-        const m = txt.match(/[A-Z][A-Z'-]+\/[A-Z][A-Z'-]*(?: [A-Z]{2,3})?/);
+      const prof = await page.evaluate(() => {
+        const g = (id) => document.getElementById(id);
         return {
-          client: m ? m[0] : "(not found)",
-          options: sel ? [...sel.options].map((o) => o.text.trim()).filter(Boolean) : null,
+          accountType: g("accountTypeCode") ? String(g("accountTypeCode").value || "") : "",
+          client: g("client") ? String(g("client").value || "").trim() : "",
         };
       });
+
+      await page.goto(`${BASE}/booking/booking-receipts.htm?mode=edit&id=${encodeURIComponent(b)}`,
+        { waitUntil: "domcontentloaded", timeout: 45000 });
+      const info = await page.evaluate(() => {
+        const sel = document.querySelector("#receiptCategory");
+        return { options: sel ? [...sel.options].map((o) => o.text.trim()).filter(Boolean) : null };
+      });
+      const acct = (prof.accountType || "?").padEnd(11);
+      const client = (prof.client || "(not found)").padEnd(20);
       if (!info.options) {
-        console.log(`  ${String(b).padEnd(10)}${info.client.padEnd(20)}(no receipt category on the page — is ${b} a real booking?)`);
+        console.log(`  ${String(b).padEnd(10)}${acct}${client}(no receipt category on the page — is ${b} a real booking?)`);
         bad.push({ b, why: "no receipt category" });
         continue;
       }
       const has = info.options.includes(WANT);
-      console.log(`  ${String(b).padEnd(10)}${info.client.padEnd(20)}${has ? "\x1b[32m✓\x1b[0m " : "\x1b[31m✗\x1b[0m "}${info.options.join(" · ")}`);
-      if (!has) bad.push({ b, client: info.client, options: info.options });
+      console.log(`  ${String(b).padEnd(10)}${acct}${client}${has ? "\x1b[32m✓\x1b[0m " : "\x1b[31m✗\x1b[0m "}${info.options.join(" · ")}`);
+      if (!has) bad.push({ b, client: prof.client, accountType: prof.accountType, options: info.options });
     } catch (e) {
-      console.log(`  ${String(b).padEnd(10)}${"".padEnd(20)}could not read it — ${e.message.split("\n")[0]}`);
+      console.log(`  ${String(b).padEnd(10)}${"".padEnd(31)}could not read it — ${e.message.split("\n")[0]}`);
       bad.push({ b, why: e.message.split("\n")[0] });
     }
   }
@@ -115,12 +143,20 @@ const WANT = core.BPAY_RECEIPT.label;
     console.log(`  If a run still reports it missing, the problem is elsewhere — send the run's activity log.\n`);
   } else {
     console.log(`  ${bad.length} of ${bookings.length} cannot take a "${WANT}".\n`);
-    console.log(`  This is a CLIENT problem, not a receipt-type problem: Tramada offers the`);
-    console.log(`  Debtor variants only when the booking's client is a debtor account`);
-    console.log(`  (e.g. "GRAY/MEGAN DR" — the DR matters; "GRAY/MEGAN" is a different,`);
-    console.log(`  retail-account client and offers the Client variants instead).\n`);
-    console.log(`  To rebuild fixtures on the right client:`);
-    console.log(`      node tools/make-fixtures.js bpay\n`);
+    const retail = bad.filter((x) => x.accountType === "RETAIL");
+    if (retail.length) {
+      console.log(retail.length === 1
+        ? `  ${retail.length} of those is a RETAIL booking, and that is the whole reason:`
+        : `  ${retail.length} of those are RETAIL bookings, and that is the whole reason:`);
+      console.log(`  a RETAIL booking fills #retailDebtor and leaves #debtor EMPTY, so it has no`);
+      console.log(`  debtor to receipt against and Tramada offers only the Client variants. The`);
+      console.log(`  client is not the problem — 13115 and 14120 are the SAME client and differ`);
+      console.log(`  only in this field.\n`);
+      console.log(`  To rebuild fixtures opened as CORPORATE (tools/make-fixtures.js ACCOUNT_FOR):`);
+      console.log(`      node tools/make-fixtures.js bpay\n`);
+      console.log(`  To fix one that already exists, reopen the BOOKING on the right account`);
+      console.log(`  type — moving it to another client will not move the dropdown.\n`);
+    }
     console.log(`  BUT: if these are REAL RAA BPay bookings rather than test ones, then the`);
     console.log(`  assumption that BPay bookings are debtor-account is wrong, and`);
     console.log(`  core.BPAY_RECEIPT needs revisiting with Finance. Send this output over`);

@@ -629,9 +629,9 @@ async function openReceiptForm(page, bookingNo, receipt) {
    * Payment Receipt', click on 'Add/Issue Receipt'"). It decides which form
    * opens, so it has to be set first.
    *
-   * WHAT IT OFFERS DEPENDS ON THE CLIENT, and that is the whole answer to a
-   * question this project carried unresolved for a week. Measured
-   * 17-Aug-2026:
+   * WHAT IT OFFERS DEPENDS ON THE BOOKING'S ACCOUNT TYPE — `#accountTypeCode`
+   * on booking-profile.htm — and that is the whole answer to a question this
+   * project carried unresolved for a week. Measured 17-Aug-2026:
    *
    *   13115  client GRAY/MEGAN DR   → Debtor Payment Receipt, Agency CC Debtor
    *                                   Receipt, Migration Debtor Payment
@@ -640,11 +640,27 @@ async function openReceiptForm(page, bookingNo, receipt) {
    *                                   Receipt, Migration Client Payment
    *                                   Receipt, Creditor Refund Receipt
    *
-   * Same debtor on both (RAA of SA Limited (Retail)); it is the CLIENT's
-   * account type that swaps Debtor for Client throughout the list. A BPay
-   * payment belongs on a debtor-account booking, so a booking that cannot offer
-   * Debtor Payment Receipt is an exception to raise, not a receipt to file
-   * under whatever type happens to be there.
+   * THIS USED TO SAY "depends on the CLIENT", read off exactly those two rows.
+   * They differ in the client AND in the booking's account type, so they never
+   * separated the two, and the wrong half got written down. Separated live
+   * 31-Aug-2026 by holding the client still:
+   *
+   *   13115  GRAY/MEGAN DR (client id 415)  booking CORPORATE  → Debtor variants
+   *   14120  GRAY/MEGAN DR (client id 415)  booking RETAIL     → Client variants
+   *   13034  MOULDS/NICHOLAS MR (id 4103)   booking CORPORATE  → Debtor variants
+   *
+   * Same client, opposite lists — and clients 415 and 4103 are both CORPORATE
+   * account types, so the client is not what moves it. A RETAIL booking fills
+   * `#retailDebtor` and leaves `#debtor` EMPTY: there is no debtor on the
+   * booking to receipt against, and Tramada offers the Client variants and
+   * means it. The debtor is the same entity on all of them (RAA of SA Limited
+   * (Retail)), which is why the summary header reads identically on a booking
+   * that can take a Debtor receipt and one that cannot.
+   *
+   * A BPay payment belongs on a debtor-account booking, so a booking that cannot
+   * offer Debtor Payment Receipt is an exception to raise, not a receipt to file
+   * under whatever type happens to be there. Fixing one means reopening the
+   * BOOKING on the right account type, not moving it to another client.
    */
   if (receipt.receiptCategory) {
     const want = String(receipt.receiptCategory);

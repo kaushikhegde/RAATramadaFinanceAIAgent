@@ -242,11 +242,26 @@ function mapBookingToTramada(booking, clientCode) {
     departureDate: toTramadaDate(booking.departureDate),
     returnDate: toTramadaDate(booking.returnDate),
     bankAccount: "1",                             // [TRUST] Trust Account
-    // Booking Account and its debtor. Both are mandatory and NEITHER was ever
-    // set, so every new booking came back rejected with all three of "Booking
-    // Account must be selected", "Debtor must be selected" and "Retail Debtor
-    // must be selected". Matched by TEXT, not the numeric option id, which is
-    // per-environment.
+    /* Booking Account and its debtor. Both are mandatory and NEITHER was ever
+       set, so every new booking came back rejected with all three of "Booking
+       Account must be selected", "Debtor must be selected" and "Retail Debtor
+       must be selected". Matched by TEXT, not the numeric option id, which is
+       per-environment.
+
+       ⚠️ THIS DEFAULT DECIDES WHICH RECEIPTS THE BOOKING CAN EVER TAKE, and it
+       took a week to find out. `#receiptCategory` on the booking's Receipts page
+       follows the BOOKING's account type — not the client's, which is what the
+       comments here and in tramada-receipt.js used to claim. Separated live
+       31-Aug-2026 by holding the client still: bookings 13115 (CORPORATE) and
+       14120 (RETAIL) are BOTH client GRAY/MEGAN DR, and only 13115 offers
+       Debtor Payment Receipt. RETAIL fills #retailDebtor and leaves #debtor
+       empty, so there is no debtor on the booking to receipt against.
+
+       So RETAIL is a default, not a fact. A caller that needs the Debtor
+       variants — anything filing a BPay receipt — passes CORPORATE through
+       `booking.tramadaOverrides`; tools/make-fixtures.js ACCOUNT_FOR is the
+       table that does it, and test-fixtures.js checks it agrees with the
+       receipt category each report files under. */
     accountType: "RETAIL",
     retailDebtor: "RAA of SA Limited (Retail)",
     corporateDebtor: "",
@@ -420,16 +435,31 @@ async function tramadaAddBooking(page, mapped) {
           );
         }
       } else if (mapped.corporateDebtor) {
-        await page.fill("#debtor", mapped.corporateDebtor).catch(() => {});
-        await page.locator("#debtor").first().blur().catch(() => {});
-        await sleep(1200);
-        const resolved = await page
+        /* ASK BEFORE TYPING — the client-pick has usually already done this.
+           Picking GRAY/MEGAN DR sets #accountTypeCode to CORPORATE, fills
+           #debtor with "[RAA RETAIL]RAA of SA Limited (Retail)" and resolves
+           #hiddendebtor to 18, all on its own (measured live 31-Aug-2026).
+           Overwriting that with the plain name we happen to be carrying clears
+           the resolved id and hands the autocomplete a string that is NOT what
+           it rendered — the bracketed code is part of its own text — so the
+           re-resolve is a coin toss and a failure here reads as "Tramada didn't
+           accept this debtor" on a booking whose debtor was already correct.
+           Type only when there is nothing there. */
+        const readDebtor = () => page
           .evaluate(() => {
             const h = document.querySelector("#hiddendebtor");
             const d = document.querySelector("#debtor");
             return { hidden: h ? String(h.value || "").trim() : "", shown: d ? String(d.value || "").trim() : "" };
           })
           .catch(() => ({ hidden: "", shown: "" }));
+
+        let resolved = await readDebtor();
+        if (!resolved.hidden) {
+          await page.fill("#debtor", mapped.corporateDebtor).catch(() => {});
+          await page.locator("#debtor").first().blur().catch(() => {});
+          await sleep(1200);
+          resolved = await readDebtor();
+        }
         if (!resolved.hidden) {
           throw new Error(
             `Tramada didn't accept "${mapped.corporateDebtor}" as a corporate debtor (the field reads "${resolved.shown}"). ` +
@@ -455,11 +485,19 @@ async function tramadaAddBooking(page, mapped) {
 
   const wiped = await page.evaluate(() => {
     const v = (id) => { const e = document.getElementById(id); return e ? e.value : null; };
-    // accountTypeCode and retailDebtor are in this list because the client-pick
+    // accountTypeCode and the debtor are in this list because the client-pick
     // ajax is exactly what re-renders the debtor block — the field most likely
     // to be wiped is the one that only appears after another field is set.
-    return ["bankAccount", "bookingTypeCode", "sourceTypeCode", "destinationTypeCode", "domIntCode", "accountTypeCode", "retailDebtor"]
-      .filter((id) => !v(id));
+    const ids = ["bankAccount", "bookingTypeCode", "sourceTypeCode", "destinationTypeCode", "domIntCode", "accountTypeCode"];
+    /* WHICH DEBTOR, decided by the account type ON THE PAGE rather than named
+       outright. #retailDebtor is empty on EVERY corporate booking — it is not
+       merely unset, it is the wrong widget and Tramada never renders it — so
+       naming it unconditionally reported every corporate booking as wiped and
+       ran the whole of setFields() a second time. That second pass re-fires the
+       account-type change, and the re-render it triggers is the one thing that
+       can drop the debtor the first pass had just resolved. */
+    ids.push(v("accountTypeCode") === "RETAIL" ? "retailDebtor" : "hiddendebtor");
+    return ids.filter((id) => !v(id));
   });
   if (wiped.length) {
     await setFields(); // the refresh reset some selects — set them again

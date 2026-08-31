@@ -166,9 +166,13 @@ console.log("\nthe fixtures seed the type the run goes looking for");
    *
    * That is not hypothetical: setting every booking's client to GRAY/MEGAN on
    * 17-Aug-2026 made TravelPay's fixtures Debtor Payment Receipts, because the
-   * receipts list defaults to whatever the CLIENT's account type offers and the
-   * fixture never said which it wanted. Its run still filtered to Client
-   * Payment Receipt. This assertion is what that mistake is worth. */
+   * receipts list defaults to whatever the booking is opened on and the fixture
+   * never said which it wanted. Its run still filtered to Client Payment
+   * Receipt. This assertion is what that mistake is worth.
+   *
+   * (This comment said "whatever the CLIENT's account type offers" until
+   * 31-Aug-2026. It is the BOOKING's — see the block at the end of this file,
+   * where the two are finally told apart.) */
   const core = require("../recon-core");
   const LABEL = {
     DEBTOR_PAYMENT_RECEIPT: "Debtor Payment Receipt",
@@ -223,6 +227,136 @@ console.log("\nthe fixtures seed the type the run goes looking for");
     F.CATEGORY_FOR.bpay, core.BPAY_RECEIPT.value);
 }
 
+
+console.log("\nand the BOOKING is opened on the account type that offers that category");
+{
+  const { mapBookingToTramada } = require("../tramada-booking");
+
+  /* IT IS THE BOOKING'S ACCOUNT TYPE, NOT THE CLIENT'S.
+   *
+   * Everything above this block, and the comments in tramada-receipt.js that
+   * went with it, said `#receiptCategory` follows the CLIENT's account type.
+   * That was read off 13115 (GRAY/MEGAN DR → Debtor variants) against 13394
+   * (GRAY/SPIDER MS → Client variants), which differ in BOTH the client and
+   * the booking's account type, so it never separated the two.
+   *
+   * Separated live 31-Aug-2026, same client on both sides:
+   *
+   *   13115  GRAY/MEGAN DR (client id 415)  booking CORPORATE  → Debtor variants
+   *   14120  GRAY/MEGAN DR (client id 415)  booking RETAIL     → Client variants
+   *   13034  MOULDS/NICHOLAS MR (id 4103)   booking CORPORATE  → Debtor variants
+   *
+   * Client 415 and client 4103 are BOTH CORPORATE account types, so the client
+   * cannot be what moves it. `#accountTypeCode` on booking-profile.htm can, and
+   * does: RETAIL fills `#retailDebtor` and leaves `#debtor` empty, so there is
+   * no debtor on the booking to receipt against and Tramada offers only the
+   * Client variants.
+   *
+   * That is why picking the right client was never enough. `mapBookingToTramada`
+   * hard-coded RETAIL, so every fixture booking — GRAY/MEGAN DR included — came
+   * out retail and reported "Debtor Payment Receipt not available". */
+  const NEEDS = { DEBTOR_PAYMENT_RECEIPT: "CORPORATE", CLIENT_PAYMENT_RECEIPT: "RETAIL" };
+  for (const [report, category] of Object.entries(F.CATEGORY_FOR)) {
+    const acct = F.ACCOUNT_FOR[report];
+    ok(`${report}: the fixture states an account type at all`,
+      !!(acct && acct.accountType),
+      `ACCOUNT_FOR.${report} is ${JSON.stringify(acct)} — a booking that states none ` +
+      `takes mapBookingToTramada's default and may not offer ${category}`);
+    check(`${report}: opened on the account type that offers ${category}`,
+      acct && acct.accountType, NEEDS[category]);
+  }
+  // ipsi creates bookings too — its receipts are raised by hand, but the
+  // account type still decides what the human is offered when they get there.
+  ok("ipsi states one as well, even though nothing raises its receipts",
+    !!(F.ACCOUNT_FOR.ipsi && F.ACCOUNT_FOR.ipsi.accountType),
+    JSON.stringify(F.ACCOUNT_FOR.ipsi));
+
+  /* And the table has to actually REACH the form. ACCOUNT_FOR travels as the
+     booking's `tramadaOverrides`, which is the only channel mapBookingToTramada
+     honours — a table nothing reads is the same bug in a new place. */
+  const trip = { departureDate: "2026-09-01", originCode: "ADL", destinationCode: "MEL" };
+  const bpay = mapBookingToTramada({ ...trip, tramadaOverrides: F.ACCOUNT_FOR.bpay }, F.CLIENT_FOR.bpay);
+  check("a bpay booking maps to CORPORATE, like 13115", bpay.accountType, "CORPORATE");
+  /* A retail debtor left in place is not inert: setFields() picks its widget by
+     which one Tramada rendered, and a CORPORATE booking carrying a retail
+     debtor is one ajax re-render away from being a RETAIL booking again. */
+  check("and carries no retail debtor to swap the widget back", bpay.retailDebtor, "");
+
+  const travelpay = mapBookingToTramada({ ...trip, tramadaOverrides: F.ACCOUNT_FOR.travelpay }, F.CLIENT_FOR.travelpay);
+  check("a travelpay booking stays RETAIL", travelpay.accountType, "RETAIL");
+  check("and keeps the retail debtor that makes it saveable",
+    travelpay.retailDebtor, "RAA of SA Limited (Retail)");
+
+  /* GRAY/SPIDER is a CORPORATE client too (checked live 31-Aug-2026), so
+     "use whatever the client says" would have flipped TravelPay to Debtor
+     receipts — the exact 17-Aug-2026 breakage this file already tests for one
+     line up. The account type is a decision each report makes, not a discovery. */
+  ok("bpay and travelpay do not share an account type",
+    F.ACCOUNT_FOR.bpay.accountType !== F.ACCOUNT_FOR.travelpay.accountType,
+    F.ACCOUNT_FOR.bpay.accountType);
+}
+
+console.log("\nthe IPSI file states the reference its receipts will be raised under");
+{
+  const core = require("../recon-core");
+
+  /* IPSI WROTE ITS MATCH KEY AS AN EMPTY STRING, on every row, every run.
+   *
+   * The other three fixtures raise their own receipts, so they know the
+   * reference and write it: BP-/TP-/MP-. IPSI cannot raise its receipts — a
+   * Credit Card Swipe wants a real card number, so a human does it — and the
+   * column was therefore left blank "for you to paste in". `ref("IP", …)` was
+   * built and tested for this and then never called by anything.
+   *
+   * A blank is not neutral. `Transaction Reference` is what the run matches on;
+   * with nothing in it every row falls through to matching on Booking Number
+   * and comes back carrying IPSI_REMARKS.reference — "Incorrect payment
+   * reference" — so the fixture could never produce a clean IPSI run, and the
+   * reference path it is supposed to exercise was never exercised at all.
+   *
+   * The order is what was wrong, not the honesty: state the reference FIRST and
+   * have the human raise the receipt under it. That invents nothing — it is the
+   * fixture's own reference, the same as the other three — and it turns a
+   * round trip into an instruction. */
+  const RUN_BKG = "14126";
+  const row = F.ipsiRow({ bookingNo: RUN_BKG, dueCents: 14554, cardHolder: "Spider Gray", today: "2026-08-31" });
+
+  check("Transaction Reference is the run's own IP reference",
+    row["Transaction Reference"], F.ref("IP", RUN_BKG));
+  ok("and it is not the empty string this used to write",
+    !!String(row["Transaction Reference"] || "").trim(),
+    JSON.stringify(row["Transaction Reference"]));
+
+  // Through the parser the run actually uses, not a hand-made row object.
+  const cols = Object.keys(row);
+  const asFile = (over = {}) =>
+    core.parseIpsiRows(cols, [cols.map((c) => (c in over ? over[c] : row[c]))]);
+
+  const parsed = asFile();
+  check("the row is usable, not held back", parsed.problems.map((p) => p.why), []);
+  check("and the run reads the reference back off it",
+    parsed.rows[0].reference, F.ref("IP", RUN_BKG));
+
+  /* A swipe receipt raised under the reference the file names matches ON THE
+     REFERENCE, which is the path IPSI exists to test. */
+  const receipts = [{ reference: F.ref("IP", RUN_BKG), receiptAmount: "145.54", bookingNo: RUN_BKG }];
+  const m = core.matchIpsiAgainstReceipts(parsed.rows[0], receipts);
+  check("a receipt raised under it matches on the reference", [m.matched, m.on], [true, "reference"]);
+  ok("and carries no remark", !m.remark, JSON.stringify(m.remark));
+
+  /* THE BUG, as a row: the same file with the column blanked is what every IPSI
+     fixture used to write. It still matches — on the booking — and that is why
+     this went unnoticed: the run worked, it just flagged every single row. */
+  const blank = asFile({ "Transaction Reference": "" });
+  const fell = core.matchIpsiAgainstReceipts(blank.rows[0], receipts);
+  check("blanked, it falls back to the booking and is remarked",
+    [fell.matched, fell.on, fell.remark], [true, "booking", core.IPSI_REMARKS.reference]);
+
+  // And nothing is left for a human to paste: the column is no longer a gap.
+  ok("so the file has no blank match key left in it",
+    F.IPSI_BLANK_COLUMNS.every((c) => c !== "Transaction Reference"),
+    JSON.stringify(F.IPSI_BLANK_COLUMNS));
+}
 fs.rmSync(DIR, { recursive: true, force: true });
 console.log(`\n${fail ? "❌" : "✅"} ${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

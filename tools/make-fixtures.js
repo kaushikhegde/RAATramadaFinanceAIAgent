@@ -60,9 +60,9 @@
  *              Reference is the `P.` number Tramada issued.
  *
  *   ipsi       bookings + costings, then the file → csv_uploads/ipsi-payments.csv
- *              It does NOT go looking for your receipts. The Merchant
- *              Transaction Reference column is left blank for you to paste
- *              in once you have raised the Credit Card Swipe receipts.
+ *              It does NOT go looking for your receipts. Each row's Transaction
+ *              Reference is IP-{tag}-{booking}, and the file tells you to raise
+ *              the Credit Card Swipe receipts under exactly that.
  *
  *   all        the four above, in order. Never in parallel — see makeAll().
  *
@@ -75,9 +75,15 @@
  * It used to create the bookings and then poll Tramada's Finance Receipts
  * screens — chooser, search, popup — for ten minutes waiting for those receipts
  * to appear, and write nothing if they did not. It no longer looks them up at
- * all: the file is written from the bookings, with Merchant Reference blank for
- * you. That column is what the run matches on, and a value invented here would
- * produce a file that reconciles nothing and looks like a broken matcher.
+ * all: the file is written from the bookings.
+ *
+ * Not knowing the receipts' references is not a reason to write none. It wrote
+ * Transaction Reference — the column the run matches on — as an empty string on
+ * every row, for you to paste into later, and until you did, every row matched
+ * on its booking number and came back "Incorrect payment reference". The file
+ * now NAMES the reference (IP-{tag}-{booking}) and the receipt is raised to
+ * agree with it, so the fixture exercises the reference path instead of
+ * quietly proving the fallback. See IPSI_BLANK_COLUMNS.
  *
  * ── Mint pays money OUT ─────────────────────────────────────────────────────
  *
@@ -135,11 +141,13 @@ const CSV_DIR = path.resolve(valueOf("--out-dir", path.join(__dirname, "..", "cs
  * WHICH CLIENT EACH REPORT'S FIXTURES ARE BUILT UNDER, and this is not a
  * cosmetic choice — it decides which receipts the booking can take at all.
  *
- * `#receiptCategory` on a booking's Receipts page offers the DEBTOR variants
- * when the client is a debtor account and the CLIENT variants when it is a
- * retail one, and the two lists never overlap (docs/tramada-field-map.md §4d).
- * So the client has to match what the report expects to find on the statement
- * page afterwards:
+ * `#receiptCategory` on a booking's Receipts page offers the DEBTOR variants or
+ * the CLIENT ones, never both (docs/tramada-field-map.md §4d), and which it
+ * offers is decided by the BOOKING's account type — see ACCOUNT_FOR below,
+ * which is the half of this that was missing. The client still matters, because
+ * a client Tramada will not open a CORPORATE booking against cannot be used for
+ * BPay at all, so it has to match what the report expects to find on the
+ * statement page afterwards:
  *
  *   bpay       files Debtor Payment Receipts, and filters to them   → GRAY/MEGAN
  *   travelpay  CHECKS receipts that already exist, filtered to
@@ -189,6 +197,52 @@ const CATEGORY_FOR = {
   bpay: core.BPAY_RECEIPT.value,           // DEBTOR_PAYMENT_RECEIPT
   travelpay: "CLIENT_PAYMENT_RECEIPT",
   mint: "CLIENT_PAYMENT_RECEIPT",
+};
+
+/*
+ * AND THE ACCOUNT TYPE THE BOOKING IS OPENED ON — which is what actually
+ * decides whether CATEGORY_FOR is on offer when the fixture gets there.
+ *
+ * Picking the right client was never enough, and a week went into believing it
+ * was. `#receiptCategory` follows the BOOKING's `#accountTypeCode`, not the
+ * client's account type. Separated live 31-Aug-2026 by holding the client still:
+ *
+ *   13115  GRAY/MEGAN DR (client id 415)  booking CORPORATE  → Debtor variants
+ *   14120  GRAY/MEGAN DR (client id 415)  booking RETAIL     → Client variants
+ *   13034  MOULDS/NICHOLAS MR (id 4103)   booking CORPORATE  → Debtor variants
+ *
+ * Same client, opposite lists. Both of those clients are CORPORATE account
+ * types, so the client was never the thing moving it. A RETAIL booking fills
+ * `#retailDebtor` and leaves `#debtor` EMPTY — there is no debtor on the booking
+ * to receipt against, so Tramada offers the Client variants and means it.
+ *
+ * `mapBookingToTramada` hard-coded RETAIL, so every fixture booking came out
+ * retail no matter which client it named, and BPay reported "Debtor Payment
+ * Receipt not available" on every row while looking perfectly well configured.
+ *
+ * WHY THIS IS A TABLE AND NOT READ OFF THE CLIENT. GRAY/SPIDER is a CORPORATE
+ * client too (checked live, same day). Taking the account type from the client
+ * would flip TravelPay's fixtures to Debtor receipts while its run still
+ * filtered to Client Payment Receipt — which is precisely the 17-Aug-2026
+ * breakage described above CLIENT_FOR, arrived at from the other direction.
+ * Each report states what it needs; test-fixtures.js checks the two agree.
+ *
+ * These travel as the booking's `tramadaOverrides` (see loadBookings), the one
+ * channel `mapBookingToTramada` honours.
+ */
+const ACCOUNT_FOR = {
+  /* CORPORATE renders `#debtor` — a text box the client-pick has usually
+     already resolved — and hides `#retailDebtor`. `retailDebtor: ""` is not
+     tidiness: setFields() chooses its widget by whichever one Tramada rendered,
+     and a retail debtor left sitting in the mapping is one ajax re-render away
+     from putting the booking back on RETAIL. */
+  bpay: { accountType: "CORPORATE", corporateDebtor: "RAA of SA Limited (Retail)", retailDebtor: "" },
+  travelpay: { accountType: "RETAIL", retailDebtor: "RAA of SA Limited (Retail)", corporateDebtor: "" },
+  mint: { accountType: "RETAIL", retailDebtor: "RAA of SA Limited (Retail)", corporateDebtor: "" },
+  // ipsi raises its receipts by hand, so nothing here files one — but the human
+  // who does still gets whatever the booking's account type puts in front of
+  // them, and IPSI's are Client Payment Receipts.
+  ipsi: { accountType: "RETAIL", retailDebtor: "RAA of SA Limited (Retail)", corporateDebtor: "" },
 };
 // The booking records are not something you upload, so they stay out of it.
 const OUT_DIR = __dirname;
@@ -324,7 +378,12 @@ const say = (m) => console.log(`  ${m}`);
 function sayPlan(what) {
   const client = CLIENT_OVERRIDE || CLIENT_FOR[what];
   const cat = CATEGORY_FOR[what];
+  const acct = ACCOUNT_FOR[what];
   say(`client ${client}${CLIENT_OVERRIDE ? " (--client)" : ""}` +
+    // The account type belongs on this line more than the client does: it is
+    // what decides whether `cat` is even on offer, and it is the one that was
+    // wrong and invisible for a week.
+    (acct ? `, booking opened as ${acct.accountType}` : "") +
     (cat ? `, receipts raised as ${cat}` : ", receipts are raised by hand"));
 }
 
@@ -339,7 +398,20 @@ function loadBookings() {
   // has an opinion about yet.
   const client = CLIENT_OVERRIDE || CLIENT_FOR[WHAT] || null;
   const chosen = client ? list.map((b) => ({ ...b, clientCode: client })) : list;
-  return LIMIT == null ? chosen : chosen.slice(0, LIMIT);
+  /* And the account type, for the same reason and from the same table — a
+     booking opened on the wrong one cannot raise CATEGORY_FOR[WHAT] no matter
+     which client it names (see ACCOUNT_FOR). It rides `tramadaOverrides`
+     because that is the only thing mapBookingToTramada merges over its own
+     defaults, and the file's own overrides win: a booking that states its
+     account type is stating it on purpose. */
+  const acct = ACCOUNT_FOR[WHAT];
+  const opened = acct
+    ? chosen.map((b) => ({
+        ...b,
+        booking: { ...b.booking, tramadaOverrides: { ...acct, ...(b.booking || {}).tramadaOverrides } },
+      }))
+    : chosen;
+  return LIMIT == null ? opened : opened.slice(0, LIMIT);
 }
 
 /**
@@ -1071,6 +1143,72 @@ async function ipsiRun(file) {
   say(`\nReconciled file written to ${outPath}\n`);
 }
 
+/** IPSI's columns, in the order the client's own export carries them. */
+const IPSI_COLS = ["Transaction Reference", "Transaction Time stamp", "Transaction Type",
+  "Transaction Status", "Channel", "Card Holder Name", "Transaction Amount", "Settlement Date",
+  "Merchant Reference", "Card Type", "Custom 5", "Booking Number", "Settlement Amount",
+  "Tramada Payment Number"];
+
+/* NOTHING IS LEFT FOR A HUMAN TO PASTE IN ANY MORE, and that is the fix.
+ *
+ * This used to be `["Transaction Reference"]` — the run's own match key,
+ * written as an empty string on every row of every IPSI fixture ever made. The
+ * reasoning was sound as far as it went: IPSI is the one report whose receipts
+ * this tool cannot raise (a Credit Card Swipe wants a real card number, so a
+ * human raises them), so it could not know what reference they would carry, and
+ * §3 says never invent one.
+ *
+ * But a blank is not neutral here. `Transaction Reference` is what
+ * `matchIpsiAgainstReceipts` tries first; with nothing in it every row falls
+ * through to matching on Booking Number and comes back carrying
+ * IPSI_REMARKS.reference — "Incorrect payment reference". So the fixture could
+ * never produce a clean IPSI run, and the reference path it exists to exercise
+ * was never exercised once. It looked like a matcher bug, which is precisely
+ * what leaving it blank was meant to avoid.
+ *
+ * The order was the wrong half, not the honesty. State the reference FIRST and
+ * tell the human to raise the receipt under it: `ref("IP", …)` — built and
+ * tested alongside BP/TP/MP and, until now, called by nothing. That invents
+ * nothing, because it is the fixture's own reference exactly as the other three
+ * are, and it turns a round trip into an instruction.
+ */
+const IPSI_BLANK_COLUMNS = [];
+
+/**
+ * One row of the IPSI settlement file.
+ *
+ * Pure and exported so test-fixtures.js can put it through `parseIpsiRows` and
+ * `matchIpsiAgainstReceipts` — the actual run's parser and matcher — without a
+ * browser. It was inline in makeIpsi(), which is why nothing ever noticed the
+ * match key was empty: the only way to see the file was to create real
+ * bookings first.
+ */
+function ipsiRow({ bookingNo, dueCents = 0, cardHolder, today }) {
+  const day = today || new Date().toISOString().slice(0, 10);
+  return {
+    // The reference the swipe receipt is to be raised under — see IPSI_BLANK_COLUMNS.
+    "Transaction Reference": ref("IP", bookingNo),
+    "Transaction Time stamp": day,
+    "Transaction Type": "1",
+    "Transaction Status": "APPROVED",
+    Channel: "terminal",
+    "Card Holder Name": cardHolder || "Cardholder name",
+    "Transaction Amount": core.money(dueCents),
+    "Settlement Date": day,
+    // Not read by the run — `IPSI_COLUMNS.reference` is Transaction Reference.
+    // Left blank rather than invented, and it is not in IPSI_BLANK_COLUMNS
+    // because nobody is being asked to fill it.
+    "Merchant Reference": "",
+    "Card Type": "VISA",
+    "Custom 5": "Purchase (1)",
+    "Booking Number": bookingNo,
+    // Filled on the last row once every row is in — the file states the day's
+    // settlement once, as the client's own export does.
+    "Settlement Amount": "",
+    "Tramada Payment Number": "",
+  };
+}
+
 async function makeIpsi() {
   if (has("--search")) return ipsiSearch();
   const runFile = valueOf("--run", null);
@@ -1083,35 +1221,17 @@ async function makeIpsi() {
   say("receipts, and that form wants a real card number.\n");
   if (DRY) return say("Dry run — Tramada was never opened.\n");
 
-  const IPSI_COLS = ["Transaction Reference", "Transaction Time stamp", "Transaction Type",
-    "Transaction Status", "Channel", "Card Holder Name", "Transaction Amount", "Settlement Date",
-    "Merchant Reference", "Card Type", "Custom 5", "Booking Number", "Settlement Amount",
-    "Tramada Payment Number"];
-  // Transaction Reference is what the run matches on now, so THAT is the one
-  // left blank for you. Merchant Reference is not read at all.
-  const csv = csvWriter("ipsi-payments.csv", IPSI_COLS, ["Transaction Reference"]);
+  const csv = csvWriter("ipsi-payments.csv", IPSI_COLS, IPSI_BLANK_COLUMNS);
   const today = new Date().toISOString().slice(0, 10);
 
   const made = await createBookings(list, (b, src) => {
-    csv.add({
-      // YOURS to fill in — the reference the swipe receipt was raised under.
-      "Transaction Reference": "",
-      "Transaction Time stamp": today,
-      "Transaction Type": "1",
-      "Transaction Status": "APPROVED",
-      Channel: "terminal",
-      "Card Holder Name": [src && src.booking && (src.booking.passengers || [])[0]]
-        .filter(Boolean).map((p) => `${p.firstName} ${p.lastName}`)[0] || "Cardholder name",
-      "Transaction Amount": core.money(b.dueCents || 0),
-      "Settlement Date": today,
-      // Not read by the run. Left blank rather than invented.
-      "Merchant Reference": "",
-      "Card Type": "VISA",
-      "Custom 5": "Purchase (1)",
-      "Booking Number": b.bookingNo,
-      "Settlement Amount": "",
-      "Tramada Payment Number": "",
-    });
+    csv.add(ipsiRow({
+      bookingNo: b.bookingNo,
+      dueCents: b.dueCents || 0,
+      cardHolder: [src && src.booking && (src.booking.passengers || [])[0]]
+        .filter(Boolean).map((p) => `${p.firstName} ${p.lastName}`)[0],
+      today,
+    }));
     say(`     → ${shortPath(csv.path)} now has ${csv.rows.length} row(s)`);
   });
   if (!csv.rows.length) return say("No bookings were created, so there is nothing to write.\n");
@@ -1122,25 +1242,39 @@ async function makeIpsi() {
   csv.update();
 
   const out = csv.path;
-  // Prove it against the parser the run will use. The rows are held back for
-  // want of a Merchant Reference — that is expected and is what you are about
-  // to fix — so what is checked here is that the file is READABLE and adds up.
+  /* Prove it against the parser the run will use. Every row now carries its own
+     Transaction Reference, so nothing should be held back at all — and unlike
+     the note that used to stand here ("the rows are held back for want of a
+     Merchant Reference — that is expected"), a held-back row is now a real
+     failure and says so below. */
   const grid = core.csvGrid(fs.readFileSync(out, "utf8"));
   const parsed = core.parseIpsiRows(grid.headers, grid.rows);
+  if (parsed.problems.length) {
+    die(`The file it just wrote has ${parsed.problems.length} row(s) the run cannot use: ` +
+      parsed.problems.map((p) => `line ${p.line} — ${p.why}`).join("; "));
+  }
   say(`\n  ${shortPath(out)} — ${csv.rows.length} row${csv.rows.length === 1 ? "" : "s"}, $${core.money(total)}.`);
   if (!parsed.settlement.agrees) die("The file it just wrote does not add up to its own settlement figure.");
 
   console.log("");
   say("──────────────────────────────────────────────────────────────");
-  say("NOW, IN TRAMADA, raise a Credit Card Swipe receipt against each of:");
+  say("NOW, IN TRAMADA, raise a Credit Card Swipe receipt against each of these,");
+  say("PUTTING THE REFERENCE BELOW IN THE RECEIPT'S OWN Reference FIELD:");
   for (const [i, b] of made.entries()) {
-    say(`     row ${i + 1}   booking ${b.bookingNo}   $${core.money(b.dueCents || 0)}`);
+    say(`     row ${i + 1}   booking ${b.bookingNo}   $${core.money(b.dueCents || 0)}   ref ${ref("IP", b.bookingNo)}`);
   }
   say(`Receipt category: Client Payment Receipt · Debtor ${IPSI_DEBTOR}`);
   say("");
-  say(`Then put each receipt's reference in the Transaction Reference column of`);
-  say(`${shortPath(out)} — that column is what the run matches on. A row left`);
-  say("blank falls back to matching on Booking Number and amount.");
+  /* The instruction used to run the other way — raise the receipts under
+     whatever reference, then come back and paste each one into the file. That
+     left the match key blank in the meantime, and a file loaded before the
+     pasting was done reconciled every row on its booking number and flagged it
+     "Incorrect payment reference". The file now states the reference and the
+     receipt is made to agree with it, so there is no window where it is wrong. */
+  say(`${shortPath(out)} already carries those references — nothing to paste in.`);
+  say("Use them verbatim: Transaction Reference is what the run matches on, and");
+  say("a receipt raised under anything else falls back to matching on Booking");
+  say('Number and is flagged "Incorrect payment reference".');
   say("──────────────────────────────────────────────────────────────");
   say("\n  Then load it on the IPSI card and press Start run.\n");
 }
@@ -1185,7 +1319,7 @@ const JOBS = { bpay: makeBpay, travelpay: makeTravelPay, mint: makeMint, ipsi: m
 
 /* Exported so the reference scheme can be tested without opening Tramada. The
    run below is behind `require.main`, so requiring this file creates nothing. */
-module.exports = { RUN, ref, costedCents, bpayCents, csvWriter, csvField, csvOut, CLIENT_FOR, CATEGORY_FOR };
+module.exports = { RUN, ref, costedCents, bpayCents, csvWriter, csvField, csvOut, CLIENT_FOR, CATEGORY_FOR, ACCOUNT_FOR, ipsiRow, IPSI_COLS, IPSI_BLANK_COLUMNS };
 
 if (require.main === module) (async () => {
   if (!JOBS[WHAT]) {
