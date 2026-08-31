@@ -1678,22 +1678,36 @@ header.top { display: none !important }
        the cell that carries the row's outcome, the same as `RUN_COLUMNS`'
        `tip: 'why'` does. Remarks is BR01-BR11's fixed wording and answers
        "what do I do"; Why is the run's own sentence and answers "what did it
-       see". Losing the column should not mean losing the second one. */
+       see". Losing the column should not mean losing the second one.
+
+       Remarks itself, though, WAS missing here — `r.remark` is set for Mint,
+       TravelPay and IPSI the same way it is for BPay (matchCreditorRow / the
+       IPSI matchers), and already reached the CSV export via EXPORT_FIELDS,
+       but this compact table had nowhere to show it on screen. Added
+       31-Aug-2026 so a checks-only run reads success/failure the same way a
+       BPay row does, instead of only the export file saying so. */
     const head = mint
       ? '<th style="width:16px"></th><th>Transaction</th><th class="num">Amount</th>' +
-        '<th>To company</th><th>Reconciled</th>'
+        '<th>To company</th><th>Reconciled</th><th>Remarks</th>'
       : '<th style="width:16px"></th><th>Statement line</th><th class="num">Amount</th>' +
         '<th>Booking</th><th>Receipt</th><th>Allocation</th><th>Reconciled</th>' +
         '<th>Remarks</th>';
-    const cols = mint ? 5 : 8;
+    const cols = mint ? 6 : 8;
     // The row's own sentence, as a tooltip rather than a column.
     const whyTip = (r) => (r && r.why ? ' title="' + esc(String(r.why)) + '"' : '');
+    // Mint/TravelPay/IPSI's own version of BPay's Remarks cell below — same
+    // wording (`r.remark`, set by matchCreditorRow / the IPSI matchers) and the
+    // same fallback dash, so a checks-only report reads success or failure the
+    // same way a BPay row does instead of making Finance hover for it.
+    const remarkCell = (r) =>
+      '<td' + whyTip(r) + '>' + (r.remark ? '<b>' + esc(r.remark) + '</b>' : '<span class="muted">—</span>') + '</td>';
     const body = shown.map((r) => mint
       ? '<tr><td><span class="tdot ' + dot(r) + '"></span></td>' +
         '<td><b class="ref">' + esc(r.transNo) + '</b></td>' +
         '<td class="num">' + esc(r.amount) + '</td>' +
         '<td>' + esc(r.toCompany || '') + '</td>' +
-        '<td' + whyTip(r) + '>' + badge(r.reconciliation) + '</td></tr>'
+        '<td>' + badge(r.reconciliation) + '</td>' +
+        remarkCell(r) + '</tr>'
       /* On a COMBINED run both kinds of row share this table, and a Mint row has
          no reference, no date and no booking — rendered as a BPay row it came
          out as a bare "·" with an empty Booking column and, worse, a "pending"
@@ -1717,7 +1731,7 @@ header.top { display: none !important }
            this is the cell Finance acts on, so it is not left to the working
            file alone. Bold because a remark always means somebody has
            something to do. */
-        '<td' + whyTip(r) + '>' + (r.remark ? '<b>' + esc(r.remark) + '</b>' : '<span class="muted">—</span>') + '</td></tr>').join('');
+        remarkCell(r) + '</tr>').join('');
 
     pane.innerHTML = '<table><thead><tr>' + head + '</tr></thead><tbody>' +
       (shown.length ? body
