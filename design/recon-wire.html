@@ -2438,7 +2438,15 @@ header.top { display: none !important }
        it keeps the order it was uploaded in rather than being shuffled by two
        columns of blanks. */
     const mint = !viewWrites();
-    const rows = mint ? all.slice() : sortForFinance(all);
+    /* IPSI step 19: "Finalised and reconciled CSV file will be ordered in
+       sequence of ascending booking numbers." It was going out in whatever
+       order IPSI's own download arrived in, because IPSI files nothing and so
+       fell into the same branch as Mint and TravelPay — which genuinely do keep
+       their upload order, having no Shop or Consultant to sort by either.
+       IPSI has a booking number, and the guide names it. */
+    const ipsiOnly = all.length > 0 && all.every((r) => r.src === 'ipsi');
+    const rows = ipsiOnly ? sortIpsiForExport(all)
+      : (mint ? all.slice() : sortForFinance(all));
 
     const columns = fullColumns() ||
       (viewing ? (viewing.columns || []) : ((source[active] || {}).columns || []));
@@ -2475,6 +2483,28 @@ header.top { display: none !important }
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = 'Export working file'; }
     }
+  }
+
+  /* IPSI step 19 — "ordered in sequence of ascending booking numbers".
+     The browser's copy of recon-core's sortIpsiForExport, for the same reason
+     sortForFinance is duplicated below: the exported file is assembled here.
+     `test/test-ipsi.js` runs both over the same rows and fails if they
+     disagree, so the two cannot drift. */
+  function sortIpsiForExport(rows) {
+    const num = (v) => {
+      const t = String(v == null ? '' : v).trim();
+      if (!t) return null;
+      return /^\d+$/.test(t) ? Number(t) : t.toLowerCase();
+    };
+    return (rows || []).map((r, i) => ({ r, i })).sort((a, b) => {
+      const an = num(a.r.bookingNo), bn = num(b.r.bookingNo);
+      if (an == null && bn == null) return a.i - b.i;
+      if (an == null) return 1;
+      if (bn == null) return -1;
+      if (typeof an === 'number' && typeof bn === 'number') return an === bn ? a.i - b.i : an - bn;
+      const as = String(an), bs = String(bn);
+      return as === bs ? a.i - b.i : (as < bs ? -1 : 1);
+    }).map((x) => x.r);
   }
 
   /* BR14. The same rule as recon-core's sortForFinance, and deliberately kept

@@ -339,7 +339,7 @@ async function searchIssueReceipts(page, {
   debtorCode = "MASTER",
   debtorLabel = "MasterCard/Visa/Debit",
   receiptType = "FINANCE_MERCHANT_PAYMENT_RECEIPT",
-  bankAccount = "1",
+  bankAccount = process.env.IPSI_BANK_ACCOUNT || "1",
   fromDate = "",
   toDate = "",
 } = {}, say = () => {}) {
@@ -358,7 +358,40 @@ async function searchIssueReceipts(page, {
   // 1-4: the selects and the dates. Every one of these wipes the debtor, which
   // is why not one of them happens after it.
   await page.selectOption("#receiptType", receiptType);
+
+  /* GUIDE STEP 11: "Bank Account – Trust Account".
+     `bankAccount` is the option's VALUE ("1"), which is positional and says
+     nothing about which account it is. Tramada reordering that dropdown, or a
+     second account being added ahead of it, would silently issue the merchant
+     receipt against a DIFFERENT bank account — real money, in the wrong place,
+     with nothing on screen looking wrong.
+
+     So select by value as before, then read back the label that was actually
+     chosen and refuse if it is not the Trust Account. The same select-by-label
+     guard the BPay receipt flow already uses, and for the same reason. */
   await page.selectOption("#agencyBankAccount", bankAccount);
+  {
+    const chosen = await page.evaluate(() => {
+      const el = document.querySelector("#agencyBankAccount");
+      if (!el) return null;
+      const opt = el.options[el.selectedIndex];
+      return {
+        label: opt ? (opt.text || "").trim() : "",
+        value: opt ? opt.value : "",
+        all: [...el.options].map((o) => `${(o.text || "").trim()} [${o.value}]`),
+      };
+    });
+    if (!chosen) throw new Error("The receipt search form has no bank account field (#agencyBankAccount).");
+    if (!/trust/i.test(chosen.label)) {
+      throw new Error(
+        `Bank account "${chosen.label || "(blank)"}" was selected, not the Trust Account the guide ` +
+        `requires (step 11). Nothing was searched and no receipt was issued. ` +
+        `The form offers: ${chosen.all.join(", ")}. ` +
+        `If the Trust Account has moved, set IPSI_BANK_ACCOUNT to its value.`
+      );
+    }
+    say(`Bank account: ${chosen.label}.`);
+  }
   // Guide step 11: "Must 'Sort By' Booking Number" — it defaults to blank,
   // and a run that never sets it reads the list in whatever order Tramada
   // feels like, which is no order to reconcile against at all.

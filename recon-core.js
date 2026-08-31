@@ -599,6 +599,42 @@ function pagesForDate(pages, statementDate) {
  * bottom of the page and not above ADL. Rows that tie on both keep the order
  * they came in, so the file still reads as the file that was uploaded.
  */
+/**
+ * IPSI step 19 — "Finalised and reconciled CSV file will be ordered in sequence
+ * of ascending booking numbers".
+ *
+ * NOT `sortForFinance`, which orders by Shop then Consultant: that is BPay's
+ * BR14 and IPSI has neither column. The IPSI export was going out in upload
+ * order, which is whatever order IPSI's own download happened to be in.
+ *
+ * Numeric where the booking number is a number, so 99 comes before 100 rather
+ * than after it the way a string sort would put it. Booking numbers that are
+ * not plain digits (`B128297` appears in the TravelPay data) fall back to a
+ * text compare, and rows with no booking number at all go LAST — they are the
+ * ones needing attention and a person should not have to scroll past them to
+ * find the work.
+ */
+function sortIpsiForExport(rows) {
+  const num = (v) => {
+    const t = String(v == null ? "" : v).trim();
+    if (!t) return null;
+    return /^\d+$/.test(t) ? Number(t) : t.toLowerCase();
+  };
+  return (rows || [])
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => {
+      const an = num(a.r.bookingNo), bn = num(b.r.bookingNo);
+      if (an == null && bn == null) return a.i - b.i;   // both blank: leave them be
+      if (an == null) return 1;                          // blanks last
+      if (bn == null) return -1;
+      const bothNumbers = typeof an === "number" && typeof bn === "number";
+      if (bothNumbers) return an === bn ? a.i - b.i : an - bn;
+      const as = String(an), bs = String(bn);
+      return as === bs ? a.i - b.i : (as < bs ? -1 : 1);
+    })
+    .map((x) => x.r);
+}
+
 function sortForFinance(rows) {
   const key = (v) => String(v == null ? "" : v).trim().toLowerCase();
   return (rows || [])
@@ -2795,7 +2831,7 @@ module.exports = {
   matchAgainstStatement,
   nextPageNumber, toTramadaDate,
   daysBefore,
-  mapColumns, rowsByHeader,
+  mapColumns, rowsByHeader, sortIpsiForExport,
   STATEMENT_COLUMNS, TRANSACTION_COLUMNS, TRANSACTION_FALLBACK,
   MINT_COLUMNS, csvGrid, parseMintRows, matchMintAgainstStatement, summariseMint,
   matchTravelPayAgainstStatement, MATCHERS, matcherFor, matchesOn, SORT_BY,

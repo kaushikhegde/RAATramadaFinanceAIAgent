@@ -397,6 +397,65 @@ console.log("\nIPSI is not a statement-page report, and a combined run has to kn
     C.REPORTS.mint.recPayType != null && C.REPORTS.travelpay.recPayType != null);
 }
 
+/* STEP 19 — "Finalised and reconciled CSV file will be ordered in sequence of
+   ascending booking numbers."
+
+   This was not implemented: IPSI files nothing, so its export fell into the
+   same branch as Mint and TravelPay and kept the upload order — which for IPSI
+   is whatever order IPSI's own download happened to arrive in. Mint and
+   TravelPay are right to keep it (they have no booking column to sort on);
+   IPSI has one and the guide names it. */
+{
+  const rows = [
+    { bookingNo: "100" }, { bookingNo: "99" }, { bookingNo: "" },
+    { bookingNo: "13" }, { bookingNo: "B128297" }, { bookingNo: "7" },
+  ];
+  const out = C.sortIpsiForExport(rows).map((r) => r.bookingNo);
+  check("ascending booking numbers, and 99 sorts BEFORE 100 (numeric, not text)",
+    out, ["7", "13", "99", "100", "B128297", ""]);
+
+  // A tie keeps the order it arrived in, so the sort never reshuffles equals.
+  const tied = [{ bookingNo: "5", n: 1 }, { bookingNo: "5", n: 2 }, { bookingNo: "5", n: 3 }];
+  check("equal booking numbers keep their original order",
+    C.sortIpsiForExport(tied).map((r) => r.n), [1, 2, 3]);
+
+  ok("rows with no booking number go last, not first",
+    C.sortIpsiForExport([{ bookingNo: "" }, { bookingNo: "2" }])[0].bookingNo === "2");
+}
+
+/* The browser assembles the exported file, so it keeps its own copy of that
+   sort. Two copies, one rule — run both over the same rows and compare, the
+   way test-run-order.js keeps RUN_ORDER in step. */
+{
+  const wire = fs.readFileSync(path.join(__dirname, "..", "design", "recon-wire.html"), "utf8");
+  const m = wire.match(/function sortIpsiForExport\(rows\) \{[\s\S]*?\n  \}/);
+  ok("recon-wire.html has its own sortIpsiForExport", !!m,
+    "the browser is exporting in upload order again — step 19 is silently undone");
+  if (m) {
+    // eslint-disable-next-line no-new-func
+    const browserSort = new Function(`${m[0]}; return sortIpsiForExport;`)();
+    const sample = [
+      { bookingNo: "100" }, { bookingNo: "7" }, { bookingNo: "" },
+      { bookingNo: "13" }, { bookingNo: "B1" }, { bookingNo: "99" },
+    ];
+    check("the browser's copy and core's agree, row for row",
+      browserSort(sample).map((r) => r.bookingNo),
+      C.sortIpsiForExport(sample).map((r) => r.bookingNo));
+  }
+}
+
+/* STEP 11 — "Bank Account – Trust Account", checked by LABEL not position. */
+{
+  const src = fs.readFileSync(path.join(__dirname, "..", "tramada-ipsi.js"), "utf8");
+  ok("the bank account chosen is verified to be the Trust Account",
+    /\/trust\/i\.test\(chosen\.label\)/.test(src),
+    "the run selects #agencyBankAccount by the positional value \"1\" with nothing " +
+    "checking which account that is — reorder the dropdown and the merchant receipt " +
+    "is issued against a different bank account with nothing looking wrong");
+  ok("...and the refusal lists what the form actually offered",
+    /The form offers:/.test(src));
+}
+
   const onThePage = Object.keys(C.REPORTS).filter((k) => C.REPORTS[k].recPayType);
   const ownFlow = Object.keys(C.REPORTS).filter((k) => !C.REPORTS[k].recPayType);
   check("IPSI is the one with its own flow", ownFlow, ["ipsi"]);
