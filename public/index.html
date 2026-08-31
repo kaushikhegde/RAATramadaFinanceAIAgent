@@ -3905,6 +3905,22 @@ function askMarkStale(){
       ? '<span style="color:var(--err)">IPSI runs alone — remove the other loaded report before starting this one.</span>'
       : (ipsiTotalMismatch() ? '<span style="color:var(--err)">' + esc(ipsiTotalMismatch()) + '</span>' : '');
 
+    /* WHERE THE CURSOR WAS. The balance fields are moved into a card slot on
+       every render, and MOVING a focused element between parents blurs it in
+       Chromium — the node survives (it is the same input), but focus lands on
+       <body>. Typing one character into Opening balance fired input →
+       renderSource() → the field was re-parented → the next keystroke went
+       nowhere. The field looked fine and simply stopped accepting typing. */
+    const focusWas = (() => {
+      const a = document.activeElement;
+      if (!a || !a.id || !['rcDate', 'rcOpening', 'rcClosing', 'rcTotal', 'ipsiNuvei'].includes(a.id)) return null;
+      let start = null, end = null;
+      // selectionStart throws on <input type=number>; the caret cannot be read
+      // there at all, so it is restored to the end of the value instead.
+      try { start = a.selectionStart; end = a.selectionEnd; } catch (e) { /* number input */ }
+      return { id: a.id, start: start, end: end };
+    })();
+
     stashFields();
     grid.innerHTML = Object.keys(SOURCES).map((kind) => {
       const def = SOURCES[kind];
@@ -4001,6 +4017,19 @@ function askMarkStale(){
     }
 
     placeFields();
+
+    /* Put the cursor back exactly where it was, after the boxes have been
+       re-homed. Restoring before placeFields() would be undone by the move. */
+    if (focusWas) {
+      const again = $('#' + focusWas.id);
+      if (again && document.activeElement !== again) {
+        again.focus({ preventScroll: true });
+        if (focusWas.start != null) {
+          try { again.setSelectionRange(focusWas.start, focusWas.end); } catch (e) { /* number input */ }
+        }
+      }
+    }
+
 
     grid.querySelectorAll('[data-choose]').forEach((b) => {
       b.onclick = () => openPicker(b.dataset.choose);
