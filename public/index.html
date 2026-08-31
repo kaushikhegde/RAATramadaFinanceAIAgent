@@ -3040,6 +3040,16 @@ function askMarkStale(){
   const $ = (s, r) => (r || document).querySelector(s);
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  /* #rcDate is a native <input type="date">, which only ever displays and
+     only ever accepts yyyy-mm-dd — assigning it dd-mm-yyyy (how runs already
+     on disk have their statementDate) is silently ignored by the browser and
+     the field just goes blank. Runs saved before this field became a date
+     picker still carry the old shape, so anything setting .value programmatically
+     has to convert first. */
+  const dmyToIso = (v) => {
+    const m = String(v == null ? '' : v).trim().match(/^(\d{2})-(\d{2})-(\d{4})$/);
+    return m ? `${m[3]}-${m[2]}-${m[1]}` : v;
+  };
 
   /* ── two reports, one run ──
      BPay receipts and the Mint daily settlement are different files with
@@ -3293,13 +3303,13 @@ function askMarkStale(){
     const old = $('#stmtDate');
     if (old) {
       const d = new Date(Date.now() + 864e5);
-      const dmy = `${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}`;
+      const iso = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
       const box = document.createElement('div');
       box.id = 'rcFieldRow';          // the page header — where the date lives
       box.style.cssText = 'display:flex;gap:10px;align-items:flex-end';
       box.innerHTML =
         '<div id="rcDateBox"><label class="field-lbl" for="rcDate" style="margin:0 0 3px;display:block">Statement date<span class="req" aria-hidden="true">*</span></label>' +
-        '<input class="btn" id="rcDate" aria-required="true" style="width:130px" value="' + dmy + '"></div>' +
+        '<input type="date" class="btn" id="rcDate" aria-required="true" style="width:150px" value="' + iso + '"></div>' +
         '<div id="rcOpeningBox"><label class="field-lbl" for="rcOpening" style="margin:0 0 3px;display:block">Opening balance<span class="req" aria-hidden="true">*</span></label>' +
         '<input class="btn" id="rcOpening" aria-required="true" style="width:130px" placeholder="0.00"></div>' +
         '<div id="rcClosingBox"><label class="field-lbl" for="rcClosing" style="margin:0 0 3px;display:block">Closing balance<span class="req" aria-hidden="true">*</span></label>' +
@@ -3678,7 +3688,7 @@ function askMarkStale(){
           format: run.format || 'csv',
         };
         const dateField = $('#rcDate');
-        if (dateField && run.statementDate) dateField.value = run.statementDate;
+        if (dateField && run.statementDate) dateField.value = dmyToIso(run.statementDate);
         // The card's own field, redrawn on the next render — see ipsiNuveiField.
         ipsiNuvei = run.transactionTotal || '';
         active = 'ipsi';

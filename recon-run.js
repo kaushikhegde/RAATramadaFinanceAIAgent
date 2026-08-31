@@ -570,7 +570,9 @@ async function createStatement(page, { pageNumber, statementDate, openingBalance
  */
 async function sortPage(page, source = "bpay", say = () => {}) {
   const want = core.SORT_BY[source] || core.SORT_BY.bpay;
-  await page.waitForSelector("#filterColumn", { timeout: 20000 });
+  await page.waitForSelector("#filterColumn", { timeout: 20000 }).catch(() => {
+    say("#filterColumn did not appear before sorting — continuing anyway.", false);
+  });
   const set = async (sel, label) => {
     try { await page.selectOption(sel, { label }); return true; }
     catch { return false; }
@@ -588,7 +590,9 @@ async function sortPage(page, source = "bpay", say = () => {}) {
   await page.click("#sortButton").catch(() => {});
   await page.waitForLoadState("domcontentloaded").catch(() => {});
   await sleep(1500);
-  await page.waitForSelector("#filterColumn", { timeout: 20000 });
+  await page.waitForSelector("#filterColumn", { timeout: 20000 }).catch(() => {
+    say("#filterColumn did not reappear after sorting — continuing anyway.", false);
+  });
 }
 
 /**
