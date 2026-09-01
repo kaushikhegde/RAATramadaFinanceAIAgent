@@ -91,6 +91,20 @@ check("a failed transaction is held back, not called missing",
 check("and one still pending", odd.problems[3].why,
   'the transaction was "Pending", so it never reached the bank');
 check("every held-back row is accounted for", odd.problems.length, 4);
+check("held-back rows carry a remark, not just a why — the results table reads r.remark",
+  odd.problems.map((p) => p.row.remark), [C.REMARKS.review, C.REMARKS.review, C.REMARKS.review, C.REMARKS.review]);
+
+/* The real mint-payments run this was found on: Tramada's own automation timed
+   out raising the receipt (`page.goto: Timeout 30000ms exceeded.`), so no
+   Payment Reference ever came back — but the file's Transaction Status still
+   reads "Successful", so the status check a few lines up never sees it. Only
+   the Failure Reason column says what actually happened, and it used to be
+   silently dropped for exactly this shape of row. */
+const timedOut = C.parseTravelPayRows(head, [
+  ["", "145.54", "Monarto", "Successful", "page.goto: Timeout 30000ms exceeded."],
+]);
+check("a blank reference with a real failure reason names it",
+  timedOut.problems[0].why, "no payment reference — page.goto: Timeout 30000ms exceeded.");
 
 console.log("\nwhat the sheet must have");
 check("no payment reference column is refused outright",

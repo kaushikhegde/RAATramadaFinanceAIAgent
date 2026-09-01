@@ -142,8 +142,8 @@ console.log("\ndecision 1 — which WHOLE segments the receipt settles");
   const none = C.decideAllocation(10000, two);
   check("100 takes nothing", none.allocation, []);
   check("the receipt is still filed, unallocated", none.status, "Not allocated");
-  ok("and says the cheapest is still too big",
-    /cheapest segment owes \$200\.00/.test(none.reason), none.reason);
+  ok("and says why: less than the cheapest segment",
+    /less than the cheapest segment, which owes \$200\.00/.test(none.reason), none.reason);
 
   // Segments are NEVER part-paid. Every amount written is a segment's full due,
   // which is what ticking auto-fills — so no allocation box is ever typed with
@@ -258,6 +258,42 @@ console.log("\ndecision 2 — reconciled by RECEIPT NUMBER, or not");
 
   check("an empty statement reconciles nothing",
     C.matchAgainstStatement(row("R.0000009403", "150.00"), []).status, "Not reconciled");
+
+  /* Found on the statement at the right figure is not the same question as
+     PROPERLY ALLOCATED — BR11's overpayment and BR09/BR10's "matched nothing"
+     both file a real receipt that IS this statement line, but nobody has told
+     Tramada what it is for. Screenshot 01-Sep-2026: a BR10 receipt for
+     $394.00 (less than its cheapest $790.00 segment) came back "Reconciled"
+     — green — sitting right beside a red "Not allocated" badge on the same
+     row, which read as the day's work being done when it was not. */
+  const overpaid = C.matchAgainstStatement(
+    { receiptNo: "R.0000009405", amountCents: C.cents("145.54"), allocation: "Part allocated",
+      remark: "Overpayment, please check", why: "$145.54 is more than the $100.00 outstanding" },
+    stmt);
+  check("an overpayment on the statement is still not reconciled", overpaid.status, "Not reconciled");
+  check("and is not ticked", overpaid.transNo, undefined);
+  ok("and the allocation detail survives into the reason",
+    /\$100\.00 outstanding/.test(overpaid.reason), overpaid.reason);
+  ok("naming which rule left it open", /part allocated/.test(overpaid.reason), overpaid.reason);
+
+  const notAllocated = C.matchAgainstStatement(
+    { receiptNo: "R.0000009405", amountCents: C.cents("145.54"), allocation: "Not allocated",
+      remark: "Please allocate", why: "$145.54 is less than the cheapest segment, which owes $790.00" },
+    stmt);
+  check("an amount that matched no segment is not reconciled either", notAllocated.status, "Not reconciled");
+  check("and is not ticked", notAllocated.transNo, undefined);
+  ok("and says why", /cheapest segment, which owes \$790\.00/.test(notAllocated.reason), notAllocated.reason);
+
+  // A clean BR07/BR08 allocation is untouched — only "Allocated" reconciles
+  // the ordinary way.
+  check("a properly allocated receipt still reconciles",
+    C.matchAgainstStatement({ ...row("R.0000009405", "145.54"), allocation: "Allocated" }, stmt).status,
+    "Reconciled");
+  // No `allocation` field at all (every test above this block, and any row
+  // from a report that never allocates) must not be caught by this — it is
+  // not "not Allocated", it is not part of this question.
+  check("a row with no allocation concept at all reconciles as before",
+    C.matchAgainstStatement(row("R.0000009405", "145.54"), stmt).status, "Reconciled");
 }
 
 console.log("\nthe shipped bookings.json actually exercises both paths");

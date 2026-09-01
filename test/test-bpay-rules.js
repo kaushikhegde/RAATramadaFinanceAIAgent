@@ -152,7 +152,8 @@ console.log("\nBR07-BR11 — exact, or nothing");
   const nothing = C.decideAllocation(10000, two);
   check("BR10 matches nothing at all — ticks nothing", nothing.allocation, []);
   check("also asks for a person", nothing.remark, "Please allocate");
-  ok("and says the cheapest is still bigger", /cheapest segment owes \$200\.00/.test(nothing.reason), nothing.reason);
+  ok("and says why: less than the cheapest segment",
+    /less than the cheapest segment, which owes \$200\.00/.test(nothing.reason), nothing.reason);
 
   const over = C.decideAllocation(50000, two);
   check("BR11 more than everything owed — ticks all", over.allocation, "ALL");

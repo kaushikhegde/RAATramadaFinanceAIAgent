@@ -853,6 +853,17 @@ function decideAllocation(csvAmountCents, segments) {
     );
   }
   const cheapest = Math.min(...owing.map((d) => d.due));
+  // Named separately from the generic "fits nothing" case below: an amount
+  // smaller than every segment can never be allocated, no matter which
+  // combination is tried, so the person picking the row up should be told
+  // that up front rather than left to work it out from a list of totals.
+  if (csvAmountCents < cheapest) {
+    return no(
+      `$${money(csvAmountCents)} is less than the cheapest segment, which owes $${money(cheapest)} ` +
+      `— left for a person to allocate`,
+      REMARKS.allocate
+    );
+  }
   return no(
     `$${money(csvAmountCents)} matches no segment and does not match the $${money(total)} outstanding ` +
     `(the cheapest segment owes $${money(cheapest)}) — left for a person to allocate`,
@@ -901,6 +912,29 @@ function matchAgainstStatement(row, statementRows) {
       duplicates: hits.length > 1 ? hits.length : undefined,
     };
   }
+
+  /* On the statement at the right amount is not the same question as
+     PROPERLY ALLOCATED. BR11 tills an overpayment (ticks every segment, money
+     left over) and BR09/BR10 tick nothing (the amount matched no segment, or
+     matched a combination nobody authorised) — in both cases the receipt is
+     real and it IS the money on this statement line, but nobody has told
+     Tramada what it is actually for. Calling that "Reconciled" said the day's
+     work on this line was done when a person still has to open the booking
+     and decide. `row.why` already carries decideAllocation's own detail (the
+     dollar figures, which segment is short) — folded in here rather than
+     dropped, because this is the last thing written to `why` before the
+     screen renders it. No `transNo` is returned either: this line is not
+     ticked on the statement page, the same as any other row a person still
+     has to look at. */
+  if (row.allocation && row.allocation !== "Allocated") {
+    return {
+      reconciled: false, status: "Not reconciled",
+      reason: `receipt ${row.receiptNo} found on the statement at $${money(row.amountCents)}, ` +
+        `but left Not reconciled — ${row.allocation.toLowerCase()}: ${row.why || row.remark || "the allocation was not a clean match"}`,
+      duplicates: hits.length > 1 ? hits.length : undefined,
+    };
+  }
+
   return {
     reconciled: true, status: "Reconciled",
     reason: `receipt ${row.receiptNo} found at $${money(row.amountCents)}`,
@@ -1165,8 +1199,13 @@ function parseMintRows(headers, gridRows) {
     const why = [];
     if (!row.transNo) why.push("no transaction reference");
     if (row.amountCents == null) why.push(`unreadable amount "${row.rawAmount}"`);
-    if (why.length) problems.push({ line: row.line, why: why.join("; "), row });
-    else rows.push(row);
+    if (why.length) {
+      // Same as BPay's own remark: carried ON the row, not just the problem
+      // wrapper, because the run's results table reads a row's Remarks cell
+      // off `remark`, not off `problems`.
+      row.remark = REMARKS.review;
+      problems.push({ line: row.line, why: why.join("; "), row });
+    } else rows.push(row);
   });
   return { rows, problems };
 }
@@ -1503,14 +1542,27 @@ function parseTravelPayRows(headers, gridRows) {
     if (row.amountCents != null) row.amount = money(row.amountCents);
 
     const why = [];
-    if (!row.transNo) why.push("no payment reference");
+    if (!row.transNo) {
+      // Status can say "Successful" while the reference is still blank — seen
+      // on a row where the receipt run's own browser timed out mid-click,
+      // after Tramada had already marked the transaction successful. The
+      // Failure Reason column is the only place that survives, so it is read
+      // even when the status check just below would not have caught this row.
+      const reason = at(cells, "failure");
+      why.push(reason ? `no payment reference — ${reason}` : "no payment reference");
+    }
     if (row.amountCents == null) why.push(`unreadable amount "${row.rawAmount}"`);
     if (row.status && !/^success/i.test(row.status)) {
       const reason = at(cells, "failure");
       why.push(`the transaction was "${row.status}"${reason ? ` — ${reason}` : ""}, so it never reached the bank`);
     }
-    if (why.length) problems.push({ line: row.line, why: why.join("; "), row });
-    else rows.push(row);
+    if (why.length) {
+      // Same as BPay's own remark: carried ON the row, not just the problem
+      // wrapper, because the run's results table reads a row's Remarks cell
+      // off `remark`, not off `problems`.
+      row.remark = REMARKS.review;
+      problems.push({ line: row.line, why: why.join("; "), row });
+    } else rows.push(row);
   });
   return { rows, problems };
 }
@@ -1669,22 +1721,38 @@ function parseIpsiRows(headers, gridRows) {
     if (paid) row.tramadaPaymentNo = paid;
 
     const why = [];
+    let dataIssue = false;
     /* A row is only unusable when there is NOTHING to match it by. It used to
        be held back for a missing Merchant Reference — a column this no longer
        reads — which threw away rows that would have matched perfectly well on
        their booking number. */
     if (!row.reference && !row.bookingNo) {
       why.push("no transaction reference and no booking number — nothing to match it by");
+      dataIssue = true;
     }
-    if (row.amountCents == null) why.push(`unreadable amount "${row.rawAmount}"`);
+    if (row.amountCents == null) { why.push(`unreadable amount "${row.rawAmount}"`); dataIssue = true; }
+    let wrongType = false;
     if (row.status && !/^approved$/i.test(row.status)) {
-      why.push(`the transaction is "${row.status}", not approved`);
+      why.push(`not a desired transaction type — the transaction is "${row.status}", not approved`);
+      wrongType = true;
     }
     if (isPreAuth(row)) {
-      why.push("this is a PreAuth (10) hold, not a settled transaction — its Capture carries the money");
+      why.push("not a desired transaction type — PreAuth (10) is a hold, not a settled transaction, so its Capture carries the money");
+      wrongType = true;
     }
-    if (why.length) problems.push({ line: row.line, why: why.join("; "), row });
-    else rows.push(row);
+    if (why.length) {
+      // Same as BPay's own remark: carried ON the row, not just the problem
+      // wrapper, because the run's results table reads a row's Remarks cell
+      // off `remark`, not off `problems`.
+      row.remark = REMARKS.review;
+      /* A row held back ONLY for being the wrong transaction type (a PreAuth,
+         a Decline, a Void) was never going to reconcile no matter what the
+         file said — there is nothing for a person to fix, so it does not
+         belong in the results table as its own row the way a genuine data
+         problem does. The page counts it in the upload note instead. */
+      row.excludedType = wrongType && !dataIssue;
+      problems.push({ line: row.line, why: why.join("; "), row });
+    } else rows.push(row);
   });
 
   return {
@@ -1755,6 +1823,10 @@ function matchIpsiAgainstReceipts(row, receipts) {
     return c != null && row.amountCents != null &&
       Math.abs(c - row.amountCents) <= IPSI_LINE_TOLERANCE_CENTS;
   };
+  // The closest of possibly several candidates — a booking can appear twice in
+  // one file, and the nearest amount is the one worth naming a $ gap against.
+  const closestDiffCents = (candidates) => Math.min(
+    ...candidates.map((r) => Math.abs((cents(r.receiptAmount) || 0) - (row.amountCents || 0))));
 
   const byRef = list.filter((r) => r.reference && refKey(r.reference) === refKey(row.reference));
   const refHit = byRef.find(sameMoney);
@@ -1763,7 +1835,8 @@ function matchIpsiAgainstReceipts(row, receipts) {
       reason: `matched on reference ${row.reference} at $${money(row.amountCents)}` };
   }
   if (byRef.length) {
-    return { matched: false, on: "reference", candidates: byRef, remark: IPSI_REMARKS.amount,
+    return { matched: false, on: "reference", candidates: byRef,
+      remark: `${IPSI_REMARKS.amount} — a difference of $${money(closestDiffCents(byRef))}`,
       reason: `reference ${row.reference} is on the list at $${byRef.map((r) => money(cents(r.receiptAmount))).join(", $")}, not $${money(row.amountCents)}` };
   }
 
@@ -1774,7 +1847,8 @@ function matchIpsiAgainstReceipts(row, receipts) {
       reason: `no receipt carries reference ${row.reference}, matched on booking ${row.bookingNo} at $${money(row.amountCents)}` };
   }
   if (byBooking.length) {
-    return { matched: false, on: "booking", candidates: byBooking, remark: IPSI_REMARKS.amount,
+    return { matched: false, on: "booking", candidates: byBooking,
+      remark: `${IPSI_REMARKS.amount} — a difference of $${money(closestDiffCents(byBooking))}`,
       reason: `booking ${row.bookingNo} is on the list at $${byBooking.map((r) => money(cents(r.receiptAmount))).join(", $")}, not $${money(row.amountCents)}` };
   }
   return { matched: false, on: null, remark: IPSI_REMARKS.booking,
@@ -1803,6 +1877,10 @@ function matchIpsiAgainstPayments(row, payments) {
     const c = cents(r.dueAmount);
     return c != null && Math.abs(Math.abs(c) - want) <= IPSI_LINE_TOLERANCE_CENTS;
   };
+  // The closest of possibly several candidates — same reasoning as the
+  // receipts-side matcher above.
+  const closestDiffCents = (candidates) => Math.min(
+    ...candidates.map((r) => Math.abs(Math.abs(cents(r.dueAmount) || 0) - want)));
 
   const byRef = list.filter((r) => r.reference && refKey(r.reference) === refKey(row.reference));
   const refHit = byRef.find(sameMoney);
@@ -1811,7 +1889,8 @@ function matchIpsiAgainstPayments(row, payments) {
       reason: `matched refund on reference ${row.reference} at $${money(want)}` };
   }
   if (byRef.length) {
-    return { matched: false, on: "reference", candidates: byRef, remark: IPSI_REMARKS.amount,
+    return { matched: false, on: "reference", candidates: byRef,
+      remark: `${IPSI_REMARKS.amount} — a difference of $${money(closestDiffCents(byRef))}`,
       reason: `reference ${row.reference} is on the Payments list at $${byRef.map((r) => money(Math.abs(cents(r.dueAmount) || 0))).join(", $")}, not $${money(want)}` };
   }
 
@@ -1822,7 +1901,8 @@ function matchIpsiAgainstPayments(row, payments) {
       reason: `no payment carries reference ${row.reference}, matched refund on booking ${row.bookingNo} at $${money(want)}` };
   }
   if (byBooking.length) {
-    return { matched: false, on: "booking", candidates: byBooking, remark: IPSI_REMARKS.amount,
+    return { matched: false, on: "booking", candidates: byBooking,
+      remark: `${IPSI_REMARKS.amount} — a difference of $${money(closestDiffCents(byBooking))}`,
       reason: `booking ${row.bookingNo} is on the Payments list at $${byBooking.map((r) => money(Math.abs(cents(r.dueAmount) || 0))).join(", $")}, not $${money(want)}` };
   }
   return { matched: false, on: null, remark: IPSI_REMARKS.booking,

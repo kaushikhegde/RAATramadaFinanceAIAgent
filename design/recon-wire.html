@@ -296,7 +296,9 @@ header.top { display: none !important }
     // new-statement form — which is exactly why they have to be asked for.
     const old = $('#stmtDate');
     if (old) {
-      const d = new Date(Date.now() + 864e5);
+      // TODAY, not tomorrow — see the matching comment in public/index.html
+      // for the live run this defaulted wrong on (31-Aug-2026).
+      const d = new Date();
       const dmy = `${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}`;
       const box = document.createElement('div');
       box.id = 'rcFieldRow';          // the page header — where the date lives

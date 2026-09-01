@@ -96,9 +96,18 @@ check("a row with neither is the one held back",
 // longer one of them.
 check("three rows are held back", odd.problems.length, 3);
 check("an unreadable amount", odd.problems[0].why, 'unreadable amount "n/a"');
-check("and one that was not approved", odd.problems[1].why, 'the transaction is "DECLINED", not approved');
+check("and one that was not approved", odd.problems[1].why,
+  'not a desired transaction type — the transaction is "DECLINED", not approved');
 ok("and the PreAuth — a hold, not a settled transaction",
-  /PreAuth \(10\) hold/.test(odd.problems[2].why), odd.problems[2].why);
+  /PreAuth \(10\) is a hold/.test(odd.problems[2].why), odd.problems[2].why);
+// A wrong TRANSACTION TYPE (Decline, Void, PreAuth) is never coming back no
+// matter what the file says — nothing for a person to fix — so it is flagged
+// separately from a genuine data problem (no reference, unreadable amount),
+// which the results table still shows as a row someone can act on.
+check("an unreadable amount is a data problem, not a wrong type",
+  odd.problems[0].row.excludedType, false);
+check("a decline is flagged as a wrong transaction type", odd.problems[1].row.excludedType, true);
+check("so is a PreAuth", odd.problems[2].row.excludedType, true);
 check("a sheet with no transaction reference column is refused",
   C.parseIpsiRows(["Transaction Amount"], [["1.00"]]).problems[0].why,
   "the sheet has no column for: transaction reference");
@@ -154,6 +163,12 @@ const wrongMoney = C.matchIpsiAgainstReceipts(
   { reference: "128380-164004", bookingNo: "128380", amountCents: 165901 }, receipts);
 ok("a reference at the wrong amount does not match", !wrongMoney.matched);
 ok("and says what the list holds instead", /not \$1659\.01/.test(wrongMoney.reason), wrongMoney.reason);
+/* The remark itself carries the $ gap too, not just the reason sentence —
+   Finance reads the Remarks column, not a hover title, and "Incorrect
+   amount" alone does not say how incorrect. $1.00 on the list against
+   $1659.01 wanted is a $1658.01 gap. */
+check("and the remark itself names the gap", wrongMoney.remark,
+  "Incorrect amount — a difference of $1658.01");
 
 const ambiguous = C.matchIpsiAgainstReceipts(
   { reference: "nope", bookingNo: "128999", amountCents: 75000 }, receipts);
@@ -173,7 +188,8 @@ console.log("\nBR03 — three cents of variance is a match, four is not");
   const tooFar = C.matchIpsiAgainstReceipts(
     { reference: "128388-171850", bookingNo: "128388", amountCents: 94239 }, receipts);   // 4c over
   ok("four cents over does not", !tooFar.matched, JSON.stringify(tooFar));
-  check("and BR07's exact words", tooFar.remark, C.IPSI_REMARKS.amount);
+  ok("and BR07's exact words open the remark", tooFar.remark.startsWith(C.IPSI_REMARKS.amount), tooFar.remark);
+  check("with the four-cent gap named", tooFar.remark, "Incorrect amount — a difference of $0.04");
 }
 
 console.log("\nBR10 — a booking-fallback match is still ticked, but flagged");
@@ -204,6 +220,14 @@ console.log("\nmatching a refund against Payments To Reconcile");
   const refundGone = C.matchIpsiAgainstPayments({ reference: "x", bookingNo: "1", amountCents: -100 }, payments);
   ok("nothing on the Payments list is not a match", !refundGone.matched);
   check("BR06's words apply here too", refundGone.remark, C.IPSI_REMARKS.booking);
+
+  // Same $ gap requirement on the refund side — a booking match at the wrong
+  // amount reads "Incorrect amount" here too, and it should say by how much.
+  const refundWrongMoney = C.matchIpsiAgainstPayments(
+    { reference: "nope", bookingNo: "115932", amountCents: -40000 }, payments);
+  ok("a refund at the wrong amount does not match", !refundWrongMoney.matched, JSON.stringify(refundWrongMoney));
+  check("and the remark names the gap", refundWrongMoney.remark,
+    "Incorrect amount — a difference of $55.37");
 }
 
 console.log("\nBR08 — the allocated total against the entered Transaction Total, twenty cents either way");

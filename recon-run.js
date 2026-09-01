@@ -734,8 +734,31 @@ async function readVisibleTransactions(page) {
  * "111,753.97" as readily as "111753.97" and the raw string is not what a money
  * field should be handed.
  */
-const BALANCE_EDIT_BUTTON =
-  'dl.edit input[type="button"][value="Edit"], input.button[type="button"][value="Edit"]';
+/* Scoped first, unscoped second — not one comma-list.
+ *
+ * Measured live 01-Sep-2026, page 13: the control that actually unlocks
+ * `#openingBalance` is a plain `<button>Edit</button>` — not an
+ * `input[type="button"]` at all — sitting in `dl.edit dt.input-short-button`,
+ * exactly where the comment above says the balance section's own Edit lives.
+ * The old selector could never match it, so `.first()` fell through to
+ * `input.button[type="button"][value="Edit"]` with no `dl.edit` scope, found
+ * some OTHER section's Edit button, clicked that, and left the balances
+ * locked — precisely the "may well have pressed one belonging to a different
+ * section" risk this function already warned about below, now confirmed.
+ *
+ * Trying the scoped patterns FIRST and only falling back when neither matches
+ * anything is what a single mixed selector cannot do: `.first()` on a
+ * comma-list picks by DOM order, not list order, so an unscoped fallback can
+ * still win even when it is listed last. */
+const BALANCE_EDIT_BUTTON_SCOPED =
+  'dl.edit dt.input-short-button button, dl.edit input[type="button"][value="Edit"]';
+const BALANCE_EDIT_BUTTON_FALLBACK = 'input.button[type="button"][value="Edit"]';
+
+async function findBalanceEditButton(page) {
+  const scoped = page.locator(BALANCE_EDIT_BUTTON_SCOPED);
+  if (await scoped.count()) return scoped.first();
+  return page.locator(BALANCE_EDIT_BUTTON_FALLBACK).first();
+}
 
 async function setStatementBalances(page, { openingBalance, closingBalance } = {}, say = () => {}, dryRun = false) {
   const want = {
@@ -775,7 +798,7 @@ async function setStatementBalances(page, { openingBalance, closingBalance } = {
 
   const locked = await page.$eval("#openingBalance", (el) => el.readOnly).catch(() => false);
   if (locked) {
-    const edit = page.locator(BALANCE_EDIT_BUTTON).first();
+    const edit = await findBalanceEditButton(page);
     if (!(await edit.count())) {
       const controls = await page.evaluate(() =>
         [...document.querySelectorAll("input[type=button], input[type=submit]")]
