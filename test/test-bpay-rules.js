@@ -416,5 +416,59 @@ console.log("\nthe file Finance actually sends");
     p.problems[0].why, "the header is missing: reference");
 }
 
+/* A RERUN MUST BE ABLE TO FINISH.
+
+   RAA's workflow reruns the same file after Finance fixes errors — the IPSI
+   guide's step 17 says so in as many words. On that second pass the receipt is
+   already on the booking, so nothing is filed again and `allocation` reads
+   "Already filed" rather than "Allocated".
+
+   The guard that keeps an unclean allocation off the statement was matching on
+   the string, so it refused those too. Observed live 01-Sep: "0 of 10
+   reconciled" with three real receipts sitting on page 18 at exactly the right
+   amounts. An already-filed receipt now reconciles on the same evidence a
+   fresh one does — real receipt, on this page, amount agreeing to the cent. */
+{
+  const page = [{ transNo: "R.0000009580", reference: "BP-D1", amount: "145.54" }];
+  const row = { receiptNo: "R.0000009580", amountCents: 14554, why: "nothing was filed again" };
+
+  const fresh = C.matchAgainstStatement({ ...row, allocation: "Allocated" }, page);
+  const again = C.matchAgainstStatement({ ...row, allocation: "Already filed" }, page);
+  check("a receipt this run filed reconciles", fresh.status, "Reconciled");
+  check("and so does one an EARLIER run filed", again.status, "Reconciled");
+  ok("both are handed to the ticker", !!fresh.transNo && !!again.transNo,
+    "a rerun cannot reconcile anything if already-filed receipts are not ticked");
+  ok("but the reason says which run filed it",
+    /filed by an earlier run/.test(again.reason), again.reason);
+
+  // The money check still comes first — this is what stops it ticking blindly.
+  const wrongMoney = [{ transNo: "R.0000009580", reference: "BP-D1", amount: "999.99" }];
+  const bad = C.matchAgainstStatement({ ...row, allocation: "Already filed" }, wrongMoney);
+  check("already filed but the page disagrees on money — still refused", bad.status, "Not reconciled");
+  ok("...and nothing is ticked", !bad.transNo, JSON.stringify(bad));
+
+  // A genuinely unclean allocation is still held back.
+  for (const a of ["Not allocated", "Part allocated"]) {
+    const m = C.matchAgainstStatement({ ...row, allocation: a }, page);
+    check(`"${a}" is still not reconciled`, m.status, "Not reconciled");
+    ok(`"${a}" is still not ticked`, !m.transNo);
+  }
+}
+
+/* AN ALREADY-FILED ROW CARRIES A REMARK, because the run did not check how the
+   earlier receipt was allocated. Reconciling on the amount alone is the right
+   call — a rerun has to be able to finish — but a blank Remarks cell beside it
+   claims the allocation was verified when no booking was opened. */
+{
+  const src = require("fs").readFileSync(require("path").join(__dirname, "..", "recon-run.js"), "utf8");
+  ok("an already-filed row is given a remark",
+    /r\.remark = core\.REMARKS\.filedEarlier/.test(src),
+    "an unallocated receipt would reconcile with a blank Remarks cell, reading as finished work");
+  ok("...and the remark reaches the screen with the row",
+    /remark: r\.remark, why: r\.why,\n\s*consultant/.test(src) || /allocation: r\.allocation, remark: r\.remark/.test(src));
+  ok("the remark says the allocation was not checked",
+    /allocation not checked/.test(C.REMARKS.filedEarlier), C.REMARKS.filedEarlier);
+}
+
 console.log(`\n${fail === 0 ? "✅" : "❌"} ${pass} passed, ${fail} failed\n`);
 process.exit(fail === 0 ? 0 : 1);

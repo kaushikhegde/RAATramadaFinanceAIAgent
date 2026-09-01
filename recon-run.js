@@ -1390,10 +1390,25 @@ async function fileReceipts(results, { auth, cb, say, row }) {
         const was = probe.receipt || {};
         r.receiptNo = was.receiptNo || "";
         r.allocation = "Already filed";
+        /* THIS RUN DID NOT CHECK THE ALLOCATION, AND MUST NOT IMPLY IT DID.
+
+           The receipt is already on the booking, so nothing was opened and no
+           segments were read (`segments: []` comes back from the probe). That
+           is right — filing again would take the money twice — but it means
+           the run cannot see whether the earlier receipt was ALLOCATED or is
+           sitting there unallocated waiting for a person.
+
+           Since 01-Sep an already-filed receipt reconciles when the amount on
+           the statement agrees, so that a rerun can finish. Without this remark
+           that reconciliation reads as "done": observed on a $712.23 row that
+           was deliberately less than the $790 outstanding — filed, never
+           allocated, and on the rerun it showed Reconciled with a blank
+           Remarks cell. The tick is defensible; the silence was not. */
+        r.remark = core.REMARKS.filedEarlier;
         r.why = `already on booking ${r.bookingNo} as ${was.receiptNo} for ${was.amount}` +
           (probe.duplicates ? ` — and ${probe.duplicates} receipts carry that reference and amount` : "") +
-          " — nothing was filed again";
-        row(r.n, { receiptNo: r.receiptNo, allocation: r.allocation, why: r.why,
+          " — nothing was filed again, and this run did not check how it was allocated";
+        row(r.n, { receiptNo: r.receiptNo, allocation: r.allocation, remark: r.remark, why: r.why,
           consultant: r.consultant, shop: r.shop });
         say(`Row ${r.n}: ${r.why}`, true);
         continue;

@@ -324,7 +324,155 @@ const shortPath = (p) => path.relative(__dirname, p) || path.basename(p);
 // The creditor the Mint fixture pays. Only creditors with something payable
 // on the booking are offered by the form, so this has to match what the
 // bookings are costed to.
-const CREDITOR = valueOf("--creditor", "READY ROOMS");
+/*
+ * THE SUPPLIER, AND THE TWO NAMES IT HAS.
+ *
+ * MINT names companies by LEGAL ENTITY ("Websource Pacific Pty Limited").
+ * Tramada names creditors by TRADING NAME ("Stuba"). BR05's supplier gate
+ * compares the file's company against the statement's payee, and the supplier
+ * cheat sheet is the thing that makes those two agree.
+ *
+ * This used to pay a hardcoded "READY ROOMS" and write that SAME name into the
+ * file. The two matched trivially, so the translation the cheat sheet exists
+ * for was never exercised — every Mint and TravelPay fixture ever generated
+ * tested the easy case and nothing else.
+ *
+ * Now a pair is drawn at random from the sheet: the file gets `from` (what
+ * MINT would call it), Tramada is paid `to` (what the creditor is really
+ * called). A run over these fixtures has to do the lookup to reconcile them,
+ * which is the point.
+ *
+ *   --creditor "X"   pin the Tramada creditor. If the sheet knows X, the file
+ *                    still gets X's legal-entity name; if it does not, both
+ *                    sides get X and you are back to the trivial case.
+ *   --supplier-seed  pin the random pick, so a rerun uses the same supplier.
+ */
+function loadSupplierPairs() {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "cheat-sheets.json"), "utf8"));
+    return (j.suppliers && j.suppliers.pairs) || [];
+  } catch (e) { return []; }
+}
+
+/* ONE CREDITOR, NOT THREE.
+
+   The cheat sheet's TRAMADA CREDITOR cell sometimes holds several names —
+   "Cosmos Tours, Globus, Avalon Waterways", "Royal Caribbean / Celebrity
+   Cruises". That is fine for MATCHING, where any of them is an acceptable
+   payee, but a fixture has to PAY one, and Tramada has no creditor called
+   "Cosmos Tours, Globus, Avalon Waterways".
+
+   `try` already carries the split: [0] is the joined cell, the rest are the
+   individual names. So take the first entry that is a single name. 4 of the
+   sheet's 29 rows are affected; without this, roughly one pick in seven would
+   fail at the payment form with a creditor Tramada cannot find. */
+function oneCreditor(pair) {
+  const single = (pair.try || []).find((t) => t && !/[\/,]/.test(t));
+  return single || pair.to;
+}
+
+/* WHICH OF THOSE CREDITORS TRAMADA ACTUALLY HAS.
+
+   The cheat sheet is RAA's PRODUCTION mapping and this is a sandbox, so there
+   is no reason all 29 trading names exist here. Picking one blind means finding
+   out at the costing form, with a half-created booking behind you.
+
+   `tools/check-creditors.js` types each one into the real creditor field and
+   writes the verdict to tramada-creditors.json. When that file exists the pick
+   is drawn only from the names it confirmed. When it does not, the full sheet
+   is used and the run says so — the old behaviour, not a hard stop, because a
+   fixture run should not require a separate verification pass first. */
+function verifiedCreditors() {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(__dirname, "tramada-creditors.json"), "utf8"));
+    return { known: (j.known || []).map((k) => k.creditor), checkedAt: j.checkedAt };
+  } catch (e) { return null; }
+}
+
+const VERIFIED = verifiedCreditors();
+
+const SUPPLIER_PAIRS_ALL = loadSupplierPairs();
+const SUPPLIER_PAIRS = (() => {
+  if (!VERIFIED || !VERIFIED.known.length) return SUPPLIER_PAIRS_ALL;
+  const ok = new Set(VERIFIED.known.map((c) => String(c).trim().toLowerCase()));
+  const kept = SUPPLIER_PAIRS_ALL.filter((p) => ok.has(String(oneCreditor(p)).trim().toLowerCase()));
+  return kept.length ? kept : SUPPLIER_PAIRS_ALL;
+})();
+const SUPPLIER_SEED = valueOf("--supplier-seed", "");
+const CREDITOR_ARG = valueOf("--creditor", "");
+
+
+function chooseSupplier() {
+  const k = (v) => String(v || "").trim().toLowerCase();
+
+  if (CREDITOR_ARG) {
+    const hit = SUPPLIER_PAIRS.find((x) => k(x.to) === k(CREDITOR_ARG) || k(x.from) === k(CREDITOR_ARG) ||
+      (x.try || []).some((t) => k(t) === k(CREDITOR_ARG)));
+    // Pinned to something the sheet knows: still use both names.
+    if (hit) return { tramada: oneCreditor(hit), file: hit.from, mapped: true, pinned: true, cell: hit.to };
+    // Pinned to something it does not: both sides the same, and say so.
+    return { tramada: CREDITOR_ARG, file: CREDITOR_ARG, mapped: false, pinned: true };
+  }
+
+  if (!SUPPLIER_PAIRS.length) {
+    return { tramada: "READY ROOMS", file: "READY ROOMS", mapped: false, pinned: false, noSheet: true };
+  }
+
+  /* Seeded so a rerun can repeat a pick — a fixture you cannot reproduce is a
+     fixture you cannot debug. Without a seed it is genuinely random, which is
+     the point: over a few runs the fixtures cover the sheet rather than one
+     favourite row. */
+  /* A PLAIN NUMBER IS THE INDEX ITSELF, not something to hash. The script
+     prints "repeat with --supplier-seed 23" naming the index it picked, so
+     hashing "23" into a different row made that instruction a lie. Any other
+     string still hashes, so `--supplier-seed demo` works as a stable label. */
+  let i;
+  if (SUPPLIER_SEED) {
+    if (/^\d+$/.test(String(SUPPLIER_SEED).trim())) {
+      i = Number(SUPPLIER_SEED) % SUPPLIER_PAIRS.length;
+    } else {
+      let h = 0;
+      for (const ch of String(SUPPLIER_SEED)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+      i = h % SUPPLIER_PAIRS.length;
+    }
+  } else {
+    i = require("crypto").randomInt(SUPPLIER_PAIRS.length);
+  }
+  const p = SUPPLIER_PAIRS[i];
+  return { tramada: oneCreditor(p), file: p.from, mapped: true, pinned: false, index: i, cell: p.to };
+}
+
+const SUPPLIER = chooseSupplier();
+const CREDITOR = SUPPLIER.tramada;        // who Tramada pays
+const FILE_COMPANY = SUPPLIER.file;       // what the uploaded spreadsheet calls them
+
+{
+  if (SUPPLIER.noSheet) {
+    console.log(`  No supplier cheat sheet found — falling back to "${CREDITOR}" on both sides.`);
+    console.log(`  BR05's translation will NOT be exercised.\n`);
+  } else if (SUPPLIER.mapped) {
+    const pool = (VERIFIED && SUPPLIER_PAIRS.length !== SUPPLIER_PAIRS_ALL.length)
+      ? `${SUPPLIER_PAIRS.length} of ${SUPPLIER_PAIRS_ALL.length} confirmed to exist in Tramada`
+      : `${SUPPLIER_PAIRS.length} in the sheet`;
+    console.log(`  Supplier${SUPPLIER.pinned ? " (pinned)" : ` (random, ${pool})`}:`);
+    console.log(`    file says   "${FILE_COMPANY}"`);
+    console.log(`    Tramada pays "${CREDITOR}"` +
+      (SUPPLIER.cell && SUPPLIER.cell !== CREDITOR ? `   (the sheet's cell lists "${SUPPLIER.cell}" — one of them is paid)` : ""));
+    console.log(`    → the run has to use the cheat sheet to reconcile these. That is the point.`);
+    if (!SUPPLIER.pinned) console.log(`    Repeat this exact pick with --supplier-seed ${SUPPLIER.index}`);
+    if (!VERIFIED) {
+      console.log(`    (Not checked against Tramada. If this creditor does not exist here the`);
+      console.log(`     costing form will refuse it — run: node tools/check-creditors.js <bookingNo>)`);
+    }
+    console.log("");
+  } else {
+    console.log(`  NOTE: "${CREDITOR}" is not in the supplier cheat sheet (${SUPPLIER_PAIRS.length} pairs).`);
+    console.log(`        Both the file and Tramada will carry that name, so BR05's supplier check`);
+    console.log(`        passes trivially and the cheat sheet is not exercised.`);
+    console.log(`        Drop --creditor to have one picked from the sheet instead.\n`);
+  }
+}
+
 // The debtor whose card receipts an IPSI settlement covers.
 const IPSI_DEBTOR = valueOf("--debtor", "MASTER");
 
@@ -411,6 +559,16 @@ function loadBookings() {
         booking: { ...b.booking, tramadaOverrides: { ...acct, ...(b.booking || {}).tramadaOverrides } },
       }))
     : chosen;
+  /* `--limit` CAPS THE LIST, IT DOES NOT CONJURE ROWS. Asking for 5 against a
+     bookings file holding 3 quietly produced 3, and the only clue was counting
+     the output — reported as "I've added limit 5 but it creates only 3". Say
+     it plainly instead: the fix is more entries in the bookings file, not a
+     different flag. */
+  if (LIMIT != null && LIMIT > opened.length) {
+    console.log(`  NOTE: --limit ${LIMIT} was asked for, but ${shortPath(IN)} holds only ` +
+      `${opened.length} booking${opened.length === 1 ? "" : "s"}. Creating ${opened.length}.`);
+    console.log(`        Add more entries to that file to get ${LIMIT}.\n`);
+  }
   return LIMIT == null ? opened : opened.slice(0, LIMIT);
 }
 
@@ -494,7 +652,20 @@ async function createBooking(b, i, total) {
     clientCode: b.clientCode,
     booking: b.booking,
     segments: b.segments || [],
-    costings: b.costings || [],
+    /* THE COSTING'S CREDITOR IS THE CHOSEN SUPPLIER TOO.
+
+       `fixtures/bookings.json` hardcodes "READY ROOMS" on every costing, and
+       that is the name that lands in Creditor Name on the ticket segment form.
+       Picking a supplier from the cheat sheet changed who the PAYMENT went to
+       and what the CSV said, but not this — so every booking still showed
+       READY ROOMS in Tramada while the run expected to pay someone else. The
+       segment and the payment have to name the same creditor or the booking
+       owes nothing to the one being paid.
+
+       Overridden here rather than edited into bookings.json, so that file stays
+       the description of the trip (route, fares, passengers) and the supplier
+       stays a choice this script makes per run. */
+    costings: (b.costings || []).map((c) => ({ ...c, creditor: CREDITOR })),
     receipt: null,
     dryRunReceipt: true,
     callbacks: {
@@ -651,7 +822,7 @@ async function makeTravelPay() {
          hardcoded "Monarto Resort Pty Ltd" copied from RAA's dummy file, which
          no Tramada statement here would ever say — and BR05's supplier gate
          compares this column against the page. */
-      MerchantCompanyName: CREDITOR,
+      MerchantCompanyName: FILE_COMPANY,   // MINT/TravelPay name it by legal entity
       "Base Amount": core.money(b.dueCents || 148088),
       "Customer Fee": "0",
       "Processed Amount": core.money(b.dueCents || 148088),
@@ -738,7 +909,7 @@ async function makeTravelPay() {
       say(`     ✓ paid ${CREDITOR} → Payment Reference ${paymentRef}` +
         (paymentNo ? ` (${paymentNo})` : ""));
       row["Payment Reference"] = paymentRef;
-      row["MerchantCompanyName"] = CREDITOR;
+      row["MerchantCompanyName"] = FILE_COMPANY;
       // The processor's own id in the real file (`PR.46nyrd`). Tramada's own
       // number is the only second id a fixture has, and nothing matches on this
       // column, so it is the traceable thing to put here.
@@ -820,7 +991,7 @@ async function makeMint() {
     csv.add({
       "From Company": "Royal Automobile Association (RAA) of S.A. Incorporated",
       "From Company Number": "M363355",
-      "To Company ": CREDITOR,
+      "To Company ": FILE_COMPANY,   // MINT names the legal entity, not the trading name
       "To Company Number": "",
       "Transaction Reference": "",
       Amount: core.money(b.dueCents || 0),

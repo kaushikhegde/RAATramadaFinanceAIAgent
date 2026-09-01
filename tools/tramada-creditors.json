@@ -1,0 +1,162 @@
+{
+  "checkedAt": "2026-09-01T13:15:54.300Z",
+  "againstBooking": "14450",
+  "known": [
+    {
+      "from": "Great Southern Rail Travel Pty Ltd",
+      "cell": "Journey Beyond (JBRE) / Great Southern Rail",
+      "creditor": "Journey Beyond (JBRE)",
+      "offeredAs": "[GSR] Journey Beyond (JBRE) / Great Southern Rail"
+    },
+    {
+      "from": "RCL CRUISES LTD",
+      "cell": "Royal Caribbean / Celebrity Cruises",
+      "creditor": "Royal Caribbean",
+      "offeredAs": "[ROYAL] ROYAL CARIBBEAN INTERNATIONAL"
+    },
+    {
+      "from": "the Travel Junction",
+      "cell": "Infinity Holidays",
+      "creditor": "Infinity Holidays",
+      "offeredAs": "[INF] Infinity Holidays"
+    },
+    {
+      "from": "Southern Cross Safaris Australia Pty Ltd",
+      "cell": "Bench International",
+      "creditor": "Bench International",
+      "offeredAs": "[BENCH] BENCH INTERNATIONAL"
+    },
+    {
+      "from": "Great Canadian Railtour Company Ltd",
+      "cell": "Rocky Mountaineer",
+      "creditor": "Rocky Mountaineer",
+      "offeredAs": "[ROCKY] ROCKY MOUNTAINEER"
+    },
+    {
+      "from": "Contiki",
+      "cell": "Busabout",
+      "creditor": "Busabout",
+      "offeredAs": "[BUSABOUT] BUSABOUT AUSTRALIA"
+    },
+    {
+      "from": "Yankee Leisure Group Pty Ltd (Railbookers)",
+      "cell": "Wendy Wu",
+      "creditor": "Wendy Wu",
+      "offeredAs": "[WENDY] WENDY WU TOURS"
+    },
+    {
+      "from": "JTB Australia Pty Ltd",
+      "cell": "Japan Travel Bureau",
+      "creditor": "Japan Travel Bureau",
+      "offeredAs": "[JAP-MEL] JAPAN TRAVEL BUREAU"
+    },
+    {
+      "from": "RCL CRUISES LTD",
+      "cell": "ROYAL CARIBBEAN INTERNATIONAL",
+      "creditor": "ROYAL CARIBBEAN INTERNATIONAL",
+      "offeredAs": "[ROYAL] ROYAL CARIBBEAN INTERNATIONAL"
+    }
+  ],
+  "unknown": [
+    {
+      "from": "Metro 1 Travel and Technology Pty Ltd",
+      "cell": "Rail On-line",
+      "creditor": "Rail On-line"
+    },
+    {
+      "from": "Websource Pacific Pty Limited",
+      "cell": "Stuba",
+      "creditor": "Stuba"
+    },
+    {
+      "from": "Circuit Travel Pty Ltd",
+      "cell": "Cosmos Tours, Globus, Avalon Waterways",
+      "creditor": "Cosmos Tours"
+    },
+    {
+      "from": "Wave Hospitality Group Pty Ltd",
+      "cell": "Omniche",
+      "creditor": "Omniche"
+    },
+    {
+      "from": "ITC Pacific Pty Ltd",
+      "cell": "Sno'n'Ski",
+      "creditor": "Sno'n'Ski"
+    },
+    {
+      "from": "Australian Pacific Tours - APT",
+      "cell": "TravelMarvel",
+      "creditor": "TravelMarvel"
+    },
+    {
+      "from": "Top Deck Tours Pty Ltd",
+      "cell": "Backroads",
+      "creditor": "Backroads"
+    },
+    {
+      "from": "Kangaroo Island Sealink Pty Ltd",
+      "cell": "Sealink",
+      "creditor": "Sealink"
+    },
+    {
+      "from": "Trafalgar Tours",
+      "cell": "Costsaver / Luxury Gold",
+      "creditor": "Costsaver"
+    },
+    {
+      "from": "G'Day Rail",
+      "cell": "Vintage Rail Journeys",
+      "creditor": "Vintage Rail Journeys"
+    },
+    {
+      "from": "SP Cruises OPCP Limited",
+      "cell": "Azamara Cruises",
+      "creditor": "Azamara Cruises"
+    },
+    {
+      "from": "Emerald Cruises",
+      "cell": "Scenic Tours",
+      "creditor": "Scenic Tours"
+    },
+    {
+      "from": "Magic Tours International P/L",
+      "cell": "Europe Holidays",
+      "creditor": "Europe Holidays"
+    },
+    {
+      "from": "Gregory John Wilson",
+      "cell": "Wide Eye Tours",
+      "creditor": "Wide Eye Tours"
+    },
+    {
+      "from": "NCL Cruises",
+      "cell": "Oceania Cruises",
+      "creditor": "Oceania Cruises"
+    },
+    {
+      "from": "Viva Holidays",
+      "cell": "My Way Travel & Events Pty Ltd",
+      "creditor": "My Way Travel & Events Pty Ltd"
+    },
+    {
+      "from": "H.D.R. International Pty Ltd",
+      "cell": "South America Tourism Office",
+      "creditor": "South America Tourism Office"
+    },
+    {
+      "from": "HX AU Pty Ltd",
+      "cell": "Hurtigruten",
+      "creditor": "Hurtigruten"
+    },
+    {
+      "from": "Aurora Travel Pty Ltd",
+      "cell": "Aurora Expeditions",
+      "creditor": "Aurora Expeditions"
+    },
+    {
+      "from": "World Expeditions Travel Group Pty Ltd",
+      "cell": "Utracks",
+      "creditor": "Utracks"
+    }
+  ]
+}

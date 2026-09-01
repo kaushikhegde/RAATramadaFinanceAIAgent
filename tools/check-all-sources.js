@@ -262,7 +262,9 @@ function combined(byReport) {
 const statement = JSON.parse(fs.readFileSync(R("fixtures", "statement-rows.json"), "utf8"));
 const stRows = Array.isArray(statement) ? statement : (statement.rows || []);
 
-const b  = bpay(R("uploads", "20260827-045004-bpay.csv"));
+const b  = bpay((fs.existsSync(R("csv_uploads", "demo-bpay-5.csv"))
+        ? R("csv_uploads", "demo-bpay-5.csv")
+        : R("csv_uploads", "tramada-statement-lines.csv")));
 const m  = creditor("mint", R("fixtures", "mint-payments.csv"), stRows);
 const t  = creditor("travelpay", R("fixtures", "travelpay-payments.csv"), stRows);
 const i  = ipsi(R("csv_uploads", "ipsi-payments.csv"));

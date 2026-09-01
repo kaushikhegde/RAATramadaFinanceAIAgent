@@ -213,6 +213,321 @@
         }
       ],
       "_segments": "ticket 790.00 — the only allocatable row"
+    },
+    {
+      "label": "BNE → CNS",
+      "clientCode": "GRAY/SPIDER",
+      "booking": {
+        "originCode": "BNE",
+        "destinationCode": "CNS",
+        "departureDate": "2026-09-18",
+        "returnDate": "2026-09-21",
+        "tripType": "return",
+        "adults": 1,
+        "passengers": [
+          {
+            "firstName": "Spider",
+            "lastName": "Gray",
+            "type": "adult"
+          }
+        ]
+      },
+      "segments": [
+        {
+          "kind": "flight",
+          "airline": "QF",
+          "flightNumber": "947",
+          "class": "Economy",
+          "fromCity": "BNE",
+          "toCity": "CNS",
+          "departureDate": "2026-09-18",
+          "departureTime": "07:15",
+          "arrivalDate": "2026-09-18",
+          "arrivalTime": "09:40",
+          "status": "HK"
+        }
+      ],
+      "costings": [
+        {
+          "creditor": "READY ROOMS",
+          "airline": "QF",
+          "class": "Economy",
+          "fare": "318.20",
+          "passengerType": "Adult",
+          "fareType": "Published"
+        }
+      ],
+      "_segments": "ticket 145.54 — the only allocatable row"
+    },
+    {
+      "label": "PER → MEL",
+      "clientCode": "GRAY/SPIDER",
+      "booking": {
+        "originCode": "PER",
+        "destinationCode": "MEL",
+        "departureDate": "2026-09-22",
+        "returnDate": "2026-09-25",
+        "tripType": "return",
+        "adults": 1,
+        "passengers": [
+          {
+            "firstName": "Spider",
+            "lastName": "Gray",
+            "type": "adult"
+          }
+        ]
+      },
+      "segments": [
+        {
+          "kind": "flight",
+          "airline": "VA",
+          "flightNumber": "696",
+          "class": "Economy",
+          "fromCity": "PER",
+          "toCity": "MEL",
+          "departureDate": "2026-09-22",
+          "departureTime": "06:30",
+          "arrivalDate": "2026-09-22",
+          "arrivalTime": "12:05",
+          "status": "HK"
+        }
+      ],
+      "costings": [
+        {
+          "creditor": "READY ROOMS",
+          "airline": "VA",
+          "class": "Economy",
+          "fare": "512.75",
+          "passengerType": "Adult",
+          "fareType": "Published"
+        }
+      ],
+      "_segments": "ticket 145.54 — the only allocatable row"
+    },
+    {
+      "label": "MEL → OOL",
+      "clientCode": "GRAY/SPIDER",
+      "booking": {
+        "originCode": "MEL",
+        "destinationCode": "OOL",
+        "departureDate": "2026-09-26",
+        "returnDate": "2026-09-29",
+        "tripType": "return",
+        "adults": 1,
+        "passengers": [
+          {
+            "firstName": "Spider",
+            "lastName": "Gray",
+            "type": "adult"
+          }
+        ]
+      },
+      "segments": [
+        {
+          "kind": "flight",
+          "airline": "QF",
+          "flightNumber": "735",
+          "class": "Economy",
+          "fromCity": "MEL",
+          "toCity": "OOL",
+          "departureDate": "2026-09-26",
+          "departureTime": "09:10",
+          "arrivalDate": "2026-09-26",
+          "arrivalTime": "11:35",
+          "status": "HK"
+        }
+      ],
+      "costings": [
+        {
+          "creditor": "READY ROOMS",
+          "airline": "QF",
+          "class": "Economy",
+          "fare": "264.90",
+          "passengerType": "Adult",
+          "fareType": "Published"
+        }
+      ],
+      "_segments": "ticket 145.54 — the only allocatable row"
+    },
+    {
+      "label": "SYD → HBA",
+      "clientCode": "GRAY/SPIDER",
+      "booking": {
+        "originCode": "SYD",
+        "destinationCode": "HBA",
+        "departureDate": "2026-09-30",
+        "returnDate": "2026-10-03",
+        "tripType": "return",
+        "adults": 1,
+        "passengers": [
+          {
+            "firstName": "Spider",
+            "lastName": "Gray",
+            "type": "adult"
+          }
+        ]
+      },
+      "segments": [
+        {
+          "kind": "flight",
+          "airline": "VA",
+          "flightNumber": "142",
+          "class": "Economy",
+          "fromCity": "SYD",
+          "toCity": "HBA",
+          "departureDate": "2026-09-30",
+          "departureTime": "06:45",
+          "arrivalDate": "2026-09-30",
+          "arrivalTime": "08:55",
+          "status": "HK"
+        }
+      ],
+      "costings": [
+        {
+          "creditor": "READY ROOMS",
+          "airline": "VA",
+          "class": "Economy",
+          "fare": "437.60",
+          "passengerType": "Adult",
+          "fareType": "Published"
+        }
+      ],
+      "_segments": "ticket 145.54 — the only allocatable row"
+    },
+    {
+      "label": "BNE → DRW",
+      "clientCode": "GRAY/SPIDER",
+      "booking": {
+        "originCode": "BNE",
+        "destinationCode": "DRW",
+        "departureDate": "2026-10-04",
+        "returnDate": "2026-10-07",
+        "tripType": "return",
+        "adults": 1,
+        "passengers": [
+          {
+            "firstName": "Spider",
+            "lastName": "Gray",
+            "type": "adult"
+          }
+        ]
+      },
+      "segments": [
+        {
+          "kind": "flight",
+          "airline": "QF",
+          "flightNumber": "842",
+          "class": "Economy",
+          "fromCity": "BNE",
+          "toCity": "DRW",
+          "departureDate": "2026-10-04",
+          "departureTime": "10:20",
+          "arrivalDate": "2026-10-04",
+          "arrivalTime": "14:15",
+          "status": "HK"
+        }
+      ],
+      "costings": [
+        {
+          "creditor": "READY ROOMS",
+          "airline": "QF",
+          "class": "Economy",
+          "fare": "689.30",
+          "passengerType": "Adult",
+          "fareType": "Published"
+        }
+      ],
+      "_segments": "ticket 145.54 — the only allocatable row"
+    },
+    {
+      "label": "PER → SYD",
+      "clientCode": "GRAY/SPIDER",
+      "booking": {
+        "originCode": "PER",
+        "destinationCode": "SYD",
+        "departureDate": "2026-10-08",
+        "returnDate": "2026-10-11",
+        "tripType": "return",
+        "adults": 1,
+        "passengers": [
+          {
+            "firstName": "Spider",
+            "lastName": "Gray",
+            "type": "adult"
+          }
+        ]
+      },
+      "segments": [
+        {
+          "kind": "flight",
+          "airline": "QF",
+          "flightNumber": "576",
+          "class": "Economy",
+          "fromCity": "PER",
+          "toCity": "SYD",
+          "departureDate": "2026-10-08",
+          "departureTime": "23:15",
+          "arrivalDate": "2026-10-08",
+          "arrivalTime": "06:40",
+          "status": "HK"
+        }
+      ],
+      "costings": [
+        {
+          "creditor": "READY ROOMS",
+          "airline": "QF",
+          "class": "Economy",
+          "fare": "854.15",
+          "passengerType": "Adult",
+          "fareType": "Published"
+        }
+      ],
+      "_segments": "ticket 145.54 — the only allocatable row"
+    },
+    {
+      "label": "MEL → CBR",
+      "clientCode": "GRAY/SPIDER",
+      "booking": {
+        "originCode": "MEL",
+        "destinationCode": "CBR",
+        "departureDate": "2026-10-12",
+        "returnDate": "2026-10-15",
+        "tripType": "return",
+        "adults": 1,
+        "passengers": [
+          {
+            "firstName": "Spider",
+            "lastName": "Gray",
+            "type": "adult"
+          }
+        ]
+      },
+      "segments": [
+        {
+          "kind": "flight",
+          "airline": "VA",
+          "flightNumber": "288",
+          "class": "Economy",
+          "fromCity": "MEL",
+          "toCity": "CBR",
+          "departureDate": "2026-10-12",
+          "departureTime": "07:05",
+          "arrivalDate": "2026-10-12",
+          "arrivalTime": "08:20",
+          "status": "HK"
+        }
+      ],
+      "costings": [
+        {
+          "creditor": "READY ROOMS",
+          "airline": "VA",
+          "class": "Economy",
+          "fare": "173.45",
+          "passengerType": "Adult",
+          "fareType": "Published"
+        }
+      ],
+      "_segments": "ticket 145.54 — the only allocatable row"
     }
   ]
 }

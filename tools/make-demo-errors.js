@@ -32,6 +32,70 @@ const money = (c) => (c / 100).toFixed(2);
 const pick = process.argv.slice(2).filter((a) => !a.startsWith("--"));
 const VERIFY = process.argv.includes("--verify");
 
+/* THE SUPPLIER COMES FROM THE CHEAT SHEET, AT RANDOM.
+
+   Only Mint and TravelPay have a company column at all — BPay and IPSI have no
+   supplier field, so there is nothing to pick for them.
+
+   MINT names companies by legal entity and Tramada names creditors by trading
+   name; the cheat sheet is what reconciles the two. Hardcoding "READY ROOMS"
+   on both sides — which this file did — meant the demo never exercised that
+   lookup. Now the clean rows carry a real `from` name, so reconciling them
+   requires the sheet, and the "wrong supplier" row carries a name the sheet
+   does not know, so its mismatch is genuine rather than manufactured.
+
+   --supplier-seed <n> repeats a pick. */
+/* ONE CREDITOR, NOT THREE.
+
+   The cheat sheet's TRAMADA CREDITOR cell sometimes holds several names —
+   "Cosmos Tours, Globus, Avalon Waterways", "Royal Caribbean / Celebrity
+   Cruises". That is fine for MATCHING, where any of them is an acceptable
+   payee, but a fixture has to PAY one, and Tramada has no creditor called
+   "Cosmos Tours, Globus, Avalon Waterways".
+
+   `try` already carries the split: [0] is the joined cell, the rest are the
+   individual names. So take the first entry that is a single name. 4 of the
+   sheet's 29 rows are affected; without this, roughly one pick in seven would
+   fail at the payment form with a creditor Tramada cannot find. */
+function oneCreditor(pair) {
+  const single = (pair.try || []).find((t) => t && !/[\/,]/.test(t));
+  return single || pair.to;
+}
+
+function supplierPair() {
+  let pairs = [];
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "cheat-sheets.json"), "utf8"));
+    pairs = (j.suppliers && j.suppliers.pairs) || [];
+  } catch (e) { /* no sheet */ }
+  if (!pairs.length) {
+    return { from: "READY ROOMS", to: "READY ROOMS", mapped: false, count: 0 };
+  }
+  const seedArg = process.argv.indexOf("--supplier-seed");
+  let i;
+  if (seedArg >= 0 && process.argv[seedArg + 1]) {
+    // A plain number IS the index — the script tells you to repeat with the
+    // index it chose, so hashing it would land somewhere else.
+    const raw = String(process.argv[seedArg + 1]).trim();
+    if (/^\d+$/.test(raw)) {
+      i = Number(raw) % pairs.length;
+    } else {
+      let h = 0;
+      for (const ch of raw) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+      i = h % pairs.length;
+    }
+  } else {
+    i = require("crypto").randomInt(pairs.length);
+  }
+  return { from: pairs[i].from, to: oneCreditor(pairs[i]), cell: pairs[i].to,
+           mapped: true, count: pairs.length, index: i };
+}
+
+const SUPPLIER = supplierPair();
+/* A name deliberately absent from the sheet, for the row whose whole job is to
+   fail the supplier check. Not a real creditor, and it should not be. */
+const WRONG_SUPPLIER = "NOT A SUPPLIER PTY LTD";
+
 const STALE = [];
 
 /* THE SAVED BOOKINGS CAN BE ON THE WRONG CLIENT, and if they are, every BPay
@@ -113,20 +177,20 @@ const PLANS = {
               "Recipient Reference", "Sender Reference", "Settlement Amt", "Statement Date"],
     rows: [
       { why: "on the page, right amount, right supplier", expect: "Reconciled — no remark",
-        cells: ["RAA", "M363355", "READY ROOMS", "", "P.0000004123", "400.00", "AUD", "Pending at Bank",
+        cells: ["RAA", "M363355", SUPPLIER.from, "", "P.0000004123", "400.00", "AUD", "Pending at Bank",
                 "2026-08-29", "2026-08-29", "2026-08-29", "2026-08-29", "MNT1", "MNT1", "", "2026-08-29"] },
       { why: "amount disagrees with the page", expect: "Reconciled, with the amount difference reported",
-        cells: ["RAA", "M363355", "READY ROOMS", "", "P.0000004124", "612.50", "AUD", "Pending at Bank",
+        cells: ["RAA", "M363355", SUPPLIER.from, "", "P.0000004124", "612.50", "AUD", "Pending at Bank",
                 "2026-08-29", "2026-08-29", "2026-08-29", "2026-08-29", "MNT2", "MNT2", "", "2026-08-29"] },
       { why: "supplier disagrees with the page", expect: "Reconciled, with the supplier difference reported",
-        cells: ["RAA", "M363355", "SOMEONE ELSE PTY LTD", "", "P.0000004125", "150.00", "AUD", "Pending at Bank",
+        cells: ["RAA", "M363355", WRONG_SUPPLIER, "", "P.0000004125", "150.00", "AUD", "Pending at Bank",
                 "2026-08-29", "2026-08-29", "2026-08-29", "2026-08-29", "MNT3", "MNT3", "", "2026-08-29"] },
       { why: "reference is not on the page at all", expect: "Not reconciled — \"not among the transactions on this page\"",
-        cells: ["RAA", "M363355", "TEMPO HOLIDAYS", "", "P.9999999999", "88.20", "AUD", "Pending at Bank",
+        cells: ["RAA", "M363355", SUPPLIER.from, "", "P.9999999999", "88.20", "AUD", "Pending at Bank",
                 "2026-08-29", "2026-08-29", "2026-08-29", "2026-08-29", "MNT4", "MNT4", "", "2026-08-29"] },
       { why: "makes the file total disagree with the typed Transaction Total",
         expect: "run remark \"Total transaction amounts does not match.\"",
-        cells: ["RAA", "M363355", "READY ROOMS", "", "P.0000004126", "1.11", "AUD", "Pending at Bank",
+        cells: ["RAA", "M363355", SUPPLIER.from, "", "P.0000004126", "1.11", "AUD", "Pending at Bank",
                 "2026-08-29", "2026-08-29", "2026-08-29", "2026-08-29", "MNT5", "MNT5", "", "2026-08-29"] },
     ],
   }),
@@ -137,16 +201,16 @@ const PLANS = {
               "Processed Amount", "Payment Reference", "Transaction Status", "Additional Reference"],
     rows: [
       { why: "on the page, right amount", expect: "Reconciled — no remark",
-        cells: ["2026-08-29", "2026-08-29", "Monarto Resort Pty Ltd", "1480.88", "1480.88", "31282716", "Successful", "Client - 128380"] },
+        cells: ["2026-08-29", "2026-08-29", SUPPLIER.from, "1480.88", "1480.88", "31282716", "Successful", "Client - 128380"] },
       { why: "amount disagrees with the page", expect: "Reconciled, with the amount difference reported",
-        cells: ["2026-08-29", "2026-08-29", "Monarto Resort Pty Ltd", "1735.84", "1799.99", "31282311", "Successful", "Client - B128297"] },
+        cells: ["2026-08-29", "2026-08-29", SUPPLIER.from, "1735.84", "1799.99", "31282311", "Successful", "Client - B128297"] },
       { why: "reference is not on the page", expect: "Not reconciled — not in Reference and not a transaction number",
-        cells: ["2026-08-29", "2026-08-29", "Monarto Resort Pty Ltd", "640.00", "640.00", "99999999", "Successful", "Client - 128401"] },
+        cells: ["2026-08-29", "2026-08-29", SUPPLIER.from, "640.00", "640.00", "99999999", "Successful", "Client - 128401"] },
       { why: "did not succeed — held back, not counted as missing", expect: "held back rather than reported missing",
-        cells: ["2026-08-29", "2026-08-29", "Monarto Resort Pty Ltd", "215.00", "215.00", "31282900", "Failed", "Client - 128402"] },
+        cells: ["2026-08-29", "2026-08-29", SUPPLIER.from, "215.00", "215.00", "31282900", "Failed", "Client - 128402"] },
       { why: "makes the file total disagree with the typed Transaction Total",
         expect: "run remark \"Total transaction amounts does not match.\"",
-        cells: ["2026-08-29", "2026-08-29", "Monarto Resort Pty Ltd", "2.22", "2.22", "31282901", "Successful", "Client - 128403"] },
+        cells: ["2026-08-29", "2026-08-29", SUPPLIER.from, "2.22", "2.22", "31282901", "Successful", "Client - 128403"] },
     ],
   }),
 
@@ -218,6 +282,16 @@ for (const st of STALE) {
   console.log(`  repeated error instead of the five different ones this file is for.`);
   console.log(`      node tools/make-fixtures.js ${st.which}      # rebuild on the right client`);
   console.log(`  then run this again.`);
+}
+
+if (SUPPLIER.mapped) {
+  console.log(`\n  Supplier (random, ${SUPPLIER.count} in the cheat sheet):`);
+  console.log(`    Mint and TravelPay files say  "${SUPPLIER.from}"`);
+  console.log(`    Tramada would call them       "${SUPPLIER.to}"`);
+  console.log(`    → reconciling those needs the cheat sheet. Repeat with --supplier-seed ${SUPPLIER.index}`);
+  console.log(`    The "wrong supplier" row uses "${WRONG_SUPPLIER}", which the sheet does not know.`);
+} else {
+  console.log(`\n  No supplier cheat sheet found — both sides use "${SUPPLIER.from}".`);
 }
 
 console.log(`\n  ${wrote} file(s) written to csv_uploads/.`);

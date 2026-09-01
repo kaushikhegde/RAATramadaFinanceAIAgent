@@ -412,5 +412,40 @@ console.log("\nno statement for the day is a hard stop, not a workaround");
     /There are no statements at all\./.test(t), t);
 }
 
+/* TRAMADA'S CREDITOR NAME IS OFTEN LONGER THAN THE CHEAT SHEET'S.
+
+   Measured against the live sandbox 01-Sep: the sheet maps "Yankee Leisure
+   Group Pty Ltd (Railbookers)" to "Wendy Wu", and Tramada's creditor is
+   "WENDY WU TOURS". Exact equality refused it, so a correctly mapped supplier
+   came back "cheat sheet disagrees" and five TravelPay rows went unreconciled
+   against a page that was right. Same shape for Royal Caribbean and Busabout —
+   all three are in RAA's PRODUCTION sheet, so this was never fixture-only. */
+{
+  // Header row is required — without it parseCheatSheet eats the first pair.
+  const sheet = C.parseCheatSheet(
+    "Name,Maps To\n" +
+    "Yankee Leisure Group Pty Ltd (Railbookers),Wendy Wu\n" +
+    "Metro 1 Travel and Technology Pty Ltd,Rail On-line");
+  const idx = C.cheatSheetIndex(sheet.pairs);
+  const FILE = "Yankee Leisure Group Pty Ltd (Railbookers)";
+
+  check("the sheet's own name still matches exactly",
+    C.supplierMatches(FILE, "Wendy Wu", idx).ok, true);
+  check("and Tramada's longer name now matches too",
+    C.supplierMatches(FILE, "WENDY WU TOURS", idx).ok, true);
+  ok("...and says why it matched",
+    /Tramada's name is longer/.test(C.supplierMatches(FILE, "WENDY WU TOURS", idx).via),
+    C.supplierMatches(FILE, "WENDY WU TOURS", idx).via);
+
+  /* The loosening is a WHOLE-WORD PREFIX, not a substring — otherwise a short
+     sheet entry sweeps up unrelated creditors. */
+  check("\"Rail On-line\" must NOT match \"Railbookers\"",
+    C.supplierMatches("Metro 1 Travel and Technology Pty Ltd", "Railbookers", idx).ok, false);
+  check("a genuinely different payee is still refused",
+    C.supplierMatches(FILE, "SOMEONE ELSE PTY LTD", idx).ok, false);
+  check("a mid-string match is not enough",
+    C.supplierMatches(FILE, "THE WENDY WU COMPANY", idx).ok, false);
+}
+
 console.log(`\n${fail === 0 ? "✅" : "❌"} ${pass} passed, ${fail} failed\n`);
 process.exit(fail === 0 ? 0 : 1);

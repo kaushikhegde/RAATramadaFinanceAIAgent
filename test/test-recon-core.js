@@ -321,7 +321,13 @@ console.log("\nthe shipped bookings.json actually exercises both paths");
      ticket costing is the row — so one flight plus one costing is exactly one
      row worth exactly the fare, and Select All cannot exceed the receipt by
      construction. This is here so that cannot drift back unnoticed. */
-  check("three bookings", doc.bookings.length, 3);
+  /* WAS `=== 3`. RAA, 29-Aug: "Make 5 transactions as created from the scripts
+     for each of the payment types (we have 3 now)". The count is incidental —
+     the invariants below are what this block defends — so it now asserts the
+     floor RAA asked for rather than a number that has to be edited every time
+     a booking is added. */
+  ok(`at least 5 bookings (RAA asked for 5 per payment type) — file holds ${doc.bookings.length}`,
+    doc.bookings.length >= 5, `bookings.json holds ${doc.bookings.length}`);
   ok("every booking has exactly one segment",
     doc.bookings.every((b) => (b.segments || []).length === 1),
     JSON.stringify(doc.bookings.map((b) => (b.segments || []).length)));

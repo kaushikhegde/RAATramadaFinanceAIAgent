@@ -407,6 +407,11 @@ const REMARKS = {
      account rather than a debtor account, and that is a specific thing for
      somebody to go and look at — not a general "something was odd here". */
   noDebtorReceipt: "Please review, Debtor Payment Receipt not available",
+  /* An earlier run filed this receipt, so this one did not open the booking and
+     could not see whether the money was ever allocated. It still reconciles —
+     a rerun has to be able to finish — but the row says so rather than showing
+     a clean, blank Remarks cell that claims more than was checked. */
+  filedEarlier: "Filed by an earlier run — allocation not checked",
 };
 
 /*
@@ -952,7 +957,29 @@ function matchAgainstStatement(row, statementRows) {
      screen renders it. No `transNo` is returned either: this line is not
      ticked on the statement page, the same as any other row a person still
      has to look at. */
-  if (row.allocation && row.allocation !== "Allocated") {
+  /* "ALREADY FILED" IS NOT AN UNCLEAN ALLOCATION, and treating it as one made
+     a rerun unable to reconcile anything.
+
+     First run: the receipt is filed and allocated, `allocation` reads
+     "Allocated", the line ticks. Run the SAME file again — which is exactly
+     what RAA's workflow does, "press Rerun or similar function to run the
+     reconciliation process again" — and the receipt is already on the booking,
+     so nothing is filed a second time and `allocation` reads "Already filed".
+     That is the run being careful, not a problem with the row. But it is not
+     the string "Allocated", so this guard refused every one of them: observed
+     01-Sep, "0 of 10 reconciled" with three real receipts sitting on page 18
+     at exactly the right amounts.
+
+     A rerun that can never finish is worse than useless — it is the mode
+     Finance is told to use after fixing errors. So an already-filed receipt
+     reconciles on the same evidence a freshly-filed one does: it is a real
+     receipt, it is on this page, and the amount agrees to the cent (checked
+     above — a receipt on the page for the WRONG amount has already returned
+     by this point). What it does not carry is a fresh allocation decision from
+     THIS run, so it says so in the reason rather than claiming this run did
+     the work. */
+  const alreadyFiled = row.allocation === "Already filed";
+  if (row.allocation && row.allocation !== "Allocated" && !alreadyFiled) {
     return {
       reconciled: false, status: "Not reconciled",
       reason: `receipt ${row.receiptNo} found on the statement at $${money(row.amountCents)}, ` +
@@ -963,7 +990,8 @@ function matchAgainstStatement(row, statementRows) {
 
   return {
     reconciled: true, status: "Reconciled",
-    reason: `receipt ${row.receiptNo} found at $${money(row.amountCents)}`,
+    reason: `receipt ${row.receiptNo} found at $${money(row.amountCents)}` +
+      (alreadyFiled ? " — filed by an earlier run, not this one" : ""),
     transNo: exact.transNo || null,
     duplicates: hits.length > 1 ? hits.length : undefined,
   };
@@ -2670,6 +2698,38 @@ function supplierMatches(fileName, tramadaName, index) {
   if (a === b) return { ok: true, via: "exact" };
   const mapped = (index && index.get(a)) || [];
   if (mapped.some((m) => supplierKey(m) === b)) return { ok: true, via: "cheat sheet" };
+
+  /* THE SHEET'S NAME IS OFTEN SHORTER THAN TRAMADA'S.
+
+     RAA's cheat sheet carries trading names; Tramada's creditor records carry
+     the fuller registered ones. Measured against the live sandbox on 01-Sep:
+
+         sheet "Wendy Wu"         → Tramada "WENDY WU TOURS"
+         sheet "Royal Caribbean"  → Tramada "ROYAL CARIBBEAN INTERNATIONAL"
+         sheet "Busabout"         → Tramada "BUSABOUT AUSTRALIA"
+
+     Exact equality refused all three, so a correctly mapped supplier came back
+     "cheat sheet disagrees" and the row went unreconciled. That is not a
+     fixture problem — the same three names are in RAA's production sheet.
+
+     So a mapped name also matches when it is a WHOLE-WORD PREFIX of what the
+     page says. Prefix, not substring: "Rail" must not match "Railbookers", and
+     the boundary check is what stops it. Four characters minimum, so a stub
+     like "AA" cannot sweep up half the creditor list. The other direction is
+     allowed too — a sheet entry longer than Tramada's own name. */
+  const startsWholeWord = (shortName, longName) => {
+    if (!shortName || !longName) return false;
+    if (shortName.length < 4) return false;
+    if (!longName.startsWith(shortName)) return false;
+    // supplierKey strips punctuation, so a boundary here is the end or a space.
+    return longName.length === shortName.length || /\s/.test(longName.charAt(shortName.length));
+  };
+  const loose = mapped.find((m) => {
+    const mk = supplierKey(m);
+    return startsWholeWord(mk, b) || startsWholeWord(b, mk);
+  });
+  if (loose) return { ok: true, via: "cheat sheet (Tramada's name is longer)", mapped: loose };
+
   if (mapped.length) return { ok: false, via: "cheat sheet disagrees", tried: mapped };
   /* Not in the sheet. If a row is nearly it, say which — the fix is one line. */
   const close = ((index && index.near && index.near.get(relaxedKey(fileName))) || [])
