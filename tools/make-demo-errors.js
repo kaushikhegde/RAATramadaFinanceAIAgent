@@ -68,6 +68,23 @@ function supplierPair() {
     const j = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "cheat-sheets.json"), "utf8"));
     pairs = (j.suppliers && j.suppliers.pairs) || [];
   } catch (e) { /* no sheet */ }
+
+  /* ONLY SUPPLIERS THIS TRAMADA ACTUALLY HAS. Measured 01-Sep: 9 of the 29 in
+     RAA's sheet exist in the sandbox. A demo row naming one of the other 20
+     cannot reconcile no matter how right the file is, so it would read as a
+     bug in the agent rather than an absence in the sandbox.
+     `tools/check-creditors.js` writes the list. */
+  let narrowed = false;
+  try {
+    const v = JSON.parse(fs.readFileSync(path.join(__dirname, "tramada-creditors.json"), "utf8"));
+    const ok = new Set((v.known || []).map((k) => String(k.creditor).trim().toLowerCase()));
+    if (ok.size) {
+      const kept = pairs.filter((x) => ok.has(String(oneCreditor(x)).trim().toLowerCase()));
+      if (kept.length) { pairs = kept; narrowed = true; }
+    }
+  } catch (e) { /* not checked yet */ }
+  supplierPair.narrowed = narrowed;
+  supplierPair.poolSize = pairs.length;
   if (!pairs.length) {
     return { from: "READY ROOMS", to: "READY ROOMS", mapped: false, count: 0 };
   }
@@ -285,13 +302,24 @@ for (const st of STALE) {
 }
 
 if (SUPPLIER.mapped) {
-  console.log(`\n  Supplier (random, ${SUPPLIER.count} in the cheat sheet):`);
+  console.log(`\n  Supplier (random, ${SUPPLIER.count} ` +
+    (supplierPair.narrowed ? `confirmed to exist in Tramada` : `in the cheat sheet — NOT checked against Tramada`) + `):`);
   console.log(`    Mint and TravelPay files say  "${SUPPLIER.from}"`);
   console.log(`    Tramada would call them       "${SUPPLIER.to}"`);
   console.log(`    → reconciling those needs the cheat sheet. Repeat with --supplier-seed ${SUPPLIER.index}`);
   console.log(`    The "wrong supplier" row uses "${WRONG_SUPPLIER}", which the sheet does not know.`);
 } else {
   console.log(`\n  No supplier cheat sheet found — both sides use "${SUPPLIER.from}".`);
+}
+
+if (which.includes("ipsi")) {
+  console.log(`\n  \x1b[33mIPSI: the receipts these rows look for do not exist yet.\x1b[0m`);
+  console.log(`  An IPSI settlement reconciles Credit Card Swipe receipts, and Tramada's swipe`);
+  console.log(`  form wants a real card number — this project never touches card data, so no`);
+  console.log(`  script can raise them. Until they exist every row comes back "Booking number`);
+  console.log(`  mismatch or not found", which is correct and not a defect.`);
+  console.log(`  Raise them by hand first: Bookings → <booking> → Receipts → Add / Issue Receipt`);
+  console.log(`  → Credit Card Swipe, one per row, reference and amount as written in the file.`);
 }
 
 console.log(`\n  ${wrote} file(s) written to csv_uploads/.`);
