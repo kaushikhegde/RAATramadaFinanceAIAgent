@@ -124,10 +124,15 @@ console.log("\ndecision 1 — which WHOLE segments the receipt settles");
      change to which boxes get ticked. */
   const two = [{ segId: "A", debtorDue: "200.00" }, { segId: "B", debtorDue: "200.00" }];
 
+  /* USED TO BE: 500 against two 200 segments ticked BOTH and reported "Part
+     allocated". RAA changed this on 29-Aug — an overpayment across 2+ segments
+     now ticks nothing, because choosing which segment is overpaid is a person's
+     decision. One segment still allocates. */
   const over = C.decideAllocation(50000, two);
-  check("500 takes both segments", over.allocation, "ALL");
-  check("but is only PART allocated — 100 of the receipt is left", over.status, "Part allocated");
-  ok("and the leftover is named", /\$100\.00 of this receipt stays unallocated/.test(over.reason), over.reason);
+  check("500 across two segments ticks nothing now", over.allocation, []);
+  check("and is Not allocated, not Part allocated", over.status, "Not allocated");
+  ok("the invariant still holds: nothing was ticked, so nothing can be overpaid",
+    over.allocation.length === 0, JSON.stringify(over));
 
   // Changed deliberately, 17-Aug-2026: the guide's BR09 says an amount that is
   // neither one segment nor all of them is left alone for a person.
@@ -367,9 +372,19 @@ console.log("\nthe shipped bookings.json actually exercises both paths");
     return d.status;
   });
 
+  /* The first row USED TO come back "Part allocated": an overpayment that
+     ticked every segment. RAA changed that on 29-Aug. That booking has a
+     SINGLE outstanding segment, so under the new rule the overpayment settles
+     it and the row now reads "Allocated" — the one-segment half of the rule,
+     exercised against real fixture data rather than a hand-built case. A
+     booking with two or more segments would come back "Not allocated" here;
+     test-bpay-rules.js covers that half directly. */
   check("the run comes back mixed, not uniform",
-    got, ["Part allocated", "Allocated", "Not allocated", "Not allocated", "Not allocated", "Allocated"]);
-  ok("all three outcomes appear", new Set(got).size === 3, JSON.stringify(got));
+    got, ["Allocated", "Allocated", "Not allocated", "Not allocated", "Not allocated", "Allocated"]);
+  ok("both outcomes appear — the walk is not uniformly one answer",
+    new Set(got).size === 2, JSON.stringify(got));
+  ok("and no row is Part allocated any more",
+    !got.includes("Part allocated"), JSON.stringify(got));
 }
 
 console.log("\nthe new statement page is always a new one");

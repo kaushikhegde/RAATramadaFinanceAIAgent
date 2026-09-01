@@ -205,5 +205,43 @@ check("the Amount column", C.moneyColumnsOf(["Date", "Amount", "Booking No"]), [
 check("and nothing else — Rate is Finance's business",
   C.moneyColumnsOf(["Date", "Rate", "Qty"]), []);
 
+
+/* ── ONE FILE PER PAYMENT METHOD ─────────────────────────────────────────
+   RAA, 29-Aug: "Export button exports out the spreadsheet as per payment
+   method." A combined BPay + Mint run used to export ONE file, in whichever
+   card was active, with the other report's rows forced into columns that were
+   never theirs.
+
+   The grouping happens in the browser (the file is assembled there), so this
+   reads it out of recon-wire.html and checks the parts that make it correct
+   rather than trusting that the function still exists. */
+{
+  const fs = require("fs");
+  const path = require("path");
+  const wire = fs.readFileSync(path.join(__dirname, "..", "design", "recon-wire.html"), "utf8");
+  const fn = (wire.match(/async function exportCsv\(\)[\s\S]*?\n  \}\n/) || [""])[0];
+
+  ok("exportCsv groups the rows by report", /for \(const kind of RUN_ORDER\)/.test(fn),
+    "the export is back to one combined file");
+  ok("...in run order, so BPay's file comes first", /RUN_ORDER/.test(fn));
+  ok("rows with an unrecognised source are still exported, not dropped",
+    /const stray = all\.filter/.test(fn),
+    "a row whose src is not one of the four would vanish from the export entirely");
+  ok("each file keeps the columns ITS report arrived in",
+    /src && src\.columns/.test(fn),
+    "one report's rows would be forced into another's columns");
+  ok("each file keeps its own container (csv vs xlsx)",
+    /src && src\.format/.test(fn));
+  ok("IPSI's file is sorted by booking number (step 19)",
+    /kind === 'ipsi'\) return sortIpsiForExport/.test(fn));
+  ok("BPay's file is sorted Shop then Consultant (BR14)",
+    /kind === 'bpay'\) return sortForFinance/.test(fn));
+  ok("back-to-back downloads are spaced so the browser does not drop one",
+    /setTimeout\(r, 400\)/.test(fn),
+    "browsers silently drop a second download fired immediately after the first");
+  ok("a file that fails to build is reported rather than swallowed",
+    /failed\.push/.test(fn) && /Could not build/.test(fn));
+}
+
 console.log(`\n${fail === 0 ? "✅" : "❌"} ${pass} passed, ${fail} failed\n`);
 process.exit(fail === 0 ? 0 : 1);

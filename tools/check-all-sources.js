@@ -71,8 +71,13 @@ function bpay(file) {
         "Allocated", 1],
       ["the sum of every segment", [{ segId: "s1", debtorDue: (half / 100).toFixed(2) }, { segId: "s2", debtorDue: ((due - half) / 100).toFixed(2) }],
         "Allocated", "ALL"],
-      ["more than everything owed", [{ segId: "s1", debtorDue: ((due - 5000) / 100).toFixed(2) }],
-        "Part allocated", "ALL"],
+      /* RAA 29-Aug: an overpayment against ONE segment allocates that segment.
+         Two or more and it ticks nothing — see the case below. */
+      ["overpaid, one segment", [{ segId: "s1", debtorDue: ((due - 5000) / 100).toFixed(2) }],
+        "Allocated", 1],
+      ["overpaid, two segments", [{ segId: "s1", debtorDue: ((due - 5000) / 100).toFixed(2) },
+                                  { segId: "s2", debtorDue: "10.00" }],
+        "Not allocated", 0],
       ["neither one nor all", [{ segId: "s1", debtorDue: ((due + 1) / 100).toFixed(2) }, { segId: "s2", debtorDue: ((due + 2) / 100).toFixed(2) }],
         "Not allocated", 0],
     ];

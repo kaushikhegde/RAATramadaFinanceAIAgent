@@ -155,10 +155,24 @@ console.log("\nBR07-BR11 — exact, or nothing");
   ok("and says why: less than the cheapest segment",
     /less than the cheapest segment, which owes \$200\.00/.test(nothing.reason), nothing.reason);
 
-  const over = C.decideAllocation(50000, two);
-  check("BR11 more than everything owed — ticks all", over.allocation, "ALL");
-  check("and flags the overpayment", over.remark, "Overpayment, please check");
-  ok("and names the leftover", /\$100\.00 of this receipt stays unallocated/.test(over.reason), over.reason);
+  /* BR11, AS RAA REVISED IT 29-Aug: "When overpayment amount found: if only 1
+     segment, then allocate; if 2 or more segment, then do not allocate."
+     It used to tick every segment and report "Part allocated" regardless of
+     count. Spreading an overpayment across several segments is a judgement
+     about which one is really overpaid, and that is a person's call. */
+  const overTwo = C.decideAllocation(50000, two);
+  check("BR11 overpaid across TWO segments — ticks nothing", overTwo.allocation, []);
+  check("and does not allocate", overTwo.status, "Not allocated");
+  check("but still flags the overpayment", overTwo.remark, "Overpayment, please check");
+  ok("and says why a person has to decide",
+    /which segment is overpaid is a decision for a person/.test(overTwo.reason), overTwo.reason);
+
+  const overOne = C.decideAllocation(30000, [{ segId: "A", debtorDue: "200.00" }]);
+  check("BR11 overpaid against ONE segment — that one is ticked", overOne.allocation.length, 1);
+  check("and it is allocated", overOne.status, "Allocated");
+  check("still flagged as an overpayment", overOne.remark, "Overpayment, please check");
+  ok("and the leftover is named",
+    /\$100\.00 of this receipt stays unallocated/.test(overOne.reason), overOne.reason);
 }
 {
   // 300 against 100 + 200 DOES total exactly, and that is BR08, not BR09.

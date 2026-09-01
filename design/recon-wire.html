@@ -654,8 +654,17 @@ header.top { display: none !important }
       'padding:5px 0;font-size:13px;border-top:1px solid #eee">' +
       '<span>' + pendingTitle(r) + '</span>' +
       '<span style="flex:none;white-space:nowrap">' +
-      '<button class="btn sm ghost" data-ipsi-load="' + r.id + '">Load</button> ' +
-      '<button class="btn sm ghost" data-ipsi-resolve="' + r.id + '">Mark resolved</button>' +
+      /* "RERUN", not "Load" — RAA, 29-Aug. The guide's step 17 is the reason:
+         the accounts team fixes the errors in Tramada and then "press Rerun or
+         similar function to run the reconciliation process again". Load
+         described the mechanism (the file comes back into the card); Rerun
+         describes what the person is actually doing.
+
+         "Mark resolved" is gone at RAA's request. A settlement leaves the list
+         by being reconciled, not by someone declaring it done — a button that
+         clears it without Tramada agreeing is a way to lose a day's work
+         quietly. */
+      '<button class="btn sm ghost" data-ipsi-load="' + r.id + '">Rerun</button>' +
       '</span></div>').join('');
     return '<div style="margin-top:10px">' +
       '<div class="muted" style="font-size:12px;margin-bottom:2px">' +
@@ -695,6 +704,14 @@ header.top { display: none !important }
       .catch(() => {});
   }
 
+  /* NO LONGER REACHABLE FROM THE SCREEN. RAA asked for the "Mark resolved"
+     button to be removed on 29-Aug, so nothing calls this any more. Kept rather
+     than deleted because `/api/runs/:id/resolve` still exists on the server and
+     a settlement stuck in the list with no way out is a worse problem than one
+     unused function — if that happens, wire this back to a button.
+
+     It is deliberately NOT wired to "Rerun": rerunning is how a settlement is
+     meant to leave the list, by being reconciled. */
   function resolveSettlement(id) {
     if (!confirm('Mark this settlement resolved? It will drop off this list — the run itself stays in history.')) return;
     fetch('/api/runs/' + id + '/resolve', { method: 'POST' })
@@ -1056,9 +1073,6 @@ header.top { display: none !important }
     });
     grid.querySelectorAll('[data-ipsi-load]').forEach((b) => {
       b.onclick = () => loadPendingSettlement(b.dataset.ipsiLoad);
-    });
-    grid.querySelectorAll('[data-ipsi-resolve]').forEach((b) => {
-      b.onclick = () => resolveSettlement(b.dataset.ipsiResolve);
     });
     // Rebuilt with every render, same as the rest of #tileGrid — the typed
     // value has to be read back into JS on every keystroke or it is gone the
@@ -1824,6 +1838,13 @@ header.top { display: none !important }
   const RUN_COLUMNS = [
     { key: 'consultant', label: 'Consultant', only: ['bpay'] },
     { key: 'shop', label: 'Shop', only: ['bpay'] },
+    /* RAA, 29-Aug: "Reconciliation Report page, add Tramada Booking number as a
+       column." Every report has one — BPay receipts against a booking, IPSI's
+       own Booking Number column, TravelPay's booking dug out of Additional
+       Reference — so it is NOT restricted with `only`. Where the uploaded
+       spreadsheet already has a booking column, renderSheetTable prefixes this
+       one with "Tramada " rather than showing two columns of the same name. */
+    { key: 'bookingNo', label: 'Booking No', mono: true },
     { key: 'receiptNo', label: 'Receipt No', mono: true, only: ['bpay'] },
     { key: 'allocation', label: 'Allocated', badge: true, only: ['bpay'] },
     { key: 'reconciliation', label: 'Reconciled', badge: true },
@@ -2445,57 +2466,95 @@ header.top { display: none !important }
    * corrected by hand — go up, and the file comes back. Finance sent a
    * workbook, Finance gets a workbook.
    */
+  /* ONE FILE PER PAYMENT METHOD. RAA, 29-Aug: "Export button exports out the
+     spreadsheet as per payment method."
+
+     A combined BPay + Mint run used to come out as ONE file, in whichever
+     card happened to be `active`, with the other report's rows forced into
+     columns that were never theirs. Finance receives these reports separately
+     and works them separately, so they go back the same way: BPay's rows in
+     BPay's own uploaded columns and container, Mint's in Mint's.
+
+     With a single report loaded this behaves exactly as it did before —
+     one group, one file, same name. */
   async function exportCsv() {
     const btn = $('#rcExport');
     const all = viewRows();
     if (!all.length) return;
 
-    /* BR14 — Shop, then Consultant. A check-only report has neither column, so
-       it keeps the order it was uploaded in rather than being shuffled by two
-       columns of blanks. */
-    const mint = !viewWrites();
-    /* IPSI step 19: "Finalised and reconciled CSV file will be ordered in
-       sequence of ascending booking numbers." It was going out in whatever
-       order IPSI's own download arrived in, because IPSI files nothing and so
-       fell into the same branch as Mint and TravelPay — which genuinely do keep
-       their upload order, having no Shop or Consultant to sort by either.
-       IPSI has a booking number, and the guide names it. */
-    const ipsiOnly = all.length > 0 && all.every((r) => r.src === 'ipsi');
-    const rows = ipsiOnly ? sortIpsiForExport(all)
-      : (mint ? all.slice() : sortForFinance(all));
+    /* Group by the report each ROW came from, not by what is loaded now: rows
+       reopened from history carry `src` and the cards may be empty. */
+    const groups = [];
+    for (const kind of RUN_ORDER) {
+      const rows = all.filter((r) => r.src === kind);
+      if (rows.length) groups.push({ kind: kind, rows: rows });
+    }
+    // Anything with no recognisable src still gets exported rather than dropped.
+    const stray = all.filter((r) => RUN_ORDER.indexOf(r.src) < 0);
+    if (stray.length) groups.push({ kind: null, rows: stray });
+    if (!groups.length) return;
 
-    const columns = fullColumns() ||
-      (viewing ? (viewing.columns || []) : ((source[active] || {}).columns || []));
-    const format = viewing ? (viewing.format || 'csv')
-      : ((source[active] || {}).format || 'csv');
-    const name = viewing ? ((viewing.file || {}).name || 'reconciliation')
-      : (((source[active] || {}).file || {}).name || 'reconciliation');
+    const orderFor = (kind, rows) => {
+      if (kind === 'ipsi') return sortIpsiForExport(rows);        // step 19
+      if (kind === 'bpay') return sortForFinance(rows);           // BR14
+      return rows.slice();                                        // Mint/TravelPay keep upload order
+    };
 
     if (btn) { btn.disabled = true; btn.textContent = 'Building…'; }
+    let built = 0;
+    const failed = [];
     try {
-      const res = await fetch('/api/export', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rows: rows, columns: columns, format: format, name: name }),
-      });
-      if (!res.ok) {
-        const why = await res.json().catch(() => ({}));
-        note('The working file could not be built' + (why.error ? ' — ' + why.error : '.'), false);
-        return;
+      for (const g of groups) {
+        /* The columns and container this report ARRIVED in. A reopened combined
+           run stored none per report, so those fall back to the run's own and
+           finally to auto columns — a sensible file rather than a refusal. */
+        const src = (g.kind && source[g.kind]) || null;
+        const columns = (src && src.columns && src.columns.length) ? src.columns
+          : (groups.length === 1 ? (fullColumns() || (viewing ? (viewing.columns || []) : [])) : []);
+        const format = (src && src.format) || (viewing ? (viewing.format || 'csv') : 'csv');
+        const base = (src && src.file && src.file.name)
+          || (groups.length === 1 && viewing && viewing.file && viewing.file.name)
+          || ((g.kind ? (SOURCES[g.kind] || {}).title || g.kind : 'reconciliation'));
+        /* Name it after the payment method when there is more than one file,
+           so two downloads do not land as "reconciliation (1).csv". */
+        const name = groups.length > 1 ? (g.kind || 'other') + ' — ' + base : base;
+
+        try {
+          const res = await fetch('/api/export', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rows: orderFor(g.kind, g.rows), columns: columns,
+                                   format: format, name: name }),
+          });
+          if (!res.ok) {
+            const why = await res.json().catch(() => ({}));
+            failed.push((g.kind || 'rows') + (why.error ? ' — ' + why.error : ''));
+            continue;
+          }
+          const cd = res.headers.get('Content-Disposition') || '';
+          const m = cd.match(/filename="([^"]+)"/);
+          const blob = await res.blob();
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = m ? m[1] : name + '.' + (format === 'xlsx' ? 'xlsx' : 'csv');
+          a.click();
+          URL.revokeObjectURL(a.href);
+          built++;
+          /* Browsers throttle downloads fired back to back and will silently
+             drop the second one. A short gap is the difference between two
+             files and one. */
+          if (groups.length > 1) await new Promise((r) => setTimeout(r, 400));
+        } catch (e) {
+          failed.push((g.kind || 'rows') + ' — ' + (e && e.message ? e.message : 'no answer from the server'));
+        }
       }
-      /* The file name is the server's, off Content-Disposition, so the
-         extension always matches what was actually built. Guessing it here is
-         how you end up with an .xlsx called .csv that Excel refuses. */
-      const cd = res.headers.get('Content-Disposition') || '';
-      const m = cd.match(/filename="([^"]+)"/);
-      const blob = await res.blob();
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = m ? m[1] : 'reconciliation.' + (format === 'xlsx' ? 'xlsx' : 'csv');
-      a.click();
-      URL.revokeObjectURL(a.href);
-    } catch (e) {
-      note('The working file could not be built — ' + (e && e.message ? e.message : 'no answer from the server.'), false);
+
+      if (failed.length) {
+        note('Exported ' + built + ' of ' + groups.length + ' file(s). Could not build: ' +
+          failed.join('; '), false);
+      } else if (built > 1) {
+        note('Exported ' + built + ' working files, one per payment method.', true);
+      }
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = 'Export working file'; }
     }

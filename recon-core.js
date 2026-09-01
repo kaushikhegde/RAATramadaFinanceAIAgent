@@ -811,14 +811,40 @@ function decideAllocation(csvAmountCents, segments) {
   const total = owing.reduce((a, d) => a + d.due, 0);
   const all = `all ${owing.length} segment${owing.length === 1 ? "" : "s"}`;
 
-  // BR11 — more money than the booking owes. Everything is settled and the
-  // remainder sits unallocated on the receipt for someone to look at.
+  /* BR11 — MORE MONEY THAN THE BOOKING OWES, and what happens next depends on
+     how many segments there are. RAA, 29-Aug:
+
+         "When overpayment amount found:
+            If only 1 segment, then allocate
+            If 2 or more segment, then do not allocate"
+
+     Before this, an overpayment ticked EVERY segment and reported "Part
+     allocated" whatever the count. The distinction RAA is drawing is about who
+     decides where the extra money sits: with one segment there is only one
+     place it can go, so the machine can settle it. With two or more, spreading
+     an overpayment across them is a judgement about which booking segment is
+     really overpaid — and getting that wrong puts money against the wrong
+     segment of a real customer's booking. That is a person's call.
+
+     So the multi-segment case ticks NOTHING and asks for a human, rather than
+     allocating and leaving a remark for someone to notice later. */
   if (csvAmountCents > total) {
-    return {
-      allocate: true, allocation: "ALL", status: "Part allocated", remark: REMARKS.overpayment,
-      reason: `$${money(csvAmountCents)} is more than the $${money(total)} outstanding — ` +
-        `${all} settled, $${money(csvAmountCents - total)} of this receipt stays unallocated`,
-    };
+    if (owing.length === 1) {
+      const only = owing[0];
+      return {
+        allocate: true, allocation: [{ segId: only.segId, amount: money(only.due) }],
+        status: "Allocated", remark: REMARKS.overpayment,
+        reason: `$${money(csvAmountCents)} is more than the $${money(total)} outstanding — ` +
+          `the one segment is settled and $${money(csvAmountCents - total)} of this receipt ` +
+          `stays unallocated`,
+      };
+    }
+    return no(
+      `$${money(csvAmountCents)} is more than the $${money(total)} outstanding across ` +
+      `${owing.length} segments — which segment is overpaid is a decision for a person, ` +
+      `so nothing was ticked`,
+      REMARKS.overpayment
+    );
   }
 
   // BR08 — exactly what is owed, across every segment.

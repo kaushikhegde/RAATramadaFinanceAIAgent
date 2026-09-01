@@ -3040,16 +3040,6 @@ function askMarkStale(){
   const $ = (s, r) => (r || document).querySelector(s);
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  /* #rcDate is a native <input type="date">, which only ever displays and
-     only ever accepts yyyy-mm-dd — assigning it dd-mm-yyyy (how runs already
-     on disk have their statementDate) is silently ignored by the browser and
-     the field just goes blank. Runs saved before this field became a date
-     picker still carry the old shape, so anything setting .value programmatically
-     has to convert first. */
-  const dmyToIso = (v) => {
-    const m = String(v == null ? '' : v).trim().match(/^(\d{2})-(\d{2})-(\d{4})$/);
-    return m ? `${m[3]}-${m[2]}-${m[1]}` : v;
-  };
 
   /* ── two reports, one run ──
      BPay receipts and the Mint daily settlement are different files with
@@ -3302,25 +3292,34 @@ function askMarkStale(){
     // new-statement form — which is exactly why they have to be asked for.
     const old = $('#stmtDate');
     if (old) {
-      // TODAY, not tomorrow. This used to add a day (`Date.now() + 864e5`),
-      // which nothing overwrote before Start Run — so any run left on the
-      // default silently reconciled against a statement for a day that had
-      // not happened yet, found none of that day's real transactions, and
-      // reported a clean settlement as "nothing matched". Measured live
-      // 31-Aug-2026: a Mint run defaulted to 01-09-2026, matched a
-      // BPay-created page for that wrong date, and came back 0 of 3 found.
+      // TODAY, not tomorrow — see the matching comment in public/index.html
+      // for the live run this defaulted wrong on (31-Aug-2026).
       const d = new Date();
-      const iso = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      const dmy = `${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}`;
       const box = document.createElement('div');
       box.id = 'rcFieldRow';          // the page header — where the date lives
       box.style.cssText = 'display:flex;gap:10px;align-items:flex-end';
       box.innerHTML =
         '<div id="rcDateBox"><label class="field-lbl" for="rcDate" style="margin:0 0 3px;display:block">Statement date<span class="req" aria-hidden="true">*</span></label>' +
-        '<input type="date" class="btn" id="rcDate" aria-required="true" style="width:150px" value="' + iso + '"></div>' +
+        '<input class="btn" id="rcDate" aria-required="true" style="width:130px" value="' + dmy + '"></div>' +
         '<div id="rcOpeningBox"><label class="field-lbl" for="rcOpening" style="margin:0 0 3px;display:block">Opening balance<span class="req" aria-hidden="true">*</span></label>' +
         '<input class="btn" id="rcOpening" aria-required="true" style="width:130px" placeholder="0.00"></div>' +
         '<div id="rcClosingBox"><label class="field-lbl" for="rcClosing" style="margin:0 0 3px;display:block">Closing balance<span class="req" aria-hidden="true">*</span></label>' +
         '<input class="btn" id="rcClosing" aria-required="true" style="width:130px" placeholder="0.00"></div>' +
+        /* MINT BR02 / TravelPay BR02 — "Total Transaction to be a required
+           field in the AI Reconciliation Dashboard ... to be calculated and
+           entered by a human". It is what the uploaded file's own amounts are
+           added up against, and the check is reported once on the run rather
+           than down every row. Shown only when one of those two reports is
+           loaded, because BPay has no such rule. */
+        '<div id="rcTotalBox" style="display:none"><label class="field-lbl" for="rcTotal" style="margin:0 0 3px;display:block">Transaction total<span class="req" aria-hidden="true">*</span></label>' +
+        /* Numbers only — this is BR01/step 3's NUVEI figure, typed by a human
+           off the bank statement and compared to the cent against the file's
+           own total. type=number rejects letters at the keyboard rather than
+           catching a typo after the fact; step/min keep it to a plain
+           non-negative amount, the same shape core.cents() already expects. */
+        '<input class="btn" id="rcTotal" aria-required="true" type="number" step="0.01" min="0" inputmode="decimal" ' +
+        'style="width:130px" placeholder="0.00"></div>' +
         /* One checkbox, called Dry run. A fourth field in the row this script
            already builds, wearing the same .btn as the three beside it. The
            mockup's own markup is not touched; #stmtDate was already being
@@ -3435,6 +3434,28 @@ function askMarkStale(){
       ' · ' + dollars(total.toFixed(2)) + ' to receipt';
   }
 
+  /* Which reports want a Transaction Total — MINT BR02 and TravelPay BR02.
+     BPay has no such rule, so the field stays out of its way. IPSI has its OWN
+     figure too (BR01/step 3, the NUVEI amount) but NOT this one — that field
+     lives inside the IPSI card itself (see ipsiNuvei below), not in this
+     shared header box, so a NUVEI entry can never be mistaken for or mixed up
+     with Mint/TravelPay's own Transaction Total. */
+  const WANTS_TOTAL = ['mint', 'travelpay'];
+
+  function syncTotalField() {
+    const box = $('#rcTotalBox');
+    if (!box) return;
+    /* ALWAYS VISIBLE, since it moved into the card. POC feedback asks for it
+       "before the file upload like IPSI", and IPSI's NUVEI amount is on its
+       card whether or not a file has been dropped — you type the figure off the
+       bank statement first and upload second, so a field that only appears
+       after the upload is a field you meet in the wrong order.
+
+       It was hidden until MINT or TravelPay was loaded because it used to sit
+       in the page header, where an unexplained box next to the statement date
+       would have belonged to nothing. On the card it belongs to the card. */
+    box.style.display = '';
+  }
 
   /* ── the supplier name cheat sheet ──
      Both guides: "A section to show [the] supplier name cheat sheet .CSV file
@@ -3579,43 +3600,14 @@ function askMarkStale(){
     ws.send(JSON.stringify({ type: 'cheat_sheet_save', pairs: cheatDraft }));
   }
 
-  /* ── MINT BR02 / TravelPay BR02's own Transaction Total ──
-     "Total Transaction to be a required field in the AI Reconciliation
-     Dashboard ... to be calculated and entered by a human". It is what the
-     uploaded file's own amounts are added up against, and the check is
-     reported once on the run rather than down every row.
-     One figure, but it used to live in a single box that MOVED between
-     Mint's and TravelPay's cards depending on which was loaded — so
-     whichever card was not currently hosting it looked like the field had
-     vanished, and it visibly jumped the moment the other report's file
-     landed. Each card now carries its OWN input, same as IPSI's NUVEI amount
-     below: rebuilt on every render, so the typed value is held here in JS and
-     re-drawn into both inputs each time. Typing in either updates the other
-     live (see the `oninput` wiring in renderSource) — "with both loaded they
-     share a single figure" is still true, there are just two windows onto it
-     now instead of one box that could only be in one place. */
-  let transactionTotal = '';
-
-  function transactionTotalField(kind) {
-    return '<div id="rcTotalBox-' + kind + '" style="margin-top:8px">' +
-      '<label class="field-lbl" for="rcTotal-' + kind + '" style="margin:0 0 3px;display:block">' +
-      'Transaction total<span class="req" aria-hidden="true">*</span></label>' +
-      /* Numbers only — compared to the cent against the file's own total.
-         type=number rejects letters at the keyboard rather than catching a
-         typo after the fact; step/min keep it to a plain non-negative
-         amount, the same shape core.cents() already expects. */
-      '<input class="btn" id="rcTotal-' + kind + '" aria-required="true" type="number" step="0.01" min="0" ' +
-      'inputmode="decimal" style="width:130px" placeholder="0.00" value="' + esc(transactionTotal) + '"></div>';
-  }
-
   /* ── IPSI's own NUVEI amount ──
      BR01/step 3: "NUVEI amount is manually entered... into a field called
-     'Transaction Total'" — but IPSI's own figure, kept OUT of Mint/TravelPay's
-     own Transaction Total above so it can never be confused with, or
-     accidentally shared with, theirs (a different number for a different
-     rule). Lives inside the IPSI card's own markup instead — which is
-     rebuilt on every render, so the typed value is held here in JS and
-     re-drawn into the input each time, the same way `previewOpen` survives
+     'Transaction Total'" — but IPSI's own figure, kept OUT of the shared
+     `#rcTotal` box above so it can never be confused with, or accidentally
+     shared with, Mint/TravelPay's own Transaction Total (a different number
+     for a different rule). Lives inside the IPSI card's own markup instead —
+     which is rebuilt on every render, so the typed value is held here in JS
+     and re-drawn into the input each time, the same way `previewOpen` survives
      a card being torn down and rebuilt. */
   let ipsiNuvei = '';
 
@@ -3658,7 +3650,17 @@ function askMarkStale(){
       'padding:5px 0;font-size:13px;border-top:1px solid #eee">' +
       '<span>' + pendingTitle(r) + '</span>' +
       '<span style="flex:none;white-space:nowrap">' +
-      '<button class="btn sm ghost" data-ipsi-load="' + r.id + '">Re-run</button>' +
+      /* "RERUN", not "Load" — RAA, 29-Aug. The guide's step 17 is the reason:
+         the accounts team fixes the errors in Tramada and then "press Rerun or
+         similar function to run the reconciliation process again". Load
+         described the mechanism (the file comes back into the card); Rerun
+         describes what the person is actually doing.
+
+         "Mark resolved" is gone at RAA's request. A settlement leaves the list
+         by being reconciled, not by someone declaring it done — a button that
+         clears it without Tramada agreeing is a way to lose a day's work
+         quietly. */
+      '<button class="btn sm ghost" data-ipsi-load="' + r.id + '">Rerun</button>' +
       '</span></div>').join('');
     return '<div style="margin-top:10px">' +
       '<div class="muted" style="font-size:12px;margin-bottom:2px">' +
@@ -3687,7 +3689,7 @@ function askMarkStale(){
           format: run.format || 'csv',
         };
         const dateField = $('#rcDate');
-        if (dateField && run.statementDate) dateField.value = dmyToIso(run.statementDate);
+        if (dateField && run.statementDate) dateField.value = run.statementDate;
         // The card's own field, redrawn on the next render — see ipsiNuveiField.
         ipsiNuvei = run.transactionTotal || '';
         active = 'ipsi';
@@ -3695,6 +3697,21 @@ function askMarkStale(){
         clearReport();                   // loading a settlement is not running it
         render();
       })
+      .catch(() => {});
+  }
+
+  /* NO LONGER REACHABLE FROM THE SCREEN. RAA asked for the "Mark resolved"
+     button to be removed on 29-Aug, so nothing calls this any more. Kept rather
+     than deleted because `/api/runs/:id/resolve` still exists on the server and
+     a settlement stuck in the list with no way out is a worse problem than one
+     unused function — if that happens, wire this back to a button.
+
+     It is deliberately NOT wired to "Rerun": rerunning is how a settlement is
+     meant to leave the list, by being reconciled. */
+  function resolveSettlement(id) {
+    if (!confirm('Mark this settlement resolved? It will drop off this list — the run itself stays in history.')) return;
+    fetch('/api/runs/' + id + '/resolve', { method: 'POST' })
+      .then(() => loadIpsiPending())
       .catch(() => {});
   }
 
@@ -3807,7 +3824,7 @@ function askMarkStale(){
       home.style.display = 'none';
       document.body.appendChild(home);
     }
-    ['rcDateBox', 'rcOpeningBox', 'rcClosingBox'].forEach((id) => {
+    ['rcDateBox', 'rcOpeningBox', 'rcClosingBox', 'rcTotalBox'].forEach((id) => {
       const box = $('#' + id);
       if (box) home.appendChild(box);
     });
@@ -3856,22 +3873,15 @@ function askMarkStale(){
        BPay is still their home whenever BPay is loaded, because BPay is what
        creates the statement. It is only the no-BPay case that changes.
 
-       AN IPSI-ONLY RUN USES NO STATEMENT PAGE, SO THEY DO NOT APPEAR THERE.
+       AND IF NOTHING LOADED USES A STATEMENT PAGE, THEY DO NOT APPEAR AT ALL.
        IPSI reconciles on the Finance Receipts screens and never opens one, so
        an IPSI-only run has no opening or closing balance to give. Following
        `home` blindly put both of them, marked required with a red asterisk,
        into IPSI's card — two fields the run does not read and the person
        cannot meaningfully fill. `start()` already knows this (`needsStatement`
        skips them for an IPSI-only run); the screen has to agree with it, or a
-       correct run looks like an incomplete form.
-
-       BEFORE ANYTHING IS LOADED, THOUGH, THEY STILL SHOW — in BPay's card,
-       which is `home`'s own default. They used to be in the hidden holder
-       until a BPay or TravelPay file landed, so the fields a person is about
-       to type into popped into existence out of nowhere the moment they
-       dropped a file — on a card that had nothing else wrong with it. `on`
-       empty is not the IPSI-only case; it is "nothing said otherwise yet". */
-    const needsStatement = !on.length || on.some((k) => k !== 'ipsi');
+       correct run looks like an incomplete form. */
+    const needsStatement = on.some((k) => k !== 'ipsi');
     const showBalance = (boxId, show) => {
       const box = $('#' + boxId);
       if (box) box.style.display = show ? '' : 'none';
@@ -3882,10 +3892,13 @@ function askMarkStale(){
       move('rcOpeningBox', home);
       move('rcClosingBox', home);
     }
-    /* Transaction Total is no longer moved here at all — each of Mint's and
-       TravelPay's cards carries its own input now (transactionTotalField),
-       baked into the card template the same way IPSI's NUVEI amount is, so
-       it is never homeless and never has to jump between cards. */
+    /* One Transaction total, and it can only sit in one card. Mint takes it
+       when Mint is loaded, otherwise TravelPay. With BOTH loaded they share a
+       single figure, which was already true before this moved — see
+       syncTotalField. Worth splitting into two fields; noted, not smuggled in
+       under a layout change. */
+    move('rcTotalBox', on.indexOf('mint') >= 0 ? 'mint'
+      : (on.indexOf('travelpay') >= 0 ? 'travelpay' : 'mint'));
 
     /* Anything still in the holder is invisible, and an invisible required
        field is a run that cannot be started and cannot be fixed. Every box has
@@ -3899,6 +3912,7 @@ function askMarkStale(){
   function renderSource() {
     const grid = $('#tileGrid');
     if (!grid) return;
+    syncTotalField();
     const op = ($('#rcOpening') || {}).value, cl = ($('#rcClosing') || {}).value;
     const balances = op && cl ? ' · opening ' + dollars(op) + ' → closing ' + dollars(cl) : '';
 
@@ -3918,7 +3932,7 @@ function askMarkStale(){
        nowhere. The field looked fine and simply stopped accepting typing. */
     const focusWas = (() => {
       const a = document.activeElement;
-      if (!a || !a.id || !['rcDate', 'rcOpening', 'rcClosing', 'rcTotal-mint', 'rcTotal-travelpay', 'ipsiNuvei'].includes(a.id)) return null;
+      if (!a || !a.id || !['rcDate', 'rcOpening', 'rcClosing', 'rcTotal', 'ipsiNuvei'].includes(a.id)) return null;
       let start = null, end = null;
       // selectionStart throws on <input type=number>; the caret cannot be read
       // there at all, so it is restored to the end of the value instead.
@@ -3941,7 +3955,6 @@ function askMarkStale(){
           head + '<span class="badge b-mute">not uploaded</span></h3>' +
           '<p>' + def.blurb + '</p>' +
           '<span class="file">' + def.columns + '</span>' +
-          (kind === 'mint' || kind === 'travelpay' ? transactionTotalField(kind) : '') +
           (kind === 'ipsi' ? ipsiNuveiField() : '') +
           '<div class="muted rc-figs" data-figs="' + kind + '" style="margin-top:8px"></div>' +
           '<div class="muted rc-hint" data-hint="' + kind + '" style="margin-top:8px">' + hintSeed + '</div>' +
@@ -3971,7 +3984,6 @@ function askMarkStale(){
         '<span class="file">' + esc(s.file.name) + ' · ' + s.rows.length + ' row' +
         (s.rows.length === 1 ? '' : 's') + ' · ' + kb(s.file.size) + esc(balances) + '</span>' +
         '<span class="result">✓ ' + sourceStats(kind) + '</span>' +
-        (kind === 'mint' || kind === 'travelpay' ? transactionTotalField(kind) : '') +
         (kind === 'ipsi' ? ipsiNuveiField() : '') +
         '<div class="muted rc-figs" data-figs="' + kind + '" style="margin-top:8px"></div>' +
           '<div class="muted rc-hint" data-hint="' + kind + '" style="margin-top:8px">' + hintSeed + '</div>' +
@@ -4064,22 +4076,6 @@ function askMarkStale(){
     const nuveiField = grid.querySelector('#ipsiNuvei');
     if (nuveiField) nuveiField.oninput = () => { ipsiNuvei = nuveiField.value; syncIpsiTotal(); };
 
-    /* Mint's and TravelPay's Transaction Total are two inputs now, not one —
-       typing in either has to reach the other LIVE, without a full
-       renderSource() (that would rebuild the grid mid-keystroke and blur the
-       field, the same problem the balances solve with focusWas, avoided here
-       instead by just not re-rendering for this). `transactionTotal` is the
-       one value both are windows onto; a full render (e.g. Start run's own
-       validation reading the field back) always draws both from it. */
-    const totalMint = grid.querySelector('#rcTotal-mint');
-    const totalTravelpay = grid.querySelector('#rcTotal-travelpay');
-    const syncTotalPair = (from, to) => {
-      transactionTotal = from.value;
-      if (to && to.value !== from.value) to.value = from.value;
-    };
-    if (totalMint) totalMint.oninput = () => syncTotalPair(totalMint, totalTravelpay);
-    if (totalTravelpay) totalTravelpay.oninput = () => syncTotalPair(totalTravelpay, totalMint);
-
     /* The hints are rebuilt empty above (`hintSeed`), so anything a card was
        saying has just been thrown away — including "still reading the
        consultant names", which must not vanish while the read is still going.
@@ -4132,9 +4128,7 @@ function askMarkStale(){
         '<strong>do not press Start run until they have been matched.</strong>');
     }
     if (cardNote[kind]) lines.push(cardNote[kind]);
-    // Always writes, even empty — a caller that just cleared cardNote[kind]
-    // needs the DOM cleared too, or the stale note it replaced stays on screen.
-    hint(kind, lines.join('<br>'));
+    if (lines.length) hint(kind, lines.join('<br>'));
   }
 
   /* ── the run alert, and the fields it points at ──
@@ -4150,7 +4144,7 @@ function askMarkStale(){
      whichever card happens to be active. */
   const FIELD_LABEL = { rcDate: 'Statement date', rcOpening: 'Opening balance',
                         rcClosing: 'Closing balance', ipsiNuvei: 'NUVEI amount',
-                        'rcTotal-mint': 'Transaction total', 'rcTotal-travelpay': 'Transaction total' };
+                        rcTotal: 'Transaction total' };
 
   function clearFieldErrors() {
     document.querySelectorAll('.field-bad').forEach((e) => e.classList.remove('field-bad'));
@@ -4209,26 +4203,17 @@ function askMarkStale(){
      does" — before this there was no preview to be the check. */
   function previewTable(kind) {
     const rs = (source[kind] && source[kind].rows) || [];
-    // IPSI has no "to company" of its own — a card payment is matched by its
-    // transaction reference and booking number, never by a creditor it was
-    // paid to, so IPSI rows carry no `toCompany` and the column only ever
-    // showed blank.
-    const head = kind === 'ipsi'
-      ? '<th>Transaction reference</th><th>Booking</th><th class="num">Amount</th>'
-      : checksOnly(kind)
-        ? '<th>' + (kind === 'travelpay' ? 'Payment reference' : 'Transaction reference') +
-          '</th><th>' + (kind === 'travelpay' ? 'Merchant' : 'To company') +
-          '</th><th class="num">Amount</th>'
-        : '<th>Date</th><th>Reference</th><th>Rec/Pay type</th><th class="num">Amount</th><th>Booking</th>';
-    const body = rs.map((r) => kind === 'ipsi'
-      ? '<tr><td class="mono">' + esc(r.transNo) + '</td><td class="mono">' + esc(r.bookingNo) + '</td>' +
+    const head = checksOnly(kind)
+      ? '<th>' + (kind === 'travelpay' ? 'Payment reference' : 'Transaction reference') +
+        '</th><th>' + (kind === 'travelpay' ? 'Merchant' : 'To company') +
+        '</th><th class="num">Amount</th>'
+      : '<th>Date</th><th>Reference</th><th>Rec/Pay type</th><th class="num">Amount</th><th>Booking</th>';
+    const body = rs.map((r) => checksOnly(kind)
+      ? '<tr><td class="mono">' + esc(r.transNo) + '</td><td>' + esc(r.toCompany) + '</td>' +
         '<td class="num">' + esc(r.amount) + '</td></tr>'
-      : checksOnly(kind)
-        ? '<tr><td class="mono">' + esc(r.transNo) + '</td><td>' + esc(r.toCompany) + '</td>' +
-          '<td class="num">' + esc(r.amount) + '</td></tr>'
-        : '<tr><td>' + esc(r.date) + '</td><td class="mono">' + esc(r.reference) + '</td>' +
-          '<td>' + esc(r.recPayType) + '</td><td class="num">' + esc(r.amount) + '</td>' +
-          '<td class="mono">' + esc(r.bookingNo) + '</td></tr>').join('');
+      : '<tr><td>' + esc(r.date) + '</td><td class="mono">' + esc(r.reference) + '</td>' +
+        '<td>' + esc(r.recPayType) + '</td><td class="num">' + esc(r.amount) + '</td>' +
+        '<td class="mono">' + esc(r.bookingNo) + '</td></tr>').join('');
     return '<div class="tbl-wrap" style="margin-top:12px"><table><thead><tr>' + head +
       '</tr></thead><tbody>' + body + '</tbody></table></div>';
   }
@@ -4270,23 +4255,24 @@ function askMarkStale(){
      would race to write the same cells. */
   const enriching = {};
 
-  /* The header fields a bank-statement run cannot proceed without.
+  /* The three header fields a bank-statement run cannot proceed without.
      Checked HERE as well as in `start()` so it is visible before the button is
      pressed rather than after: a person filling in a card should be told what is
      missing while they are looking at it, not when they try to run.
      `start()` keeps its own copy — that one guards the run, this one guards the
-     button, and the run must not depend on a button being drawn correctly.
-
-     Opening and closing balance are deliberately NOT in this early warning —
-     they used to jump into red the instant a file was dropped, before anyone
-     had a chance to type them, on a card that had nothing else wrong with it.
-     They still stop the run: `start()` refuses without them exactly as
-     before. This just stops naming them here, on upload, before the person
-     has had a turn at the fields. */
+     button, and the run must not depend on a button being drawn correctly. */
   function missingFigures() {
     if (!active || active === 'ipsi') return '';
-    const date = ($('#rcDate') || {}).value;
-    return date ? '' : 'statement date is needed before a run.';
+    const date = ($('#rcDate') || {}).value, op = ($('#rcOpening') || {}).value,
+          cl = ($('#rcClosing') || {}).value;
+    const gaps = [];
+    if (!date) gaps.push('statement date');
+    if (!op) gaps.push('opening balance');
+    if (!cl) gaps.push('closing balance');
+    if (!gaps.length) return '';
+    const last = gaps.pop();
+    return (gaps.length ? gaps.join(', ') + ' and ' + last : last) +
+      (gaps.length ? ' are' : ' is') + ' needed before a run.';
   }
 
   function syncActive() {
@@ -4360,33 +4346,13 @@ function askMarkStale(){
        server runs is built from `source[kind].rows`, which these are not in.
        Their `n` continues past the last runnable row on purpose — the server
        numbers what it runs 1..N and patches rows by that number, so anything
-       sharing an `n` with a real row would be overwritten by it mid-run.
-
-       Used to be BPay-only (`checksOnly(kind)` skipped everything else) — a
-       Mint or TravelPay line with no reference, or a transaction that never
-       reached the bank, vanished after the card's one-line warning and never
-       reappeared once a run actually happened. It belongs on the same screen
-       as a booking BPay refused to file, for the same reason: quietly leaving
-       it off the report reads as "nothing was wrong with it".
-
-       EXCEPT `excludedType` (IPSI's PreAuth/Decline/Void) — that row was never
-       going to reconcile no matter what the file said, so it is not a person's
-       problem to see on this screen. Its own upload note says how many were
-       filtered and why; it does not get a row here. */
+       sharing an `n` with a real row would be overwritten by it mid-run. */
     const skipped = RUN_ORDER.reduce((acc, kind) => {
-      if (!source[kind]) return acc;
-      return acc.concat((source[kind].skippedRows || [])
-        .filter((x) => !x.excludedType)
-        .map((x) => ({
-          ...x, n: ++n, src: kind, skipped: true,
-          allocation: 'Not run',
-          // A checks-only report never files, so "Not run" (BPay's own word for
-          // "the gate stopped this before Tramada was touched") would read as
-          // its normal no-allocation state. "Not reconciled" is what actually
-          // happened — the reconciliation check itself could not be attempted —
-          // and it is what paints the row's badge red instead of grey.
-          reconciliation: checksOnly(kind) ? 'Not reconciled' : 'Not run',
-        })));
+      if (!source[kind] || checksOnly(kind)) return acc;
+      return acc.concat((source[kind].skippedRows || []).map((x) => ({
+        ...x, n: ++n, src: kind, skipped: true,
+        allocation: 'Not run', reconciliation: 'Not run',
+      })));
     }, []);
     return runnable.concat(skipped);
   }
@@ -4412,31 +4378,14 @@ function askMarkStale(){
     // element it goes in does not exist until then.
     render();
     // Skipped rows are said out loud. A quietly shortened file reads as "that
-    // was all there was". Cleared on a clean load, too — otherwise replacing a
-    // bad file with a fixed one leaves the old file's warning on screen, which
-    // read as the new file still being broken when it was not.
-    //
-    // Two different sentences, not one: a wrong TRANSACTION TYPE (IPSI's
-    // PreAuth, Decline, Void) was never going to reconcile no matter what the
-    // file said, and saying "missing a reference or amount, or the
-    // transaction did not succeed" about it sends someone looking for a data
-    // problem that is not there. A genuine data problem still gets the old
-    // sentence, because that one IS something to go and fix.
-    const rows = skippedRows || [];
-    const typeLines = rows.filter((r) => r.excludedType).map((r) => r.line);
-    const dataLines = (skipped || []).filter((line) => typeLines.indexOf(line) < 0);
-    const parts = [];
-    if (dataLines.length) {
-      parts.push('Skipped ' + (dataLines.length === 1 ? 'line ' : 'lines ') + dataLines.join(', ') + ' — ' +
+    // was all there was".
+    if (skipped && skipped.length) {
+      cardNote[kind] = ('<span style="color:var(--warn,#8a6d00)">Skipped ' +
+        (skipped.length === 1 ? 'line ' : 'lines ') + skipped.join(', ') + ' — ' +
         (checksOnly(kind) ? 'missing a reference or amount, or the transaction did not succeed.'
-                         : 'missing a reference, booking number or amount.'));
+                         : 'missing a reference, booking number or amount.') + '</span>');
+      paintHint(kind);
     }
-    if (typeLines.length) {
-      parts.push((typeLines.length === 1 ? 'Line ' : 'Lines ') + typeLines.join(', ') +
-        ' not counted — not a desired transaction type (PreAuth, Decline or Void).');
-    }
-    cardNote[kind] = parts.length ? ('<span style="color:var(--warn,#8a6d00)">' + parts.join(' ') + '</span>') : '';
-    paintHint(kind);
   }
 
   function reject(kind, name, why) {
@@ -4778,22 +4727,13 @@ function askMarkStale(){
        but this compact table had nowhere to show it on screen. Added
        31-Aug-2026 so a checks-only run reads success/failure the same way a
        BPay row does, instead of only the export file saying so. */
-    // IPSI has no "to company" of its own — it is a card settlement matched by
-    // transaction reference and booking number, never by a creditor it was
-    // paid to (that is the whole reason it carries no `toCompany` field), so
-    // the column only ever showed blank for it. Dropped only when IPSI is the
-    // ONLY kind on screen: a combined view still has Mint or TravelPay rows
-    // that genuinely want the column.
-    const kindsShown = new Set(all.map((r) => r.src).filter(Boolean));
-    const ipsiOnly = mint && (kindsShown.size ? (kindsShown.size === 1 && kindsShown.has('ipsi'))
-      : reportOnly === 'ipsi');
     const head = mint
       ? '<th style="width:16px"></th><th>Transaction</th><th class="num">Amount</th>' +
-        (ipsiOnly ? '' : '<th>To company</th>') + '<th>Reconciled</th><th>Remarks</th>'
+        '<th>To company</th><th>Reconciled</th><th>Remarks</th>'
       : '<th style="width:16px"></th><th>Statement line</th><th class="num">Amount</th>' +
         '<th>Booking</th><th>Receipt</th><th>Allocation</th><th>Reconciled</th>' +
         '<th>Remarks</th>';
-    const cols = mint ? (ipsiOnly ? 5 : 6) : 8;
+    const cols = mint ? 6 : 8;
     // The row's own sentence, as a tooltip rather than a column.
     const whyTip = (r) => (r && r.why ? ' title="' + esc(String(r.why)) + '"' : '');
     // Mint/TravelPay/IPSI's own version of BPay's Remarks cell below — same
@@ -4806,7 +4746,7 @@ function askMarkStale(){
       ? '<tr><td><span class="tdot ' + dot(r) + '"></span></td>' +
         '<td><b class="ref">' + esc(r.transNo) + '</b></td>' +
         '<td class="num">' + esc(r.amount) + '</td>' +
-        (ipsiOnly ? '' : '<td>' + esc(r.toCompany || '') + '</td>') +
+        '<td>' + esc(r.toCompany || '') + '</td>' +
         '<td>' + badge(r.reconciliation) + '</td>' +
         remarkCell(r) + '</tr>'
       /* On a COMBINED run both kinds of row share this table, and a Mint row has
@@ -4894,6 +4834,13 @@ function askMarkStale(){
   const RUN_COLUMNS = [
     { key: 'consultant', label: 'Consultant', only: ['bpay'] },
     { key: 'shop', label: 'Shop', only: ['bpay'] },
+    /* RAA, 29-Aug: "Reconciliation Report page, add Tramada Booking number as a
+       column." Every report has one — BPay receipts against a booking, IPSI's
+       own Booking Number column, TravelPay's booking dug out of Additional
+       Reference — so it is NOT restricted with `only`. Where the uploaded
+       spreadsheet already has a booking column, renderSheetTable prefixes this
+       one with "Tramada " rather than showing two columns of the same name. */
+    { key: 'bookingNo', label: 'Booking No', mono: true },
     { key: 'receiptNo', label: 'Receipt No', mono: true, only: ['bpay'] },
     { key: 'allocation', label: 'Allocated', badge: true, only: ['bpay'] },
     { key: 'reconciliation', label: 'Reconciled', badge: true },
@@ -5297,11 +5244,7 @@ function askMarkStale(){
          server, so nothing is ever coming back for them. Saying "running" over
          a row that is not being run is the kind of small lie that makes a
          person stop believing the rest of the screen. */
-      // Same split as allResults() itself: a checks-only report's held-back
-      // row is an error (the check could not even be attempted), not a plain
-      // "not run" — and this map runs again on every Start, so it has to make
-      // the same call or it would quietly undo the one allResults() made.
-      if (r.skipped) return { ...r, allocation: 'Not run', reconciliation: checksOnly(r.src) ? 'Not reconciled' : 'Not run' };
+      if (r.skipped) return { ...r, allocation: 'Not run', reconciliation: 'Not run' };
       return checksOnly(r.src)
         ? { ...r, reconciliation: 'Pending', mismatch: undefined, why: '' }
         : { ...r, allocation: 'Running', reconciliation: 'Pending', receiptNo: '', why: '' };
@@ -5328,14 +5271,13 @@ function askMarkStale(){
     const only = kind === 'both' ? null : (source[kind] || {});
     const common = {
       statementDate: date, openingBalance: op, closingBalance: cl, dryRun: dry,
-      // MINT/TravelPay BR02 from the one value both cards' own fields write
-      // to, IPSI's own BR01 NUVEI amount from its own card field — never each
-      // other's, and never both at once, since IPSI cannot be loaded
-      // alongside anything else. Blank is allowed through for Mint/TravelPay
-      // — the check then reports "no Transaction Total was entered" rather
-      // than accusing the file of not adding up; IPSI's own field is
-      // required earlier in this function.
-      transactionTotal: kind === 'ipsi' ? ipsiNuvei : (transactionTotal || ''),
+      // MINT/TravelPay BR02 from the shared header field, IPSI's own BR01
+      // NUVEI amount from its own card field — never each other's, and never
+      // both at once, since IPSI cannot be loaded alongside anything else.
+      // Blank is allowed through for Mint/TravelPay — the check then reports
+      // "no Transaction Total was entered" rather than accusing the file of
+      // not adding up; IPSI's own field is required earlier in this function.
+      transactionTotal: kind === 'ipsi' ? ipsiNuvei : (($('#rcTotal') || {}).value || ''),
       columns: only ? (only.columns || []) : [],
       format: only ? (only.format || 'csv') : 'csv',
     };
@@ -5367,15 +5309,10 @@ function askMarkStale(){
       /* The server's `problems` carry the whole row, not just its line number,
          and for BPay each one already holds its BR01 remark. Passing the rows
          through is what puts a line with no booking number back in front of
-         Finance instead of quietly shortening the file.
-
-         `why` is carried across too — it lives on the problem wrapper, not on
-         `row`, and dropping it here is how a held-back Mint/TravelPay/IPSI
-         row reached the results table with no explanation of what was wrong
-         with it. */
+         Finance instead of quietly shortening the file. */
       if (m.enriching) enriching[kind] = true;
       accept(kind, f, m.rows, (m.problems || []).map((p) => p.line),
-        (m.problems || []).map((p) => (p.row ? { ...p.row, why: p.row.why || p.why } : null)).filter(Boolean),
+        (m.problems || []).map((p) => p.row).filter(Boolean),
         m.columns || [], m.format || 'csv');
       if (m.enriching) {
         syncActive();
@@ -5525,57 +5462,95 @@ function askMarkStale(){
    * corrected by hand — go up, and the file comes back. Finance sent a
    * workbook, Finance gets a workbook.
    */
+  /* ONE FILE PER PAYMENT METHOD. RAA, 29-Aug: "Export button exports out the
+     spreadsheet as per payment method."
+
+     A combined BPay + Mint run used to come out as ONE file, in whichever
+     card happened to be `active`, with the other report's rows forced into
+     columns that were never theirs. Finance receives these reports separately
+     and works them separately, so they go back the same way: BPay's rows in
+     BPay's own uploaded columns and container, Mint's in Mint's.
+
+     With a single report loaded this behaves exactly as it did before —
+     one group, one file, same name. */
   async function exportCsv() {
     const btn = $('#rcExport');
     const all = viewRows();
     if (!all.length) return;
 
-    /* BR14 — Shop, then Consultant. A check-only report has neither column, so
-       it keeps the order it was uploaded in rather than being shuffled by two
-       columns of blanks. */
-    const mint = !viewWrites();
-    /* IPSI step 19: "Finalised and reconciled CSV file will be ordered in
-       sequence of ascending booking numbers." It was going out in whatever
-       order IPSI's own download arrived in, because IPSI files nothing and so
-       fell into the same branch as Mint and TravelPay — which genuinely do keep
-       their upload order, having no Shop or Consultant to sort by either.
-       IPSI has a booking number, and the guide names it. */
-    const ipsiOnly = all.length > 0 && all.every((r) => r.src === 'ipsi');
-    const rows = ipsiOnly ? sortIpsiForExport(all)
-      : (mint ? all.slice() : sortForFinance(all));
+    /* Group by the report each ROW came from, not by what is loaded now: rows
+       reopened from history carry `src` and the cards may be empty. */
+    const groups = [];
+    for (const kind of RUN_ORDER) {
+      const rows = all.filter((r) => r.src === kind);
+      if (rows.length) groups.push({ kind: kind, rows: rows });
+    }
+    // Anything with no recognisable src still gets exported rather than dropped.
+    const stray = all.filter((r) => RUN_ORDER.indexOf(r.src) < 0);
+    if (stray.length) groups.push({ kind: null, rows: stray });
+    if (!groups.length) return;
 
-    const columns = fullColumns() ||
-      (viewing ? (viewing.columns || []) : ((source[active] || {}).columns || []));
-    const format = viewing ? (viewing.format || 'csv')
-      : ((source[active] || {}).format || 'csv');
-    const name = viewing ? ((viewing.file || {}).name || 'reconciliation')
-      : (((source[active] || {}).file || {}).name || 'reconciliation');
+    const orderFor = (kind, rows) => {
+      if (kind === 'ipsi') return sortIpsiForExport(rows);        // step 19
+      if (kind === 'bpay') return sortForFinance(rows);           // BR14
+      return rows.slice();                                        // Mint/TravelPay keep upload order
+    };
 
     if (btn) { btn.disabled = true; btn.textContent = 'Building…'; }
+    let built = 0;
+    const failed = [];
     try {
-      const res = await fetch('/api/export', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rows: rows, columns: columns, format: format, name: name }),
-      });
-      if (!res.ok) {
-        const why = await res.json().catch(() => ({}));
-        note('The working file could not be built' + (why.error ? ' — ' + why.error : '.'), false);
-        return;
+      for (const g of groups) {
+        /* The columns and container this report ARRIVED in. A reopened combined
+           run stored none per report, so those fall back to the run's own and
+           finally to auto columns — a sensible file rather than a refusal. */
+        const src = (g.kind && source[g.kind]) || null;
+        const columns = (src && src.columns && src.columns.length) ? src.columns
+          : (groups.length === 1 ? (fullColumns() || (viewing ? (viewing.columns || []) : [])) : []);
+        const format = (src && src.format) || (viewing ? (viewing.format || 'csv') : 'csv');
+        const base = (src && src.file && src.file.name)
+          || (groups.length === 1 && viewing && viewing.file && viewing.file.name)
+          || ((g.kind ? (SOURCES[g.kind] || {}).title || g.kind : 'reconciliation'));
+        /* Name it after the payment method when there is more than one file,
+           so two downloads do not land as "reconciliation (1).csv". */
+        const name = groups.length > 1 ? (g.kind || 'other') + ' — ' + base : base;
+
+        try {
+          const res = await fetch('/api/export', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rows: orderFor(g.kind, g.rows), columns: columns,
+                                   format: format, name: name }),
+          });
+          if (!res.ok) {
+            const why = await res.json().catch(() => ({}));
+            failed.push((g.kind || 'rows') + (why.error ? ' — ' + why.error : ''));
+            continue;
+          }
+          const cd = res.headers.get('Content-Disposition') || '';
+          const m = cd.match(/filename="([^"]+)"/);
+          const blob = await res.blob();
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = m ? m[1] : name + '.' + (format === 'xlsx' ? 'xlsx' : 'csv');
+          a.click();
+          URL.revokeObjectURL(a.href);
+          built++;
+          /* Browsers throttle downloads fired back to back and will silently
+             drop the second one. A short gap is the difference between two
+             files and one. */
+          if (groups.length > 1) await new Promise((r) => setTimeout(r, 400));
+        } catch (e) {
+          failed.push((g.kind || 'rows') + ' — ' + (e && e.message ? e.message : 'no answer from the server'));
+        }
       }
-      /* The file name is the server's, off Content-Disposition, so the
-         extension always matches what was actually built. Guessing it here is
-         how you end up with an .xlsx called .csv that Excel refuses. */
-      const cd = res.headers.get('Content-Disposition') || '';
-      const m = cd.match(/filename="([^"]+)"/);
-      const blob = await res.blob();
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = m ? m[1] : 'reconciliation.' + (format === 'xlsx' ? 'xlsx' : 'csv');
-      a.click();
-      URL.revokeObjectURL(a.href);
-    } catch (e) {
-      note('The working file could not be built — ' + (e && e.message ? e.message : 'no answer from the server.'), false);
+
+      if (failed.length) {
+        note('Exported ' + built + ' of ' + groups.length + ' file(s). Could not build: ' +
+          failed.join('; '), false);
+      } else if (built > 1) {
+        note('Exported ' + built + ' working files, one per payment method.', true);
+      }
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = 'Export working file'; }
     }
