@@ -3040,6 +3040,16 @@ function askMarkStale(){
   const $ = (s, r) => (r || document).querySelector(s);
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  /* #rcDate is a native <input type="date">, which only ever displays and
+     only ever accepts yyyy-mm-dd — assigning it dd-mm-yyyy (how runs already
+     on disk have their statementDate) is silently ignored by the browser and
+     the field just goes blank. Runs saved before this field became a date
+     picker still carry the old shape, so anything setting .value programmatically
+     has to convert first. */
+  const dmyToIso = (v) => {
+    const m = String(v == null ? '' : v).trim().match(/^(\d{2})-(\d{2})-(\d{4})$/);
+    return m ? `${m[3]}-${m[2]}-${m[1]}` : v;
+  };
 
   /* ── two reports, one run ──
      BPay receipts and the Mint daily settlement are different files with
@@ -3292,33 +3302,44 @@ function askMarkStale(){
     // new-statement form — which is exactly why they have to be asked for.
     const old = $('#stmtDate');
     if (old) {
-      // TODAY, not tomorrow — see the matching comment in public/index.html
-      // for the live run this defaulted wrong on (31-Aug-2026).
+      // TODAY, not tomorrow — a live run defaulted wrong on this (31-Aug-2026).
       const d = new Date();
-      const dmy = `${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}`;
+      const iso = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
       const box = document.createElement('div');
       box.id = 'rcFieldRow';          // the page header — where the date lives
       box.style.cssText = 'display:flex;gap:10px;align-items:flex-end';
       box.innerHTML =
+        /* type="date" gives the native browser calendar dropdown rather than a
+           plain text box — RAA asked for a picker instead of free-typed dates.
+           It only ever displays and stores yyyy-mm-dd, never dd-mm-yyyy, which
+           is why `iso` is built directly rather than reusing the dmy format
+           the rest of this file's dates are in (see dmyToIso above, and the
+           reopened-run assignment below that needs it). */
         '<div id="rcDateBox"><label class="field-lbl" for="rcDate" style="margin:0 0 3px;display:block">Statement date<span class="req" aria-hidden="true">*</span></label>' +
-        '<input class="btn" id="rcDate" aria-required="true" style="width:130px" value="' + dmy + '"></div>' +
+        '<input type="date" class="btn" id="rcDate" aria-required="true" style="width:150px" value="' + iso + '"></div>' +
         '<div id="rcOpeningBox"><label class="field-lbl" for="rcOpening" style="margin:0 0 3px;display:block">Opening balance<span class="req" aria-hidden="true">*</span></label>' +
         '<input class="btn" id="rcOpening" aria-required="true" style="width:130px" placeholder="0.00"></div>' +
         '<div id="rcClosingBox"><label class="field-lbl" for="rcClosing" style="margin:0 0 3px;display:block">Closing balance<span class="req" aria-hidden="true">*</span></label>' +
         '<input class="btn" id="rcClosing" aria-required="true" style="width:130px" placeholder="0.00"></div>' +
         /* MINT BR02 / TravelPay BR02 — "Total Transaction to be a required
            field in the AI Reconciliation Dashboard ... to be calculated and
-           entered by a human". It is what the uploaded file's own amounts are
-           added up against, and the check is reported once on the run rather
-           than down every row. Shown only when one of those two reports is
-           loaded, because BPay has no such rule. */
-        '<div id="rcTotalBox" style="display:none"><label class="field-lbl" for="rcTotal" style="margin:0 0 3px;display:block">Transaction total<span class="req" aria-hidden="true">*</span></label>' +
-        /* Numbers only — this is BR01/step 3's NUVEI figure, typed by a human
-           off the bank statement and compared to the cent against the file's
-           own total. type=number rejects letters at the keyboard rather than
-           catching a typo after the fact; step/min keep it to a plain
-           non-negative amount, the same shape core.cents() already expects. */
+           entered by a human". It is what the uploaded file's OWN amounts are
+           added up against, and each report totals its own file — Mint's
+           figure and TravelPay's figure are different numbers for different
+           files, so each gets its own box and its own card, the same way
+           IPSI's NUVEI amount already has its own (see ipsiNuveiField). Always
+           visible, not shown only once loaded — POC feedback Mint 01/TravelPay
+           01 asked for the field before the file upload, like IPSI's. */
+        '<div id="rcTotalBox"><label class="field-lbl" for="rcTotal" style="margin:0 0 3px;display:block">Transaction total<span class="req" aria-hidden="true">*</span></label>' +
+        /* Numbers only, typed by a human off the bank statement and compared
+           to the cent against the file's own total. type=number rejects
+           letters at the keyboard rather than catching a typo after the fact;
+           step/min keep it to a plain non-negative amount, the same shape
+           core.cents() already expects. */
         '<input class="btn" id="rcTotal" aria-required="true" type="number" step="0.01" min="0" inputmode="decimal" ' +
+        'style="width:130px" placeholder="0.00"></div>' +
+        '<div id="rcTotalBoxTravelpay"><label class="field-lbl" for="rcTotalTravelpay" style="margin:0 0 3px;display:block">Transaction total<span class="req" aria-hidden="true">*</span></label>' +
+        '<input class="btn" id="rcTotalTravelpay" aria-required="true" type="number" step="0.01" min="0" inputmode="decimal" ' +
         'style="width:130px" placeholder="0.00"></div>' +
         /* One checkbox, called Dry run. A fourth field in the row this script
            already builds, wearing the same .btn as the three beside it. The
@@ -3329,10 +3350,10 @@ function askMarkStale(){
         'style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">' +
         '<input type="checkbox" id="rcDryRun" style="margin:0;flex:none">Dry run</label>';
       old.replaceWith(box);
-      // The card quotes the balances back, so it has to hear about them being
-      // typed. Redrawing the card cannot steal focus from these — they live
-      // in the page header, outside #tileGrid.
-      ['#rcDate', '#rcOpening', '#rcClosing'].forEach((sel) => {
+      // The card quotes the balances (and, now, the totals) back, so it has to
+      // hear about them being typed. Redrawing the card cannot steal focus
+      // from these — they live in the page header, outside #tileGrid.
+      ['#rcDate', '#rcOpening', '#rcClosing', '#rcTotal', '#rcTotalTravelpay'].forEach((sel) => {
         const el = $(sel);
         if (el) el.oninput = () => { syncActive(); if (loaded().length) renderSource(); };
       });
@@ -3434,28 +3455,20 @@ function askMarkStale(){
       ' · ' + dollars(total.toFixed(2)) + ' to receipt';
   }
 
-  /* Which reports want a Transaction Total — MINT BR02 and TravelPay BR02.
-     BPay has no such rule, so the field stays out of its way. IPSI has its OWN
-     figure too (BR01/step 3, the NUVEI amount) but NOT this one — that field
-     lives inside the IPSI card itself (see ipsiNuvei below), not in this
-     shared header box, so a NUVEI entry can never be mistaken for or mixed up
-     with Mint/TravelPay's own Transaction Total. */
-  const WANTS_TOTAL = ['mint', 'travelpay'];
+  /* Which reports want a Transaction Total — MINT BR02 and TravelPay BR02,
+     each against its own file, which is why they are two boxes now
+     (rcTotalBox on Mint's card, rcTotalBoxTravelpay on TravelPay's) rather
+     than one shared field. BPay has no such rule. IPSI has its OWN figure too
+     (BR01/step 3, the NUVEI amount) but NOT either of these — that field
+     lives inside the IPSI card itself (see ipsiNuvei below), so a NUVEI entry
+     can never be mistaken for or mixed up with Mint/TravelPay's totals.
 
-  function syncTotalField() {
-    const box = $('#rcTotalBox');
-    if (!box) return;
-    /* ALWAYS VISIBLE, since it moved into the card. POC feedback asks for it
-       "before the file upload like IPSI", and IPSI's NUVEI amount is on its
-       card whether or not a file has been dropped — you type the figure off the
-       bank statement first and upload second, so a field that only appears
-       after the upload is a field you meet in the wrong order.
-
-       It was hidden until MINT or TravelPay was loaded because it used to sit
-       in the page header, where an unexplained box next to the statement date
-       would have belonged to nothing. On the card it belongs to the card. */
-    box.style.display = '';
-  }
+     Both boxes are always visible, never hidden until a file is loaded — POC
+     feedback Mint 01/TravelPay 01 asked for the field "before the file upload
+     like IPSI", and IPSI's NUVEI amount is on its card whether or not a file
+     has been dropped: you type the figure off the bank statement first and
+     upload second, so a field that only appears after the upload is a field
+     you meet in the wrong order. */
 
   /* ── the supplier name cheat sheet ──
      Both guides: "A section to show [the] supplier name cheat sheet .CSV file
@@ -3602,10 +3615,11 @@ function askMarkStale(){
 
   /* ── IPSI's own NUVEI amount ──
      BR01/step 3: "NUVEI amount is manually entered... into a field called
-     'Transaction Total'" — but IPSI's own figure, kept OUT of the shared
-     `#rcTotal` box above so it can never be confused with, or accidentally
-     shared with, Mint/TravelPay's own Transaction Total (a different number
-     for a different rule). Lives inside the IPSI card's own markup instead —
+     'Transaction Total'" — but IPSI's own figure, kept OUT of `#rcTotal` and
+     `#rcTotalTravelpay` above so it can never be confused with, or accidentally
+     shared with, Mint's or TravelPay's own Transaction Total (a different
+     number for a different rule). Lives inside the IPSI card's own markup
+     instead —
      which is rebuilt on every render, so the typed value is held here in JS
      and re-drawn into the input each time, the same way `previewOpen` survives
      a card being torn down and rebuilt. */
@@ -3689,7 +3703,7 @@ function askMarkStale(){
           format: run.format || 'csv',
         };
         const dateField = $('#rcDate');
-        if (dateField && run.statementDate) dateField.value = run.statementDate;
+        if (dateField && run.statementDate) dateField.value = dmyToIso(run.statementDate);
         // The card's own field, redrawn on the next render — see ipsiNuveiField.
         ipsiNuvei = run.transactionTotal || '';
         active = 'ipsi';
@@ -3824,7 +3838,7 @@ function askMarkStale(){
       home.style.display = 'none';
       document.body.appendChild(home);
     }
-    ['rcDateBox', 'rcOpeningBox', 'rcClosingBox', 'rcTotalBox'].forEach((id) => {
+    ['rcDateBox', 'rcOpeningBox', 'rcClosingBox', 'rcTotalBox', 'rcTotalBoxTravelpay'].forEach((id) => {
       const box = $('#' + id);
       if (box) home.appendChild(box);
     });
@@ -3838,9 +3852,6 @@ function askMarkStale(){
       target.appendChild(box);              // same node, so focus survives
       box.style.marginTop = '8px';
     };
-    const on = loaded();
-    const home = on.indexOf('bpay') >= 0 ? 'bpay' : (on[0] || 'bpay');
-
     /* THE STATEMENT DATE STAYS AT THE TOP. 28-Aug: BPAY 03 asks for it to move
        into the BPAY section, but Pippa's comment on that same line says
        "won't the statement date be the same for all payment types? In which
@@ -3863,42 +3874,32 @@ function askMarkStale(){
       dateRow.insertBefore(dateBox, dateRow.firstChild);
       dateBox.style.marginTop = '';
     }
-    /* THE BALANCES FOLLOW THE SAME `home` AS THE DATE, and hardcoding them to
-       'bpay' was wrong. Caught on a live Mint-only run: the statement date
-       moved into the Mint card correctly, while Opening and Closing balance —
-       both required for that run — sat in the BPay card, which was showing
-       "not uploaded". Two required fields, in a card the person has not
-       loaded and has no reason to look at.
+    /* ONLY BPAY NEEDS THE BALANCES, and they are PINNED to BPAY's card
+       regardless of load state — the same as the two totals below, and for
+       the same reason: a required field only visible after upload is a field
+       met in the wrong order. BPay is what creates the statement page, typing
+       Opening/Closing balance into Tramada's new-statement form — Mint and
+       TravelPay only look an existing statement up by date and never create
+       or edit one, so the balances are not theirs to give, ever, whether or
+       not they happen to be the only thing loaded. Mint and TravelPay's own
+       required field is the Transaction total on their own card (see below).
 
-       BPay is still their home whenever BPay is loaded, because BPay is what
-       creates the statement. It is only the no-BPay case that changes.
-
-       AND IF NOTHING LOADED USES A STATEMENT PAGE, THEY DO NOT APPEAR AT ALL.
-       IPSI reconciles on the Finance Receipts screens and never opens one, so
-       an IPSI-only run has no opening or closing balance to give. Following
-       `home` blindly put both of them, marked required with a red asterisk,
-       into IPSI's card — two fields the run does not read and the person
-       cannot meaningfully fill. `start()` already knows this (`needsStatement`
-       skips them for an IPSI-only run); the screen has to agree with it, or a
-       correct run looks like an incomplete form. */
-    const needsStatement = on.some((k) => k !== 'ipsi');
-    const showBalance = (boxId, show) => {
-      const box = $('#' + boxId);
-      if (box) box.style.display = show ? '' : 'none';
-    };
-    showBalance('rcOpeningBox', needsStatement);
-    showBalance('rcClosingBox', needsStatement);
-    if (needsStatement) {
-      move('rcOpeningBox', home);
-      move('rcClosingBox', home);
-    }
-    /* One Transaction total, and it can only sit in one card. Mint takes it
-       when Mint is loaded, otherwise TravelPay. With BOTH loaded they share a
-       single figure, which was already true before this moved — see
-       syncTotalField. Worth splitting into two fields; noted, not smuggled in
-       under a layout change. */
-    move('rcTotalBox', on.indexOf('mint') >= 0 ? 'mint'
-      : (on.indexOf('travelpay') >= 0 ? 'travelpay' : 'mint'));
+       This used to follow `on` instead — hidden and homeless whenever BPay
+       was not among the loaded reports, `home` falling back to whichever
+       report WAS loaded. So uploading into Mint alone made BPay's own,
+       untouched card lose its balance fields, and a person watching that
+       card while typing into Mint's would see it change under them for no
+       reason connected to BPay at all. Pinned and always shown, BPay's card
+       now looks the same no matter what gets loaded into Mint, TravelPay or
+       IPSI. */
+    move('rcOpeningBox', 'bpay');
+    move('rcClosingBox', 'bpay');
+    /* Two Transaction totals, one per report, each pinned to its own card
+       regardless of load state — the same as the balances above, and for the
+       same reason: a required field only visible after upload is a field met
+       in the wrong order. */
+    move('rcTotalBox', 'mint');
+    move('rcTotalBoxTravelpay', 'travelpay');
 
     /* Anything still in the holder is invisible, and an invisible required
        field is a run that cannot be started and cannot be fixed. Every box has
@@ -3912,17 +3913,8 @@ function askMarkStale(){
   function renderSource() {
     const grid = $('#tileGrid');
     if (!grid) return;
-    syncTotalField();
     const op = ($('#rcOpening') || {}).value, cl = ($('#rcClosing') || {}).value;
     const balances = op && cl ? ' · opening ' + dollars(op) + ' → closing ' + dollars(cl) : '';
-
-    // Computed once per render, not per card — the same answer either card's
-    // template asks it for. A full render only happens here on a file
-    // change/removal, not on every NUVEI keystroke — see `syncIpsiTotal` for
-    // the live, no-rebuild path that keeps this in sync while typing.
-    const ipsiWarn = ipsiCombo()
-      ? '<span style="color:var(--err)">IPSI runs alone — remove the other loaded report before starting this one.</span>'
-      : (ipsiTotalMismatch() ? '<span style="color:var(--err)">' + esc(ipsiTotalMismatch()) + '</span>' : '');
 
     /* WHERE THE CURSOR WAS. The balance fields are moved into a card slot on
        every render, and MOVING a focused element between parents blurs it in
@@ -3932,7 +3924,7 @@ function askMarkStale(){
        nowhere. The field looked fine and simply stopped accepting typing. */
     const focusWas = (() => {
       const a = document.activeElement;
-      if (!a || !a.id || !['rcDate', 'rcOpening', 'rcClosing', 'rcTotal', 'ipsiNuvei'].includes(a.id)) return null;
+      if (!a || !a.id || !['rcDate', 'rcOpening', 'rcClosing', 'rcTotal', 'rcTotalTravelpay', 'ipsiNuvei'].includes(a.id)) return null;
       let start = null, end = null;
       // selectionStart throws on <input type=number>; the caret cannot be read
       // there at all, so it is restored to the end of the value instead.
@@ -3948,7 +3940,17 @@ function askMarkStale(){
       // h3. They were h4, which skipped a level and made the outline read
       // as though a heading had gone missing.
       const head = '<h3>' + def.title + ' ';
-      const hintSeed = kind === 'ipsi' ? ipsiWarn : '';
+      // Mint/TravelPay's own totals live outside the rebuilt template (moved
+      // nodes, like the balances), so this is safe to compute fresh on every
+      // render rather than needing a no-rebuild live path. IPSI's own warning
+      // is deliberately NOT seeded here — it shares this card's hint line with
+      // the "skipped rows" note below, and only `paintHint('ipsi')` (run right
+      // after this template lands, see the bottom of this function) builds
+      // both lines together. Seeding one here and letting `paintHint` write
+      // the other afterwards is exactly how they used to clobber each other.
+      const totalWarn = (kind === 'mint' || kind === 'travelpay') && totalMismatch(kind)
+        ? '<span style="color:var(--err)">' + esc(totalMismatch(kind)) + '</span>' : '';
+      const hintSeed = kind === 'ipsi' ? '' : totalWarn;
 
       if (!s) {
         return '<div class="dz" data-kind="' + kind + '"><div class="di">⇪</div><div style="flex:1">' +
@@ -4115,9 +4117,10 @@ function askMarkStale(){
      a separate line that cannot clobber the hint, and nothing the header has to
      make room for. */
   function paintFigures() {
-    const gaps = missingFigures();
-    const html = gaps ? '<span style="color:var(--err)">' + esc(gaps) + '</span>' : '';
-    document.querySelectorAll('.rc-figs').forEach((el) => { el.innerHTML = html; });
+    document.querySelectorAll('.rc-figs').forEach((el) => {
+      const gaps = missingFiguresFor(el.getAttribute('data-figs'));
+      el.innerHTML = gaps ? '<span style="color:var(--err)">' + esc(gaps) + '</span>' : '';
+    });
   }
 
   function paintHint(kind) {
@@ -4128,6 +4131,23 @@ function askMarkStale(){
         '<strong>do not press Start run until they have been matched.</strong>');
     }
     if (cardNote[kind]) lines.push(cardNote[kind]);
+    // IPSI's own warning shares this line with the note above it — "N rows
+    // skipped" first, "the NUVEI amount is needed" red beneath it — so it has
+    // to be built in the SAME call rather than written by a second, separate
+    // hint(kind, …) call elsewhere. A second call replaces the whole line
+    // (hint() sets innerHTML, it does not append), which is exactly how a
+    // freshly-uploaded file's "N rows skipped" note used to erase the blank-
+    // NUVEI warning that had just been seeded next to it, and how typing into
+    // NUVEI used to erase the skipped-rows note right back.
+    if (kind === 'ipsi') {
+      const w = ipsiNuveiWarn();
+      if (w) lines.push('<span style="color:var(--err)">' + esc(w) + '</span>');
+      // Unlike the guard below, IPSI always repaints, even to blank — its
+      // warning has to be able to disappear the moment NUVEI is filled in or
+      // corrected, not just appear.
+      hint(kind, lines.join('<br>'));
+      return;
+    }
     if (lines.length) hint(kind, lines.join('<br>'));
   }
 
@@ -4144,7 +4164,7 @@ function askMarkStale(){
      whichever card happens to be active. */
   const FIELD_LABEL = { rcDate: 'Statement date', rcOpening: 'Opening balance',
                         rcClosing: 'Closing balance', ipsiNuvei: 'NUVEI amount',
-                        rcTotal: 'Transaction total' };
+                        rcTotal: 'Transaction total', rcTotalTravelpay: 'Transaction total' };
 
   function clearFieldErrors() {
     document.querySelectorAll('.field-bad').forEach((e) => e.classList.remove('field-bad'));
@@ -4245,6 +4265,43 @@ function askMarkStale(){
       'before this can run.';
   }
 
+  /* IPSI's one card-level warning, in priority order: a combo conflict blocks
+     the whole card and is said first; then a blank NUVEI amount — told right
+     after the settlement file lands, not saved up for when Start run is
+     pressed, the same as every other card's required-field gaps; then BR01's
+     typed-but-wrong figure. Before this, a blank NUVEI amount said nothing at
+     all here — `ipsiTotalMismatch` treats "not entered" as "nothing to
+     compare yet" (correctly, for BR01's own purposes) and returned null, so
+     the card sat silent until Start run was clicked and the global alert bar
+     said it instead. Shared by renderSource's initial paint and
+     syncIpsiTotal's per-keystroke repaint so the two never disagree. */
+  function ipsiNuveiWarn() {
+    if (ipsiCombo()) return 'IPSI runs alone — remove the other loaded report before starting this one.';
+    if (source.ipsi && !ipsiNuvei) return 'The NUVEI amount is needed before a run.';
+    return ipsiTotalMismatch() || '';
+  }
+
+  /* MINT BR02 / TravelPay BR02 — the same shape as ipsiTotalMismatch above,
+     one card at a time. `kind` is 'mint' or 'travelpay'; TOTAL_FIELD picks
+     which of the two boxes holds the figure for that card. Returns null when
+     there is nothing to compare yet (no file, or nothing typed) — "not
+     entered" is checked separately, in start(), because a blank field and a
+     wrong figure are different claims and the person needs to hear which one
+     they are looking at. */
+  const TOTAL_FIELD = { mint: 'rcTotal', travelpay: 'rcTotalTravelpay' };
+  function totalMismatch(kind) {
+    const s = source[kind];
+    const typed = ($('#' + TOTAL_FIELD[kind]) || {}).value;
+    if (!s || !typed) return null;
+    const typedCents = Math.round(parseFloat(typed) * 100);
+    if (!Number.isFinite(typedCents)) return null;
+    const fileCents = (s.rows || []).reduce((a, r) => a + (r.amountCents || 0), 0);
+    if (fileCents === typedCents) return null;
+    return (kind === 'mint' ? 'MINT' : 'TravelPay') + ' BR02: Transaction total ' + dollars(typed) +
+      ' does not match the settlement file’s own total ' + dollars((fileCents / 100).toFixed(2)) +
+      ' — they have to agree to the cent before this can run.';
+  }
+
   /* `active` is whichever single report is loaded. With none or with two there
      is nothing to run, and results belong to no one. */
   /* Reports whose Consultant and Shop are still being read off Tramada.
@@ -4255,30 +4312,60 @@ function askMarkStale(){
      would race to write the same cells. */
   const enriching = {};
 
-  /* The three header fields a bank-statement run cannot proceed without.
-     Checked HERE as well as in `start()` so it is visible before the button is
-     pressed rather than after: a person filling in a card should be told what is
-     missing while they are looking at it, not when they try to run.
-     `start()` keeps its own copy — that one guards the run, this one guards the
-     button, and the run must not depend on a button being drawn correctly. */
-  function missingFigures() {
-    if (!active || active === 'ipsi') return '';
+  /* The header fields a bank-statement run cannot proceed without, scoped to
+     ONE card. Checked HERE as well as in `start()` so it is visible before the
+     button is pressed rather than after: a person filling in a card should be
+     told what is missing while they are looking at it, not when they try to
+     run. `start()` keeps its own copy — that one guards the run, this one
+     guards the button, and the run must not depend on a button being drawn
+     correctly.
+
+     Each card's `.rc-figs` div is painted from THIS card's own gaps only —
+     before this took a `kind`, every card was painted with the SAME combined
+     sentence (all loaded cards' gaps run together), so uploading BPay and
+     Mint together put "opening balance … and Mint transaction total is
+     needed" on Mint's, TravelPay's and IPSI's cards too, even though only
+     BPay needed the balances and only Mint needed its own total. */
+  function missingFiguresFor(kind) {
+    if (!active || active === 'ipsi' || kind === 'ipsi') return '';
+    const on = loaded();
+    if (!on.includes(kind)) return '';
     const date = ($('#rcDate') || {}).value, op = ($('#rcOpening') || {}).value,
           cl = ($('#rcClosing') || {}).value;
     const gaps = [];
     if (!date) gaps.push('statement date');
-    if (!op) gaps.push('opening balance');
-    if (!cl) gaps.push('closing balance');
+    // ONLY BPAY NEEDS THE BALANCES — see the matching comment in placeFields.
+    if (kind === 'bpay') {
+      if (!op) gaps.push('opening balance');
+      if (!cl) gaps.push('closing balance');
+    }
+    // MINT BR02 / TravelPay BR02 — a blank total is "not entered", checked
+    // here same as the others; whether a TYPED figure matches the file is a
+    // different claim, and is painted straight onto the card (see totalWarn
+    // in renderSource) rather than folded into this sentence.
+    if (kind === 'mint' && !($('#rcTotal') || {}).value) gaps.push('Mint transaction total');
+    if (kind === 'travelpay' && !($('#rcTotalTravelpay') || {}).value) gaps.push('TravelPay transaction total');
     if (!gaps.length) return '';
     const last = gaps.pop();
-    return (gaps.length ? gaps.join(', ') + ' and ' + last : last) +
+    const msg = (gaps.length ? gaps.join(', ') + ' and ' + last : last) +
       (gaps.length ? ' are' : ' is') + ' needed before a run.';
+    // BPAY's own gaps ("opening balance", "closing balance") are lower-case
+    // field names, unlike Mint/TravelPay's ("Mint transaction total"), so its
+    // sentence was the one starting mid-word — capitalised here so every
+    // card's message reads as a proper sentence.
+    return msg.charAt(0).toUpperCase() + msg.slice(1);
   }
 
   function syncActive() {
     const on = loaded();
     const invalidCombo = ipsiCombo();
-    const ipsiBad = on.includes('ipsi') && !!ipsiTotalMismatch();
+    // A blank NUVEI amount now says so on IPSI's own card the moment the file
+    // lands (see ipsiNuveiWarn/paintHint), so Start run is held for it the
+    // same as a typed-but-wrong figure — not just for BR01's mismatch, which
+    // is silent about a figure that was never typed in the first place.
+    const ipsiBad = on.includes('ipsi') && (!!ipsiTotalMismatch() || !ipsiNuvei);
+    const totalBad = (on.includes('mint') && !!totalMismatch('mint')) ||
+      (on.includes('travelpay') && !!totalMismatch('travelpay'));
     // 'both' is a real value now, not the absence of a choice. Two reports run
     // together on ONE statement page — see runCombinedReconciliation.
     active = invalidCombo ? null : (on.length === 1 ? on[0] : (on.length > 1 ? 'both' : null));
@@ -4286,14 +4373,13 @@ function askMarkStale(){
     if (!on.length) results = [];
     const run = $('#startRun');
     const busy = Object.keys(enriching).some((k) => enriching[k]);
-    const gaps = missingFigures();
     /* The button is held for the CONSULTANT read, not for the missing figures.
        A blank balance is told to the person and left to them — they may be
        about to type it — whereas a run started mid-read would have two passes
-       writing the same two cells. So `gaps` is said out loud below and does not
-       disable anything; `start()` still refuses the run if they are still blank
-       when it is pressed. */
-    if (run) run.disabled = !on.length || running || invalidCombo || ipsiBad || busy;
+       writing the same two cells. So the gaps are said out loud below (see
+       paintFigures/missingFiguresFor) and do not disable anything; `start()`
+       still refuses the run if they are still blank when it is pressed. */
+    if (run) run.disabled = !on.length || running || invalidCombo || ipsiBad || totalBad || busy;
     paintFigures();
     if (!invalidCombo) on.forEach(paintHint);
   }
@@ -4305,9 +4391,9 @@ function askMarkStale(){
      targets just the one already-rendered div instead. */
   function syncIpsiTotal() {
     syncActive();
-    hint('ipsi', ipsiCombo()
-      ? '<span style="color:var(--err)">IPSI runs alone — remove the other loaded report before starting this one.</span>'
-      : (ipsiTotalMismatch() ? '<span style="color:var(--err)">' + esc(ipsiTotalMismatch()) + '</span>' : ''));
+    // Through paintHint, not a direct hint('ipsi', …) — that would replace the
+    // whole line, including the "N rows skipped" note sitting above it.
+    paintHint('ipsi');
   }
 
   /* Every loaded report's rows, in the order the run will do them: BPay first,
@@ -5192,12 +5278,10 @@ function askMarkStale(){
 
     const date = ($('#rcDate') || {}).value, op = ($('#rcOpening') || {}).value, cl = ($('#rcClosing') || {}).value;
     const on = loaded();
-    /* WHAT IS REQUIRED FOLLOWS WHAT IS LOADED, not which card is active.
-       IPSI touches no bank statement, so on its own it needs only the
-       settlement date and its NUVEI amount. But loaded ALONGSIDE BPay it
-       shares BPay's statement page, and the balances are needed again — which
-       the old `active === 'ipsi'` branch skipped entirely. */
-    const needsStatement = on.some((k) => k !== 'ipsi');
+    /* ONLY BPAY NEEDS THE BALANCES — see the matching comment in placeFields.
+       Mint and TravelPay only look an existing statement up, never create or
+       edit one, so a Mint- or TravelPay-only run has no balances to give. */
+    const needsStatement = on.indexOf('bpay') >= 0;
     const gaps = [];
     if (!date) gaps.push('rcDate');
     if (needsStatement && !op) gaps.push('rcOpening');
@@ -5216,6 +5300,20 @@ function askMarkStale(){
       // guards the run itself against whatever got it clicked anyway.
       const mismatch = ipsiTotalMismatch();
       if (mismatch) { stop(mismatch, ['ipsiNuvei']); return; }
+    }
+    /* MINT BR02 / TravelPay BR02 — same shape as the IPSI block above, one
+       card at a time. Start is already disabled while a mismatch stands (see
+       syncActive's totalBad), but that only guards the button; this guards
+       the run itself against whatever got it clicked anyway. */
+    if (on.includes('mint')) {
+      if (!($('#rcTotal') || {}).value) { stop('The Transaction total is needed before a run.', ['rcTotal']); return; }
+      const mismatch = totalMismatch('mint');
+      if (mismatch) { stop(mismatch, ['rcTotal']); return; }
+    }
+    if (on.includes('travelpay')) {
+      if (!($('#rcTotalTravelpay') || {}).value) { stop('The Transaction total is needed before a run.', ['rcTotalTravelpay']); return; }
+      const mismatch = totalMismatch('travelpay');
+      if (mismatch) { stop(mismatch, ['rcTotalTravelpay']); return; }
     }
     if (!ws || ws.readyState !== 1) {
       stop('Not connected to the server — is it still running?');
@@ -5271,13 +5369,16 @@ function askMarkStale(){
     const only = kind === 'both' ? null : (source[kind] || {});
     const common = {
       statementDate: date, openingBalance: op, closingBalance: cl, dryRun: dry,
-      // MINT/TravelPay BR02 from the shared header field, IPSI's own BR01
-      // NUVEI amount from its own card field — never each other's, and never
-      // both at once, since IPSI cannot be loaded alongside anything else.
-      // Blank is allowed through for Mint/TravelPay — the check then reports
-      // "no Transaction Total was entered" rather than accusing the file of
-      // not adding up; IPSI's own field is required earlier in this function.
-      transactionTotal: kind === 'ipsi' ? ipsiNuvei : (($('#rcTotal') || {}).value || ''),
+      // MINT BR02 from its own card field, TravelPay BR02 from its own,
+      // IPSI's own BR01 NUVEI amount from its own card field — never each
+      // other's, and never more than one at once, since IPSI cannot be
+      // loaded alongside anything else and a single-report run is Mint XOR
+      // TravelPay, never both. Blank is allowed through for Mint/TravelPay —
+      // the check then reports "no Transaction Total was entered" rather than
+      // accusing the file of not adding up; IPSI's own field is required
+      // earlier in this function.
+      transactionTotal: kind === 'ipsi' ? ipsiNuvei
+        : (($('#' + (kind === 'travelpay' ? 'rcTotalTravelpay' : 'rcTotal')) || {}).value || ''),
       columns: only ? (only.columns || []) : [],
       format: only ? (only.format || 'csv') : 'csv',
     };
