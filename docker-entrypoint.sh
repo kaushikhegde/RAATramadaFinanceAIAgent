@@ -54,6 +54,17 @@ mkdir -p "$STORE_DIR/chrome-profile"
 # uses this profile and the container just started, so any lock here is stale.
 rm -f "$STORE_DIR"/chrome-profile/Singleton*
 
+# Clear a stale X lock for the same reason, before Xvfb touches it. Xvfb refuses
+# to start on a display whose lock already exists ("Fatal server error: Server is
+# already active for display 99 — remove /tmp/.X99-lock") and then Chromium dies
+# with "Couldn't connect to XServer:99", which took the container down. That lock
+# and its socket live in the container's /tmp, which SURVIVES a `docker start` /
+# `compose restart` (the writable layer is reused, unlike a recreate) — so the
+# FIRST `up` came up and the SECOND died on Xvfb. The display is this container's
+# alone and whatever held the lock went with the previous run, so it is stale.
+X_DISPLAY_NUM="${DISPLAY_NUM#:}"; X_DISPLAY_NUM="${X_DISPLAY_NUM%%.*}"
+rm -f "/tmp/.X${X_DISPLAY_NUM}-lock" "/tmp/.X11-unix/X${X_DISPLAY_NUM}"
+
 # 1) virtual screen
 start Xvfb Xvfb "$DISPLAY_NUM" -screen 0 "$SCREEN" -nolisten tcp
 for i in $(seq 1 40); do

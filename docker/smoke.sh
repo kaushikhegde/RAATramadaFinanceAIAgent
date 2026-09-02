@@ -5,7 +5,7 @@
 #   ./docker/smoke.sh            build, start, check, leave it running
 #   ./docker/smoke.sh --down     the same, then stop and remove the container
 #
-# Eleven checks, each one a thing that has actually gone wrong somewhere:
+# Twelve checks, each one a thing that has actually gone wrong somewhere:
 #
 #   1  docker is installed and its daemon is up
 #   2  the image builds                       ← the step nobody can check for you
@@ -18,6 +18,7 @@
 #   9  the VNC server is bound to the container's loopback
 #  10  the login screen sends no header that would blank the in-app panel
 #  11  NOVNC_PORT is set, so the app knows the login screen exists
+#  12  it survives a restart — the second `up` doesn't die on a stale X lock
 #
 # It does not sign into Tramada and it does not run a reconciliation. Those need
 # a person, and that is the point of the noVNC screen — step 8 above is the
@@ -177,6 +178,28 @@ if [ "$PORT_ENV" = "6080" ]; then
 else
   red "NOVNC_PORT is '${PORT_ENV:-unset}', not 6080 — the app will never show the login screen"
   info "set it in docker-compose.yml; it must match the published noVNC port"
+fi
+
+head_ "12 · it survives a restart (the second \`up\`)"
+# A container that came up once but died on the SECOND `up` is exactly what
+# happened: `docker start`/`compose restart` reuses the container's /tmp, and
+# Xvfb refused to start on a display whose /tmp/.X99-lock already existed — first
+# up worked, second died with "Server is already active for display 99". The
+# entrypoint now clears that lock like it already cleared Chromium's; this proves
+# it stays cleared. `docker exec` into a dead container fails, so the app
+# answering from inside after the restart is a sufficient "it came back".
+docker restart "$NAME" >/dev/null 2>&1
+RESTART_OK=""
+for i in $(seq 1 60); do
+  if docker exec "$NAME" curl -fsS http://127.0.0.1:3000/api/overview >/dev/null 2>&1; then RESTART_OK=1; break; fi
+  [ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" = "true" ] || break
+  sleep 2
+done
+if [ -n "$RESTART_OK" ]; then
+  green "the container came back after a restart (no stale X-lock)"
+else
+  red "the container did not survive a restart — likely a stale /tmp/.X99-lock again"
+  docker logs --tail 20 "$NAME" 2>&1 | grep -iE "X99-lock|already active|exited — stopping" | sed 's/^/      /'
 fi
 
 head_ "verdict"
