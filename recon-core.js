@@ -407,6 +407,13 @@ const REMARKS = {
      account rather than a debtor account, and that is a specific thing for
      somebody to go and look at — not a general "something was odd here". */
   noDebtorReceipt: "Please review, Debtor Payment Receipt not available",
+  /* TravelPay, 03-09-2026. A row whose Payment Reference is blank used to be
+     held back at upload and never appeared in the reconciliation at all — the
+     settlement was in the file, the screen showed nothing, and the only clue
+     was a count in the upload note. It is detected now and flagged here
+     instead. Its own string rather than a plain "Please review", because the
+     thing to do about it is specific: find the reference. */
+  noReference: "No payment reference in the file",
   /* An earlier run filed this receipt, so this one did not open the booking and
      could not see whether the money was ever allocated. It still reconciles —
      a rerun has to be able to finish — but the row says so rather than showing
@@ -1177,7 +1184,20 @@ const MINT_COLUMNS = {
   transNo: ["transaction reference", "transaction ref", "transaction id", "trans no", "trans. no"],
   amount: ["amount"],
   toCompany: ["to company", "company"],
+  /* WHERE A MINT ROW'S BOOKING NUMBER LIVES, and it is not a guess — the MINT
+     payments guide says it outright: "Sender Reference is the Booking Number
+     from Tramada", "Recipient Reference is the Reference number from Tramada".
+     Neither is required and neither is matched on; they are read so the results
+     table can NAME the booking a settlement belongs to. Without them a Mint row
+     had no booking number anywhere on it and the Booking column sat empty on
+     every row while the row reconciled perfectly well. */
+  senderReference: ["sender reference", "sender ref"],
+  recipientReference: ["recipient reference", "recipient ref"],
 };
+
+/* The three the run actually needs. The two reference columns are optional:
+   a file without them still reconciles, it just cannot say which booking. */
+const MINT_REQUIRED = ["transNo", "amount", "toCompany"];
 
 /**
  * A CSV as a header row plus data rows — the same shape `xlsx-lite.readSheet`
@@ -1222,7 +1242,7 @@ function csvGrid(text) {
  */
 function parseMintRows(headers, gridRows) {
   const cols = mapColumns(headers, MINT_COLUMNS);
-  const missing = Object.entries(cols).filter(([, i]) => i < 0).map(([k]) => k);
+  const missing = MINT_REQUIRED.filter((k) => cols[k] < 0);
   if (missing.length) {
     const want = missing.map((k) => MINT_COLUMNS[k][0]).join(", ");
     return { rows: [], problems: [{ line: 1, why: `the sheet has no column for: ${want}` }] };
@@ -1237,6 +1257,15 @@ function parseMintRows(headers, gridRows) {
       amount: String(cells[cols.amount] == null ? "" : cells[cols.amount]).trim(),
       toCompany: String(cells[cols.toCompany] == null ? "" : cells[cols.toCompany]).trim(),
     };
+    const at = (key) => (cols[key] >= 0 && cells[cols[key]] != null ? String(cells[cols[key]]).trim() : "");
+    /* Sender first — the guide says that IS the booking number. Recipient is
+       the Tramada reference, which on a file like our own fixture carries the
+       booking too (MP-{tag}-{booking}), so it is worth a second look before
+       giving up. Same extractor TravelPay already uses on the same shape. */
+    row.senderReference = at("senderReference");
+    row.recipientReference = at("recipientReference");
+    row.bookingNo = bookingFromReference(row.senderReference) ||
+      bookingFromReference(row.recipientReference) || "";
     row.rawAmount = row.amount;
     row.amountCents = cents(row.amount);
     /**
@@ -1299,10 +1328,17 @@ function matchMintAgainstStatement(row, statementRows) {
     notes.push(`paid to "${hit.payee}", the file says "${row.toCompany}"`);
   }
 
+  /* TRAMADA'S OWN BOOKING NUMBER, off the statement row's Reference column —
+     the payment was raised under a reference carrying it, and the statement
+     grid has no booking column of its own. Same principle as IPSI's step 15:
+     what was actually FOUND beats what the file claimed, and where the two
+     disagree the results table shows both. Empty when the reference carries no
+     booking, which is not a failure — the row still reconciled. */
   return {
     reconciled: true, status: "Reconciled",
     reason: `${row.transNo} found on the page` + (notes.length ? ` — ${notes.join("; ")}` : ""),
     transNo: hit.transNo || null,
+    bookingNo: bookingFromDelimitedReference(hit.reference) || undefined,
     mismatch: notes.length ? notes.join("; ") : undefined,
     duplicates: hits.length > 1 ? hits.length : undefined,
   };
@@ -1332,6 +1368,24 @@ function matchMintAgainstStatement(row, statementRows) {
  */
 function matchTravelPayAgainstStatement(row, statementRows) {
   const rows = statementRows || [];
+
+  /* NO REFERENCE, NO MATCH — and say so rather than looking.
+     `refKey("")` is "", which would match every statement row whose own
+     Reference is blank: the run would report a settlement reconciled against
+     whichever unrelated line happened to have an empty cell. These rows reach
+     the matcher at all only since 03-09-2026, when a blank Payment Reference
+     stopped being a reason to drop the row at upload, so this guard arrived
+     with them. The row is reported, flagged, and NOT reconciled. */
+  if (!String(row.transNo || "").trim()) {
+    return {
+      reconciled: false, status: "Not reconciled",
+      remark: REMARKS.noReference,
+      reason: `the file carries no payment reference for ` +
+        (row.bookingNo ? `booking ${row.bookingNo}` : "this row") +
+        `, so there is nothing to look for on the statement page`,
+    };
+  }
+
   const want = refKey(row.transNo);
 
   const describe = (hit, on, hits) => {
@@ -1355,6 +1409,10 @@ function matchTravelPayAgainstStatement(row, statementRows) {
         (on === "transNo" ? " as a transaction number" : " in the Reference column") +
         (notes.length ? ` — ${notes.join("; ")}` : ""),
       transNo: hit.transNo || null,
+      // Same as Mint: the statement grid has no booking column, but the receipt
+      // was raised under a reference carrying one. What was FOUND, next to what
+      // the file claimed.
+      bookingNo: bookingFromDelimitedReference(hit.reference) || undefined,
       mismatch: notes.length ? notes.join("; ") : undefined,
       duplicates: hits.length > 1 ? hits.length : undefined,
     };
@@ -1553,6 +1611,28 @@ function bookingFromReference(v) {
 }
 
 /**
+ * The same, but only from a reference SHAPED like one — `TP-4C6P4-14636`.
+ *
+ * For the Tramada statement's Reference column, where the loose rule above is
+ * actively dangerous: a real TravelPay Payment Reference is a bare merchant
+ * gateway id (`31282716`), and `bookingFromReference` happily returns it as a
+ * booking number. That reads as "Tramada says this settled against booking
+ * 31282716" — a number nobody entered, in a column that claims to be Tramada's
+ * own. §3: never invent a number.
+ *
+ * So: a delimiter and a trailing number, or nothing.
+ *
+ *   TP-4C6P4-14636  → 14636
+ *   31282716        → ""      (a gateway id, not a booking)
+ *   R.0000009413    → ""      (a receipt number, not a booking)
+ */
+function bookingFromDelimitedReference(v) {
+  const s = String(v == null ? "" : v).trim();
+  if (!/-/.test(s)) return "";
+  return bookingFromReference(s);
+}
+
+/**
  * A TravelPay export's rows → rows the run can check.
  *
  * Like Mint, this files NOTHING: these are settlements Tramada already holds
@@ -1596,27 +1676,55 @@ function parseTravelPayRows(headers, gridRows) {
     if (row.amountCents != null) row.amount = money(row.amountCents);
 
     const why = [];
+    let unusable = false;
+
+    /* A MISSING PAYMENT REFERENCE IS A FLAG, NOT A REASON TO DROP THE ROW.
+       Asked for 03-09-2026: "flag only in the reconciliation that it doesn't
+       have reference, still detect it when uploaded."
+
+       It used to be held back, which meant a settlement that was really in the
+       file never reached the screen — the same mistake IPSI made and undid:
+       "a row is only unusable when there is NOTHING to match it by ... which
+       threw away rows that would have matched perfectly well on their booking
+       number". So the row survives as long as something still names it.
+
+       Status can say "Successful" while the reference is blank — seen on a row
+       where the receipt run's own browser timed out mid-click after Tramada had
+       already marked the transaction successful. Failure Reason is the only
+       place that survives, so it is read even though the status check below
+       would not have caught this row. */
     if (!row.transNo) {
-      // Status can say "Successful" while the reference is still blank — seen
-      // on a row where the receipt run's own browser timed out mid-click,
-      // after Tramada had already marked the transaction successful. The
-      // Failure Reason column is the only place that survives, so it is read
-      // even when the status check just below would not have caught this row.
       const reason = at(cells, "failure");
-      why.push(reason ? `no payment reference — ${reason}` : "no payment reference");
+      row.noReference = true;
+      if (!row.bookingNo) {
+        why.push(reason
+          ? `no payment reference and no booking number — ${reason}`
+          : "no payment reference and no booking number — nothing to name this row by");
+        unusable = true;
+      }
     }
-    if (row.amountCents == null) why.push(`unreadable amount "${row.rawAmount}"`);
+
+    if (row.amountCents == null) { why.push(`unreadable amount "${row.rawAmount}"`); unusable = true; }
+    /* Held back, and deliberately: it never reached the bank, so it cannot be
+       on the statement, and calling it "not reconciled" would put a failure on
+       the screen that reads exactly like a settlement that went missing. */
     if (row.status && !/^success/i.test(row.status)) {
       const reason = at(cells, "failure");
       why.push(`the transaction was "${row.status}"${reason ? ` — ${reason}` : ""}, so it never reached the bank`);
+      unusable = true;
     }
-    if (why.length) {
+
+    if (unusable) {
       // Same as BPay's own remark: carried ON the row, not just the problem
       // wrapper, because the run's results table reads a row's Remarks cell
       // off `remark`, not off `problems`.
       row.remark = REMARKS.review;
       problems.push({ line: row.line, why: why.join("; "), row });
-    } else rows.push(row);
+    } else {
+      // Detected, and carrying its flag into the reconciliation.
+      if (row.noReference) row.remark = REMARKS.noReference;
+      rows.push(row);
+    }
   });
   return { rows, problems };
 }
@@ -1680,6 +1788,31 @@ const isRefund = (row) => String(row.typeCode).trim() === "20" || /refund/i.test
 const isPreAuth = (row) => String(row.typeCode).trim() === "10" || /preauth/i.test(row.kind || "");
 
 /** The guide's own words, verbatim — BR06, BR07, BR08 and step 14/BR10. */
+/**
+ * MUST AN IPSI ROW MATCH ON ITS REFERENCE, OR WILL ITS BOOKING DO?
+ *
+ * `true` — a row whose Transaction Reference is on no receipt is NOT
+ * reconciled, even when its booking number finds the money at exactly the
+ * right amount. Asked for on 02-09-2026: "if payment reference is not found,
+ * do not reconcile it, it should be an error."
+ *
+ * THIS IS STRICTER THAN RAA'S OWN RULE AND THAT IS DELIBERATE, so the two
+ * things it costs are written down rather than discovered later:
+ *
+ *   - The guide's step 14 says "continue to next step" for a reference
+ *     mismatch, not "click Cancel". BR10 treats it as a note on an otherwise
+ *     good tick. This overrides that.
+ *   - CAPTURES. Ten of the forty-nine rows in the client's own settlement file
+ *     are Captures, whose merchant reference is a different shape entirely and
+ *     never matches. Under this rule a fifth of a real settlement stops being
+ *     reconciled — the money is still found, on the booking, at the right
+ *     amount, and is reported as an error anyway.
+ *
+ * Set it to `false` to go back to BR10: matched, ticked, and remarked. The
+ * remark is the same either way; only `matched` changes.
+ */
+const IPSI_REFERENCE_REQUIRED = true;
+
 const IPSI_REMARKS = {
   booking: "Booking number mismatch or not found",   // BR06
   amount: "Incorrect amount",                          // BR07
@@ -1897,8 +2030,16 @@ function matchIpsiAgainstReceipts(row, receipts) {
   const byBooking = list.filter((r) => r.bookingNo && refKey(r.bookingNo) === refKey(row.bookingNo));
   const bookHit = byBooking.find(sameMoney);
   if (bookHit) {
-    return { matched: true, on: "booking", receipt: bookHit, remark: IPSI_REMARKS.reference,
-      reason: `no receipt carries reference ${row.reference}, matched on booking ${row.bookingNo} at $${money(row.amountCents)}` };
+    /* The money IS here — right booking, right amount — and it is still an
+       error, because the reference the file named is on no receipt. See
+       IPSI_REFERENCE_REQUIRED for what that costs and how to undo it. The
+       receipt is still handed back so the row can name what it found. */
+    return { matched: !IPSI_REFERENCE_REQUIRED, on: "booking", receipt: bookHit,
+      remark: IPSI_REMARKS.reference,
+      reason: `no receipt carries reference ${row.reference}` +
+        (IPSI_REFERENCE_REQUIRED
+          ? `, so it is not reconciled — booking ${row.bookingNo} does hold $${money(row.amountCents)}`
+          : `, matched on booking ${row.bookingNo} at $${money(row.amountCents)}`) };
   }
   if (byBooking.length) {
     return { matched: false, on: "booking", candidates: byBooking,
@@ -1951,8 +2092,12 @@ function matchIpsiAgainstPayments(row, payments) {
   const byBooking = list.filter((r) => r.bookingNo && refKey(r.bookingNo) === refKey(row.bookingNo));
   const bookHit = byBooking.find(sameMoney);
   if (bookHit) {
-    return { matched: true, on: "booking", payment: bookHit, remark: IPSI_REMARKS.reference,
-      reason: `no payment carries reference ${row.reference}, matched refund on booking ${row.bookingNo} at $${money(want)}` };
+    return { matched: !IPSI_REFERENCE_REQUIRED, on: "booking", payment: bookHit,
+      remark: IPSI_REMARKS.reference,
+      reason: `no payment carries reference ${row.reference}` +
+        (IPSI_REFERENCE_REQUIRED
+          ? `, so it is not reconciled — booking ${row.bookingNo} does hold the $${money(want)} refund`
+          : `, matched refund on booking ${row.bookingNo} at $${money(want)}`) };
   }
   if (byBooking.length) {
     return { matched: false, on: "booking", candidates: byBooking,
@@ -3002,8 +3147,9 @@ module.exports = {
   MINT_COLUMNS, csvGrid, parseMintRows, matchMintAgainstStatement, summariseMint,
   matchTravelPayAgainstStatement, MATCHERS, matcherFor, matchesOn, SORT_BY,
   BOOKING_RECEIPT_COLUMNS, findFiledReceipt,
-  TRAVELPAY_COLUMNS, parseTravelPayRows, serialDate, bookingFromReference, REPORTS, RUN_ORDER,
-  IPSI_COLUMNS, IPSI_REMARKS, isPreAuth, parseIpsiRows, matchIpsiAgainstReceipts,
+  TRAVELPAY_COLUMNS, parseTravelPayRows, serialDate, bookingFromReference,
+  bookingFromDelimitedReference, REPORTS, RUN_ORDER,
+  IPSI_COLUMNS, IPSI_REMARKS, IPSI_REFERENCE_REQUIRED, isPreAuth, parseIpsiRows, matchIpsiAgainstReceipts,
   matchIpsiAgainstPayments, filterIpsiSettlementDate, checkIpsiFileTotal, checkIpsiAllocatedTotal, summariseIpsi,
   tidyError,
   summarise,

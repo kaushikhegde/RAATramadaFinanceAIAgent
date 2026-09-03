@@ -349,14 +349,99 @@ console.log("\nthe IPSI file states the reference its receipts will be raised un
      this went unnoticed: the run worked, it just flagged every single row. */
   const blank = asFile({ "Transaction Reference": "" });
   const fell = core.matchIpsiAgainstReceipts(blank.rows[0], receipts);
-  check("blanked, it falls back to the booking and is remarked",
-    [fell.matched, fell.on, fell.remark], [true, "booking", core.IPSI_REMARKS.reference]);
+  /* It still FINDS the money on the booking — and since 02-09-2026 that is an
+     error rather than a remarked pass (IPSI_REFERENCE_REQUIRED). Which makes
+     the blank column worse than it was, not better: it used to reconcile with
+     a note, and now it fails outright. */
+  check("blanked, it finds the booking but does not reconcile",
+    [fell.matched, fell.on, fell.remark], [false, "booking", core.IPSI_REMARKS.reference]);
 
   // And nothing is left for a human to paste: the column is no longer a gap.
   ok("so the file has no blank match key left in it",
     F.IPSI_BLANK_COLUMNS.every((c) => c !== "Transaction Reference"),
     JSON.stringify(F.IPSI_BLANK_COLUMNS));
 }
+console.log("\nthe IPSI file's split — 8 rows, 4 of them removed on upload");
+{
+  /* Asked for 03-09-2026: "generate 8 but 4 of those are preauth or decline or
+     void". Pinned because BOTH numbers are what the demo shows, and neither is
+     `--limit` — routing it through the limit would give `npm run fixtures`
+     (which passes 5 to all four reports) a different split to
+     `npm run fixtures:ipsi`. */
+  check("four viable rows", F.IPSI_VIABLE_ROWS, 4);
+  check("eight rows in the file", F.IPSI_TOTAL_ROWS, 8);
+  check("so four are removed on upload", F.IPSI_TOTAL_ROWS - F.IPSI_VIABLE_ROWS, 4);
+
+  const made = [14801, 14804, 14807, 14810].map((n) => ({ bookingNo: String(n), dueCents: 14554 }));
+  const excluded = F.ipsiExcludedRows(made, "2026-09-03", F.IPSI_TOTAL_ROWS - made.length);
+  check("four excluded rows are built", excluded.length, 4);
+
+  // Every kind is represented — a file of four Declines would not show that
+  // PreAuths are removed for a DIFFERENT reason (type, not status).
+  const kinds = new Set(excluded.map((x) => x.row["Custom 5"] + "/" + x.row["Transaction Status"]));
+  ok("and they cover PreAuth, Declined and Void", kinds.size >= 3, [...kinds].join(", "));
+
+  /* A PreAuth's status is APPROVED — it is removed on its TYPE. A fixture that
+     only ever produced non-approved rows would pass a run that read the status
+     and ignored `Transaction Type` entirely. */
+  const preauth = excluded.find((x) => /preauth/i.test(x.row["Custom 5"]));
+  check("the PreAuth row is APPROVED, so only its type disqualifies it",
+    preauth.row["Transaction Status"], "APPROVED");
+  check("...and carries transaction type 10", preauth.row["Transaction Type"], "10");
+
+  // A second PreAuth on another booking must not collide with the first.
+  const refs = excluded.map((x) => x.row["Transaction Reference"]);
+  check("every reference in the file is distinct", new Set(refs).size, refs.length);
+}
+
+console.log("\nthe seeded outcomes, so a demo has something to catch");
+{
+  /* A fixture whose every row agrees with Tramada proves the happy path and
+     nothing else. These rows are made wrong ON PURPOSE, and the risk that
+     creates is somebody "fixing" them — so the shape is pinned here. */
+  check("five rows, three clean and two seeded",
+    F.OUTCOME_PLAN.filter((o) => o === "clean").length, 3);
+  check("...of which one is an amount and one a reference",
+    [F.OUTCOME_PLAN.filter((o) => o === "amount").length,
+     F.OUTCOME_PLAN.filter((o) => o === "reference").length], [1, 1]);
+
+  // It has to keep producing a mix past the end of the plan, or a --limit
+  // larger than the plan would come back all-clean after the fifth row.
+  ok("the plan cycles rather than running out",
+    F.outcomeFor(5) === F.outcomeFor(0) && F.outcomeFor(7) === F.outcomeFor(2),
+    `${F.outcomeFor(5)} / ${F.outcomeFor(7)}`);
+
+  const cols = { amount: ["Base Amount", "Processed Amount"], reference: "Payment Reference",
+    fakeRef: (b) => `TP-ZZZZZ-${b}` };
+
+  // Clean rows are left EXACTLY alone. A seeder that nudged every row would
+  // make the whole file suspect instead of two rows of it.
+  const clean = { "Base Amount": "100.00", "Processed Amount": "100.00", "Payment Reference": "TP-ABCDE-13001" };
+  F.seedOutcome(clean, 0, cols, "13001");
+  check("a clean row is untouched",
+    [clean["Base Amount"], clean["Payment Reference"]], ["100.00", "TP-ABCDE-13001"]);
+
+  /* Both amount columns move together. A row whose Base and Processed disagree
+     is a DIFFERENT fault — a broken file rather than a file that misstates a
+     figure — and it would be caught by the parser instead of the matcher. */
+  const amt = { "Base Amount": "100.00", "Processed Amount": "100.00", "Payment Reference": "TP-ABCDE-13002" };
+  F.seedOutcome(amt, 2, cols, "13002");
+  check("an amount row moves both amount columns, by the same amount",
+    [amt["Base Amount"], amt["Processed Amount"]], ["142.50", "142.50"]);
+  ok("and leaves the reference alone", amt["Payment Reference"] === "TP-ABCDE-13002",
+    amt["Payment Reference"]);
+
+  /* The fake reference is SHAPED like a real one on purpose. A blank would be
+     held back by the parser and never reach the matcher — testing the parser's
+     guard instead of the reconciliation, which is the trap IPSI_BLANK_COLUMNS
+     already fell into once. */
+  const rf = { "Base Amount": "100.00", "Processed Amount": "100.00", "Payment Reference": "TP-ABCDE-13003" };
+  F.seedOutcome(rf, 3, cols, "13003");
+  ok("a reference row gets a reference that is not blank", !!rf["Payment Reference"], rf["Payment Reference"]);
+  ok("...and is not the one Tramada issued", rf["Payment Reference"] !== "TP-ABCDE-13003", rf["Payment Reference"]);
+  check("...and leaves the amounts alone", rf["Base Amount"], "100.00");
+}
+
 fs.rmSync(DIR, { recursive: true, force: true });
 console.log(`\n${fail ? "❌" : "✅"} ${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

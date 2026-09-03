@@ -81,7 +81,13 @@ const odd = C.parseTravelPayRows(head, [
   ["31282777", "400.00", "Monarto", "Pending", ""],
 ]);
 check("only the good row runs", odd.rows.map((r) => r.transNo), ["31282716"]);
-check("no reference is held back", odd.problems[0].why, "no payment reference");
+/* A blank reference on its own no longer holds a row back — see the section
+   further down. These rows have no Additional Reference column at all, so there
+   is no booking either, and THAT is what makes this one unusable: nothing names
+   it. The why says both halves. */
+check("no reference AND no booking is held back",
+  odd.problems[0].why,
+  "no payment reference and no booking number — nothing to name this row by");
 check("an unreadable amount too", odd.problems[1].why, 'unreadable amount "n/a"');
 /* A transaction that did not succeed never reached the bank, so it cannot be on
    the statement. Checking it would report it as missing, which reads exactly
@@ -104,7 +110,47 @@ const timedOut = C.parseTravelPayRows(head, [
   ["", "145.54", "Monarto", "Successful", "page.goto: Timeout 30000ms exceeded."],
 ]);
 check("a blank reference with a real failure reason names it",
-  timedOut.problems[0].why, "no payment reference — page.goto: Timeout 30000ms exceeded.");
+  timedOut.problems[0].why,
+  "no payment reference and no booking number — page.goto: Timeout 30000ms exceeded.");
+
+console.log("\na blank reference is FLAGGED, not dropped — when something still names the row");
+{
+  /* Asked for 03-09-2026: "flag only in the reconciliation that it doesn't have
+     reference, still detect it when uploaded."
+
+     It used to be held back, so a settlement that was genuinely in the file
+     never reached the screen and the only clue was a count in the upload note.
+     Same mistake IPSI made and undid — a row is unusable only when there is
+     NOTHING to match it by. Additional Reference carries the booking, so there
+     is. */
+  const HEAD = ["Payment Reference", "Processed Amount", "MerchantCompanyName",
+    "Transaction Status", "Additional Reference", "Failure Reason"];
+  const parsed = C.parseTravelPayRows(HEAD, [
+    ["TP-ABCDE-14636", "145.54", "RAA", "Successful", "Client Name - 14636", ""],
+    ["", "200.00", "RAA", "Successful", "Client Name - 14640", ""],
+  ]);
+  check("both rows are detected", parsed.rows.length, 2);
+  check("and none held back", parsed.problems.length, 0);
+
+  const blank = parsed.rows.find((r) => !r.transNo);
+  ok("the reference-less row is marked", blank.noReference === true, JSON.stringify(blank));
+  check("...and carries the flag as its remark", blank.remark, C.REMARKS.noReference);
+  check("...found by the booking in Additional Reference", blank.bookingNo, "14640");
+  ok("the row that HAS a reference is not flagged",
+    !parsed.rows.find((r) => r.transNo).remark, JSON.stringify(parsed.rows[0].remark));
+
+  /* AND IT MUST NOT MATCH ANYTHING. `refKey("")` is "", which would match every
+     statement row whose own Reference cell is blank — the run would report a
+     settlement reconciled against an unrelated line. */
+  const m = C.matchTravelPayAgainstStatement(blank, [
+    { transNo: "R.1", reference: "", amount: "200.00" },
+    { transNo: "R.2", reference: "TP-ABCDE-14636", amount: "145.54" },
+  ]);
+  check("it does not reconcile", m.status, "Not reconciled");
+  check("...under the same flag", m.remark, C.REMARKS.noReference);
+  ok("...and says why, naming the booking", /booking 14640/.test(m.reason), m.reason);
+  ok("...without pretending it looked", /nothing to look for/.test(m.reason), m.reason);
+}
 
 console.log("\nwhat the sheet must have");
 check("no payment reference column is refused outright",
@@ -305,6 +351,38 @@ console.log("\nthe standard template writes its headings closed up");
   const missing = C.parseTravelPayRows(["PaymentReference"], [["TP-1"]]);
   ok("a truly missing column is still refused", missing.problems.length > 0,
     JSON.stringify(missing.problems));
+}
+
+
+console.log("\nthe booking number, so a row can be chased without the file");
+{
+  /* Added 02-09-2026 — the results table has a Booking column and a TravelPay
+     row filled it from the file alone. Where the run FINDS the settlement, the
+     statement row's Reference carries Tramada's own booking, and that is the
+     one worth showing: a settlement that landed against a different booking to
+     the one the file names is exactly what the column is for. The statement
+     grid has no booking column of its own, which is why it is derived. */
+  const stmt = [{ transNo: "R.0000009999", reference: "TP-ABCDE-14636",
+    amount: "145.54", payee: "GRAY/SPIDER MS" }];
+  const m = C.matchTravelPayAgainstStatement(
+    { transNo: "TP-ABCDE-14636", amountCents: 14554, bookingNo: "14636" }, stmt);
+  ok("a found row reports Tramada's own booking", m.reconciled && m.bookingNo === "14636",
+    JSON.stringify(m));
+
+  /* A BARE NUMBER IS NOT A BOOKING. TravelPay's real Payment Reference is a
+     merchant gateway id — `31282716` — and it is what lands in the statement's
+     Reference column. The loose `bookingFromReference` returns it verbatim, so
+     the first version of this reported "Tramada says booking 31282716", a
+     number nobody ever entered, in the column that claims to be Tramada's own.
+     `bookingFromDelimitedReference` wants a delimiter or it says nothing. */
+  const bare = C.matchTravelPayAgainstStatement(
+    { transNo: "31282716", amountCents: 14554 },
+    [{ transNo: "R.1", reference: "31282716", amount: "145.54" }]);
+  ok("...and a bare gateway id is NOT read as a booking",
+    bare.reconciled && bare.bookingNo === undefined, JSON.stringify(bare));
+  check("nor is a receipt number", C.bookingFromDelimitedReference("R.0000009413"), "");
+  check("but a delimited reference still gives its booking",
+    C.bookingFromDelimitedReference("TP-4C6P4-14636"), "14636");
 }
 
 console.log(`\n${fail ? "❌" : "✅"} ${pass} passed, ${fail} failed\n`);

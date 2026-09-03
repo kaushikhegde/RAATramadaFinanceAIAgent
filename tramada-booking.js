@@ -514,16 +514,59 @@ async function tramadaAddBooking(page, mapped) {
      screen and enabled; if more than one still qualifies, the LAST is taken —
      the most recently rendered copy is the one wired to the form's current
      state, same reasoning `wiped` above already relies on. */
+  /* And picking the LAST live copy is not enough on its own, because on this
+     form BOTH copies are real. Measured live on booking 14624 (02-09-2026):
+
+       #save[0]  y=144    in the viewport, elementFromPoint returns it
+       #save[1]  y=1541   641px below a 900px viewport, not hittable
+
+     Tramada renders Save twice — a bar at the top of the form and one at the
+     bottom — so this is not the stale-footer case above; both are wired to the
+     same form. `offsetParent` and `disabled` cannot tell them apart, so the
+     "last live one" rule chose the bottom copy, Playwright scrolled it into
+     view, and then sat in its hit-target check until the 30s timeout with the
+     log stopping dead after "done scrolling". Reported as TravelPay "running
+     into a lot of errors", intermittent because it depends on how long the
+     form renders.
+
+     So: TRY each live copy in turn rather than betting on one, last first to
+     keep the preference the stale-footer case relies on. A copy that cannot be
+     clicked costs 10s instead of failing the booking. */
   const saveBtns = page.locator("#save");
   const saveCount = await saveBtns.count();
-  let save = saveBtns.first();
+  let order = [0];
   if (saveCount > 1) {
     const states = await saveBtns.evaluateAll((els) =>
-      els.map((el) => ({ visible: !!el.offsetParent, disabled: !!el.disabled })));
+      els.map((el) => {
+        const r = el.getBoundingClientRect();
+        return {
+          // Zero-sized and visibility:hidden both keep an offsetParent, and
+          // both are unclickable — the old check counted them as live.
+          visible: !!el.offsetParent && getComputedStyle(el).visibility !== "hidden" &&
+            r.width > 0 && r.height > 0,
+          disabled: !!el.disabled,
+        };
+      }));
     const live = states.reduce((acc, s, i) => (s.visible && !s.disabled ? [...acc, i] : acc), []);
-    if (live.length) save = saveBtns.nth(live[live.length - 1]);
+    if (live.length) order = live.slice().reverse();
   }
-  await save.click();
+
+  let clicked = false;
+  for (const idx of order) {
+    try {
+      await saveBtns.nth(idx).click({ timeout: 10000 });
+      clicked = true;
+      break;
+    } catch { /* that copy would not take the click — try the next */ }
+  }
+  if (!clicked) {
+    /* Last resort: fire the submit from inside the page, which skips the
+       hit-target check entirely. Safe here ONLY because the save is verified
+       below by the booking id Tramada puts in the URL — the click is never
+       taken as evidence that anything was saved. Without this a form whose
+       every Save copy is off-screen fails the booking outright. */
+    await saveBtns.first().evaluate((el) => el.click());
+  }
   await page.waitForLoadState("domcontentloaded");
   await sleep(1500);
 
