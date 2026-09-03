@@ -636,6 +636,127 @@ function bpayCents(b, i) {
   return Math.max(100, Math.floor(due / 2) - 100);
 }
 
+/*
+ * ── SEEDED OUTCOMES ─────────────────────────────────────────────────────────
+ *
+ * A demo has to show the reconciler CATCHING things, not just agreeing with
+ * itself. A file whose every row matches proves the happy path and nothing
+ * else: the interesting half of a reconciliation is the row that does not
+ * reconcile and the reason it gives.
+ *
+ * `bpayCents` already does this for BPay, and for the same stated reason —
+ * "with random or identical amounts a run can come back entirely Not allocated
+ * and demonstrate nothing". This is that idea applied to the other three, which
+ * until now produced files that agreed with Tramada on every row by
+ * construction.
+ *
+ * ── WHAT IS PERTURBED, AND WHAT IS NOT ──────────────────────────────────────
+ *
+ * The REPORT FILE is perturbed. Tramada is not.
+ *
+ * That is the whole design and it is not arbitrary. The file is the thing a
+ * third party sends you, and a real one disagrees with Tramada sometimes —
+ * that disagreement IS what reconciliation exists to find. Breaking the Tramada
+ * side instead would mean deliberately failing a booking, a receipt or a
+ * payment, which is real money and real state, and produces a different kind of
+ * failure altogether: the fixture failing, not the run finding something.
+ *
+ * So every booking, receipt and payment is created exactly as before and is
+ * genuinely correct. Two rows of the FILE then misstate what happened, the way
+ * a real settlement file does.
+ *
+ *   clean      the file agrees with Tramada          → Reconciled
+ *   amount     the file states a different figure    → "...at $X, not $Y"
+ *   reference  the file names a reference Tramada
+ *              never issued                          → "not among the
+ *                                                       transactions on this
+ *                                                       page", or for IPSI a
+ *                                                       fall back to matching
+ *                                                       on Booking Number and
+ *                                                       "Incorrect payment
+ *                                                       reference"
+ *
+ * Five rows, three reconciled, two flagged. The plan is a table because the mix
+ * is a demo decision, not a fact about the reports — change it here and every
+ * fixture follows. It cycles, so it still produces a mix at other --limit
+ * values.
+ *
+ * Every seeded row is announced when it is written AND listed again at the end
+ * of the run, because the one thing worse than a fixture that never fails is
+ * one that fails for reasons nobody can tell apart from a bug.
+ */
+const OUTCOME_PLAN = (process.env.FIXTURE_OUTCOMES || "clean,clean,amount,reference,clean")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+
+function outcomeFor(i) {
+  return OUTCOME_PLAN[i % OUTCOME_PLAN.length] || "clean";
+}
+
+// Rows this run deliberately made wrong, so the end of the run can say so.
+const SEEDED = [];
+
+function noteSeeded(rowNo, bookingNo, kind, was, now) {
+  SEEDED.push({ rowNo, bookingNo, kind, was, now });
+}
+
+/**
+ * Apply the seeded outcome to a finished row.
+ *
+ * Called AFTER the real work succeeded and the row has been filled in with what
+ * Tramada actually did — so `was` is the true value and the difference is a
+ * genuine one, not a row that was never right in the first place.
+ *
+ * @param row        the CSV row object, mutated in place
+ * @param i          the row's index (drives the plan)
+ * @param cols       { amount, reference } — this report's column names
+ * @param bookingNo  for the report at the end
+ */
+function seedOutcome(row, i, cols, bookingNo) {
+  const kind = outcomeFor(i);
+  if (kind === "clean") return "clean";
+
+  if (kind === "amount" && cols.amount) {
+    // Enough to be unmistakably a different figure rather than a rounding
+    // artefact — a $0.01 difference reads as a bug in the matcher.
+    const columns = Array.isArray(cols.amount) ? cols.amount : [cols.amount];
+    const was = row[columns[0]];
+    const cents = core.cents(was) || 0;
+    const now = core.money(cents + 4250);
+    for (const c of columns) row[c] = now;
+    noteSeeded(i + 1, bookingNo, "amount", `$${was}`, `$${now}`);
+    say(`     ! row ${i + 1} seeded: file says $${now}, Tramada says $${was} — expect "not reconciled"`);
+    return kind;
+  }
+
+  if (kind === "reference" && cols.reference) {
+    const was = row[cols.reference];
+    // Shaped like a real reference for this report, but one Tramada never
+    // issued — a blank would be held back by the parser and never reach the
+    // matcher at all, which tests something else entirely.
+    const now = cols.fakeRef(bookingNo);
+    row[cols.reference] = now;
+    noteSeeded(i + 1, bookingNo, "reference", was, now);
+    say(`     ! row ${i + 1} seeded: file says ${now}, Tramada issued ${was} — expect "not reconciled"`);
+    return kind;
+  }
+
+  return "clean";
+}
+
+/** The seeded rows, restated at the end so they are never mistaken for bugs. */
+function reportSeeded() {
+  if (!SEEDED.length) return;
+  console.log("");
+  say("──────────────────────────────────────────────────────────────");
+  say(`${SEEDED.length} row(s) were SEEDED TO FAIL on purpose, so the run has`);
+  say("something to catch. These are not bugs — do not \"fix\" them:");
+  for (const s of SEEDED) {
+    say(`     row ${s.rowNo}  booking ${s.bookingNo}  ${s.kind}: file says ${s.now}, Tramada has ${s.was}`);
+  }
+  say("Set FIXTURE_OUTCOMES=clean,clean,clean,clean,clean for an all-green file.");
+  say("──────────────────────────────────────────────────────────────");
+}
+
 /**
  * Create one booking with its segments and costings, and hand back its number.
  *
@@ -914,6 +1035,14 @@ async function makeTravelPay() {
       // number is the only second id a fixture has, and nothing matches on this
       // column, so it is the traceable thing to put here.
       row["Processor Reference"] = paymentNo || receiptNo;
+      // Now that the row states what Tramada really did, make some of them
+      // misstate it — see SEEDED OUTCOMES. Both amount columns move together;
+      // a file whose Base and Processed disagree is a different fault.
+      seedOutcome(row, i, {
+        amount: ["Base Amount", "Processed Amount"],
+        reference: "Payment Reference",
+        fakeRef: (bookingNo) => `TP-ZZZZZ-${bookingNo}`,
+      }, b.bookingNo);
       csv.update();
     } catch (err) {
       console.error(`     ✗ ${core.tidyError(err.message)}`);
@@ -932,6 +1061,7 @@ async function makeTravelPay() {
     `${parsed.rows.length} readable by the run's own parser` +
     (parsed.problems.length ? `, ${parsed.problems.length} held back` : "") + ".");
   reportUnfilled(csv, "Payment Reference", "the receipt number, digits only");
+  reportSeeded();
   say("Load it on the TravelPay card and press Start run — it will look for these receipts.\n");
 }
 
@@ -1102,6 +1232,14 @@ async function makeMint() {
       row["Authorised Time"] = mintTimestamp(now);
       row["Updated Time"] = mintTimestamp(updated);
       row["Due Time"] = now.toISOString().slice(0, 10);
+      // The row now says what Tramada actually paid; seed the mix on top.
+      // The fake reference keeps Tramada's `P.` shape so the parser accepts it
+      // and the MATCHER is what rejects it.
+      seedOutcome(row, i, {
+        amount: "Amount",
+        reference: "Transaction Reference",
+        fakeRef: () => `P.${String(9000000 + (i * 7919) % 999999).padStart(10, "0")}`,
+      }, b.bookingNo);
       csv.update();
     } catch (err) {
       console.error(`     ✗ ${core.tidyError(err.message)}`);
@@ -1126,6 +1264,7 @@ async function makeMint() {
     die("The file it just wrote does not parse cleanly — that is a bug here, not in the run.");
   }
   reportUnfilled(csv, "Transaction Reference", "the P. number from Tramada");
+  reportSeeded();
   say("Load it on the Mint card and press Start run — it will look for these payments.\n");
 }
 
@@ -1380,13 +1519,73 @@ function ipsiRow({ bookingNo, dueCents = 0, cardHolder, today }) {
   };
 }
 
+/**
+ * The rows a correct run DELETES before it matches anything.
+ *
+ * Guide step 7 and `core.parseIpsiRows`: a row is excluded on TYPE when its
+ * Transaction Status is not "approved" (a Decline, a Void) or when it is a
+ * PreAuth — `Transaction Type` 10, which `Custom 5` spells "PreAuth (10)".
+ * A PreAuth is a hold, not money that moved; whatever it authorised turns up
+ * again as its own Capture, so ticking both would count the same money twice.
+ *
+ * They are built from REAL bookings, cycling through the ones this run just
+ * created, so nothing here is a booking number that was invented (CLAUDE.md
+ * §3). It costs nothing to be real: these rows never reach the matcher.
+ *
+ * Their references carry a suffix so a row that IS supposed to vanish can be
+ * told apart at a glance from one that is not — and so a Decline can never be
+ * mistaken for the Purchase on the same booking.
+ */
+const IPSI_EXCLUDED = [
+  { suffix: "PA", typeCode: "10", kind: "PreAuth (10)", status: "APPROVED", why: "PreAuth — a hold, not a settled transaction" },
+  { suffix: "DC", typeCode: "1", kind: "Purchase (1)", status: "DECLINED", why: "Declined — the card refused it" },
+  { suffix: "VD", typeCode: "1", kind: "Purchase (1)", status: "VOID", why: "Void — reversed before settlement" },
+];
+
+/* The file is built to a TOTAL and a SPLIT, not to a fixed number of extras.
+   Asked for 03-09-2026: "generate 8 but 4 of those are preauth or decline or
+   void transactions, so when uploaded only 4 viable transactions appear, when
+   the generated file has 8."
+
+   Two numbers rather than one, and neither is `--limit`. The viable count caps
+   how many REAL bookings are made — going through `--limit` instead would mean
+   `npm run fixtures` (which passes 5 for all four reports) quietly produced a
+   5/3 split while `npm run fixtures:ipsi` produced 4/4. The excluded rows then
+   fill whatever is left of the total, so a booking that fails to create shifts
+   the split without shrinking the file — the count on the upload note is the
+   whole point of this fixture. */
+const IPSI_TOTAL_ROWS = parseInt(process.env.IPSI_TOTAL_ROWS || "8", 10);
+const IPSI_VIABLE_ROWS = parseInt(process.env.IPSI_VIABLE_ROWS || "4", 10);
+
+function ipsiExcludedRows(made, today, want) {
+  const n = Math.max(IPSI_EXCLUDED.length, want == null ? IPSI_EXCLUDED.length : want);
+  return Array.from({ length: n }, (_, i) => {
+    const x = IPSI_EXCLUDED[i % IPSI_EXCLUDED.length];
+    const b = made[i % made.length];
+    const row = ipsiRow({ bookingNo: b.bookingNo, dueCents: b.dueCents || 0, today });
+    // A second PreAuth on the same booking would collide with the first; the
+    // pass number keeps every reference in the file distinct.
+    const pass = Math.floor(i / IPSI_EXCLUDED.length);
+    row["Transaction Reference"] = `${ref("IP", b.bookingNo)}-${x.suffix}${pass ? pass + 1 : ""}`;
+    row["Transaction Type"] = x.typeCode;
+    row["Transaction Status"] = x.status;
+    row["Custom 5"] = x.kind;
+    return { row, why: x.why };
+  });
+}
+
 async function makeIpsi() {
   if (has("--search")) return ipsiSearch();
   const runFile = valueOf("--run", null);
   if (runFile) return ipsiRun(runFile);
 
-  const list = loadBookings();
+  /* Capped here rather than by `--limit`, so the split holds however this was
+     invoked. Creating a fifth booking and then not writing a row for it would
+     be a real booking made for nothing. */
+  const list = loadBookings().slice(0, IPSI_VIABLE_ROWS);
   say(`${list.length} booking${list.length === 1 ? "" : "s"} → bookings + costings, then the file.`);
+  say(`The file will hold ${IPSI_TOTAL_ROWS} rows: these ${list.length} to reconcile, and ` +
+    `${IPSI_TOTAL_ROWS - list.length} PreAuth/Declined/Void rows the upload removes.`);
   sayPlan("ipsi");
   say("The receipts are yours to raise: an IPSI settlement covers Credit Card Swipe");
   say("receipts, and that form wants a real card number.\n");
@@ -1396,18 +1595,45 @@ async function makeIpsi() {
   const today = new Date().toISOString().slice(0, 10);
 
   const made = await createBookings(list, (b, src) => {
-    csv.add(ipsiRow({
+    const row = ipsiRow({
       bookingNo: b.bookingNo,
       dueCents: b.dueCents || 0,
       cardHolder: [src && src.booking && (src.booking.passengers || [])[0]]
         .filter(Boolean).map((p) => `${p.firstName} ${p.lastName}`)[0],
       today,
-    }));
+    });
+    /* Seeded BEFORE the row goes down, unlike the other two — an IPSI row is
+       complete the moment the booking exists, because the receipt it will be
+       matched against is one a human raises afterwards from the list printed at
+       the end. That list keeps naming the TRUE reference, so a seeded row is a
+       receipt raised correctly against a file that names it wrongly: exactly
+       the "Incorrect payment reference" fall-back to Booking Number. */
+    csv.add(row);
+    seedOutcome(row, b.index, {
+      amount: "Transaction Amount",
+      reference: "Transaction Reference",
+      fakeRef: (bookingNo) => `IP-ZZZZZ-${bookingNo}`,
+    }, b.bookingNo);
     say(`     → ${shortPath(csv.path)} now has ${csv.rows.length} row(s)`);
   });
   if (!csv.rows.length) return say("No bookings were created, so there is nothing to write.\n");
 
+  /* AND THEN THE ROWS THAT SHOULD NOT SURVIVE THE UPLOAD.
+     A file where every row reconciles never shows step 7 happening at all —
+     the run deletes PreAuths, Declines and Voids before it matches anything,
+     and that is invisible if there are none to delete. Three of them, after
+     the real rows, so the upload note has something to report. */
+  const excluded = ipsiExcludedRows(made, today, IPSI_TOTAL_ROWS - csv.rows.length);
+  for (const { row, why } of excluded) {
+    csv.add(row);
+    say(`     – ${row["Transaction Reference"]} added to be REMOVED on upload: ${why}`);
+  }
+  csv.update();
+
   // The file states its own settlement total on ONE row, as the client's does.
+  // Every row counts toward it, excluded ones included — `everyRowCents` in
+  // core.parseIpsiRows adds them up before it decides what to throw away, so a
+  // total that skipped them would fail the file's own agreement check.
   const total = csv.rows.reduce((a, r) => a + (core.cents(r["Transaction Amount"]) || 0), 0);
   csv.rows[csv.rows.length - 1]["Settlement Amount"] = core.money(total);
   csv.update();
@@ -1420,11 +1646,22 @@ async function makeIpsi() {
      failure and says so below. */
   const grid = core.csvGrid(fs.readFileSync(out, "utf8"));
   const parsed = core.parseIpsiRows(grid.headers, grid.rows);
-  if (parsed.problems.length) {
-    die(`The file it just wrote has ${parsed.problems.length} row(s) the run cannot use: ` +
-      parsed.problems.map((p) => `line ${p.line} — ${p.why}`).join("; "));
+  /* A row held back for its TYPE is the point, not a fault — `excludedType` is
+     how core.parseIpsiRows says "this was a PreAuth/Decline/Void", and dying on
+     those would mean this fixture could never write one. Anything else held
+     back is still a real failure and still stops the run. */
+  const unusable = parsed.problems.filter((p) => !(p.row && p.row.excludedType));
+  const removed = parsed.problems.length - unusable.length;
+  if (unusable.length) {
+    die(`The file it just wrote has ${unusable.length} row(s) the run cannot use: ` +
+      unusable.map((p) => `line ${p.line} — ${p.why}`).join("; "));
+  }
+  if (removed !== excluded.length) {
+    die(`${excluded.length} row(s) were written to be removed on upload, but the run's own ` +
+      `parser removed ${removed}. The exclusion rules and this fixture disagree.`);
   }
   say(`\n  ${shortPath(out)} — ${csv.rows.length} row${csv.rows.length === 1 ? "" : "s"}, $${core.money(total)}.`);
+  say(`  ${removed} will be REMOVED on upload (PreAuth, Declined, Void), leaving ${parsed.rows.length} to reconcile.`);
   if (!parsed.settlement.agrees) die("The file it just wrote does not add up to its own settlement figure.");
 
   console.log("");
@@ -1447,6 +1684,10 @@ async function makeIpsi() {
   say("a receipt raised under anything else falls back to matching on Booking");
   say('Number and is flagged "Incorrect payment reference".');
   say("──────────────────────────────────────────────────────────────");
+  /* The references printed above are the TRUE ones and are what to raise the
+     receipts under — including for the seeded rows. The file disagreeing with
+     them is the point. */
+  reportSeeded();
   say("\n  Then load it on the IPSI card and press Start run.\n");
 }
 
@@ -1490,7 +1731,8 @@ const JOBS = { bpay: makeBpay, travelpay: makeTravelPay, mint: makeMint, ipsi: m
 
 /* Exported so the reference scheme can be tested without opening Tramada. The
    run below is behind `require.main`, so requiring this file creates nothing. */
-module.exports = { RUN, ref, costedCents, bpayCents, csvWriter, csvField, csvOut, CLIENT_FOR, CATEGORY_FOR, ACCOUNT_FOR, ipsiRow, IPSI_COLS, IPSI_BLANK_COLUMNS };
+module.exports = { RUN, ref, costedCents, bpayCents, csvWriter, csvField, csvOut, CLIENT_FOR, CATEGORY_FOR, ACCOUNT_FOR, ipsiRow, IPSI_COLS, IPSI_BLANK_COLUMNS, OUTCOME_PLAN, outcomeFor, seedOutcome,
+  IPSI_EXCLUDED, ipsiExcludedRows, IPSI_TOTAL_ROWS, IPSI_VIABLE_ROWS };
 
 if (require.main === module) (async () => {
   if (!JOBS[WHAT]) {

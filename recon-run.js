@@ -2011,10 +2011,21 @@ async function runCombinedReconciliation(o = {}) {
           const m = match(r, statement);
           r.reconciliation = m.status;
           r.mismatch = m.mismatch;
+          /* A remark the MATCHER decided, carried onto the row the way the IPSI
+             run already does. The parser's own remark stays where the matcher
+             has nothing to say — this only ever fills or replaces, never
+             blanks, so a row flagged at upload keeps its flag. */
+          if (m.remark) r.remark = m.remark;
           r.why = (r.error || r.noReceipt) ? r.why : m.reason;
           if (m.duplicates) r.why += ` — ${m.duplicates} transactions carry that number`;
           if (m.reconciled && m.transNo) { r.transNo = m.transNo; matched.push(m.transNo); }
-          row(r.n, { reconciliation: r.reconciliation, why: r.why, mismatch: r.mismatch, transNo: r.transNo });
+          // What the page says the booking is, where the reference carries it.
+          // The file's own stays on `bookingNo`; the results table prefers this
+          // one and shows both when they disagree.
+          if (m.bookingNo) r.tramadaBookingNo = m.bookingNo;
+          row(r.n, { reconciliation: r.reconciliation, why: r.why, mismatch: r.mismatch,
+            remark: r.remark,
+            transNo: r.transNo, bookingNo: r.bookingNo, tramadaBookingNo: r.tramadaBookingNo });
           say(`Row ${r.n}: ${m.status} — ${m.reason}`, m.reconciled);
         }
       }

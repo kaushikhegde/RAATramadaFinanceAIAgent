@@ -149,13 +149,21 @@ ok("a purchase matches on its transaction reference", hit.matched && hit.on === 
 check("and reports which receipt", hit.receipt.receiptNo, "R.0000009405");
 
 /* Ten of the forty-nine rows are Captures, whose reference is a
-   different shape entirely (R82EQ6F8-JoanneMChapma-raa-2911). Matching on
-   reference alone would leave a fifth of the settlement unticked with no
-   explanation, so booking + amount is the fallback. */
+   different shape entirely (R82EQ6F8-JoanneMChapma-raa-2911), so the booking
+   is the only thing that finds them.
+
+   IT STILL FINDS THEM — right booking, right amount — and as of 02-09-2026 it
+   is REPORTED AS AN ERROR anyway: `IPSI_REFERENCE_REQUIRED`, asked for so a
+   reference that is on no receipt is never quietly reconciled. This test used
+   to assert `capHit.matched`, and the cost of the change is exactly what it
+   now measures: a fifth of a real settlement finds its money and is not
+   reconciled. Flip the constant to restore BR10. */
 const capture = { reference: "R82EQ6F8-JoanneMChapma-raa-2911", bookingNo: "128364", amountCents: 13246 };
 const capHit = C.matchIpsiAgainstReceipts(capture, receipts);
-ok("a capture falls back to its booking", capHit.matched && capHit.on === "booking", JSON.stringify(capHit));
+ok("a capture finds its money on the booking", capHit.on === "booking" && !!capHit.receipt, JSON.stringify(capHit));
+ok("...and is NOT reconciled, because the reference was not found", !capHit.matched, JSON.stringify(capHit));
 ok("and says it had to", /no receipt carries reference/.test(capHit.reason), capHit.reason);
+ok("...and says it is therefore not reconciled", /not reconciled/.test(capHit.reason), capHit.reason);
 
 // The amount has to agree either way — four bookings appear twice in the real
 // file, so a booking on its own does not identify a row.
@@ -172,8 +180,11 @@ check("and the remark itself names the gap", wrongMoney.remark,
 
 const ambiguous = C.matchIpsiAgainstReceipts(
   { reference: "nope", bookingNo: "128999", amountCents: 75000 }, receipts);
+// Still SEPARATED by amount — the right receipt is picked out of two on the
+// same booking — it just is not reconciled, for want of the reference.
 ok("two receipts on one booking are separated by amount",
-  ambiguous.matched && ambiguous.receipt.receiptNo === "R.0000009413", JSON.stringify(ambiguous));
+  ambiguous.receipt.receiptNo === "R.0000009413", JSON.stringify(ambiguous));
+ok("...and neither is reconciled without the reference", !ambiguous.matched, JSON.stringify(ambiguous));
 
 const gone = C.matchIpsiAgainstReceipts({ reference: "x", bookingNo: "999", amountCents: 1 }, receipts);
 ok("nothing matching is not a match", !gone.matched);
@@ -192,9 +203,55 @@ console.log("\nBR03 — three cents of variance is a match, four is not");
   check("with the four-cent gap named", tooFar.remark, "Incorrect amount — a difference of $0.04");
 }
 
-console.log("\nBR10 — a booking-fallback match is still ticked, but flagged");
-ok("the capture above ticks", capHit.matched);
-check("with BR10's exact words, not blocked", capHit.remark, C.IPSI_REMARKS.reference);
+console.log("\nBR10 — a booking-fallback match is flagged, and no longer ticked");
+/* BR10's words still describe it; what changed is that they now accompany a
+   FAILED row instead of a ticked one. Only `matched` moved. */
+check("still BR10's exact words", capHit.remark, C.IPSI_REMARKS.reference);
+ok("but it does not tick any more", !capHit.matched, JSON.stringify(capHit));
+ok("and the rule says so out loud", C.IPSI_REFERENCE_REQUIRED === true);
+
+console.log("\nstep 7 — PreAuths, Declines and Voids are removed before anything matches");
+{
+  /* A fixture where every row reconciles never shows step 7 happening at all.
+     `make-fixtures.js ipsi` now writes a file of IPSI_TOTAL_ROWS (8) where the
+     tail is deliberately unreconcilable, so this pins WHICH rows a correct run
+     throws away and, just as importantly, that it throws away no others. */
+  const head = "Transaction Reference,Transaction Type,Transaction Status,Custom 5," +
+    "Transaction Amount,Booking Number,Settlement Amount";
+  const line = (ref, code, status, kind, amt, bk, settle) =>
+    [ref, code, status, kind, amt, bk, settle || ""].join(",");
+  const csv = [
+    head,
+    line("IP-AAAAA-100", "1", "APPROVED", "Purchase (1)", "100.00", "100"),
+    line("IP-AAAAA-101", "1", "APPROVED", "Purchase (1)", "200.00", "101"),
+    // The three that must not survive.
+    line("IP-AAAAA-100-PA", "10", "APPROVED", "PreAuth (10)", "100.00", "100"),
+    line("IP-AAAAA-101-DC", "1", "DECLINED", "Purchase (1)", "200.00", "101"),
+    line("IP-AAAAA-100-VD", "1", "VOID", "Purchase (1)", "100.00", "100", "700.00"),
+  ].join("\n");
+
+  const g = C.csvGrid(csv);
+  const parsed = C.parseIpsiRows(g.headers, g.rows);
+  check("only the approved purchases are left to reconcile", parsed.rows.length, 2);
+  check("and the other three are held back", parsed.problems.length, 3);
+  ok("every one of them held back for its TYPE, not for bad data",
+    parsed.problems.every((x) => x.row && x.row.excludedType),
+    JSON.stringify(parsed.problems.map((x) => [x.row.reference, x.row.excludedType])));
+
+  // A PreAuth that says APPROVED is still removed — the STATUS is fine, it is
+  // the type that disqualifies it, and reading only the status would keep it
+  // and double-count the money its Capture also carries.
+  const preauth = parsed.problems.find((x) => x.row.reference.endsWith("-PA"));
+  ok("an APPROVED PreAuth is removed on its type alone", !!preauth && /PreAuth/.test(preauth.why), preauth && preauth.why);
+  ok("and isPreAuth agrees", C.isPreAuth({ typeCode: "10" }) && C.isPreAuth({ kind: "PreAuth (10)" }));
+
+  /* THE TOTAL COUNTS THE REMOVED ROWS. `everyRowCents` adds up before the
+     filtering, so the file's own Settlement Amount has to cover all five or it
+     fails its own agreement check — which is why make-fixtures totals every
+     row it wrote, excluded ones included. */
+  check("the settlement total still covers every row in the file",
+    parsed.settlement.agrees, true);
+}
 
 console.log("\nmatching a refund against Payments To Reconcile");
 {
@@ -214,8 +271,12 @@ console.log("\nmatching a refund against Payments To Reconcile");
 
   const refundByBooking = C.matchIpsiAgainstPayments(
     { reference: "nope", bookingNo: "115932", amountCents: -45537 }, payments);
+  // Refunds follow the same rule as receipts: the booking still picks the right
+  // payment out of two, and a reference that is on no payment is still an error.
   ok("a second refund on the same booking falls back to amount",
-    refundByBooking.matched && refundByBooking.payment.paymentNo === "P.0000000092", JSON.stringify(refundByBooking));
+    refundByBooking.payment.paymentNo === "P.0000000092", JSON.stringify(refundByBooking));
+  ok("...and is not reconciled either, for want of the reference",
+    !refundByBooking.matched, JSON.stringify(refundByBooking));
 
   const refundGone = C.matchIpsiAgainstPayments({ reference: "x", bookingNo: "1", amountCents: -100 }, payments);
   ok("nothing on the Payments list is not a match", !refundGone.matched);

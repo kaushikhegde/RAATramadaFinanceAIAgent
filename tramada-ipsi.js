@@ -454,9 +454,11 @@ async function searchIssueReceipts(page, {
   if (!popup) {
     throw new Error(
       `Go was clicked but no window opened within ${Math.round(POPUP_TIMEOUT_MS / 1000)}s. ` +
-      "The search itself is what takes the time — Tramada posts the form, works, and only then " +
-      "calls window.open — so this is a search that ran long, not a broken selector. " +
-      "Raise IPSI_POPUP_TIMEOUT_MS, or narrow the date range so there is less to fetch."
+      "Tramada posts the form, works, and only then calls window.open, so a long search looks " +
+      "exactly like this — but so does a search that SELECTED NOTHING, because a window that opens " +
+      "on the search page again is not the one being waited for. Check the criteria (debtor, " +
+      "receipt category, bank account, date range) against a receipt you can see in Tramada before " +
+      "assuming it is slow. If it really is slow, raise IPSI_POPUP_TIMEOUT_MS or narrow the range."
     );
   }
 
@@ -517,8 +519,36 @@ async function searchIssueReceipts(page, {
     throw new Error("Tramada returned an Error Page instead of the merchant receipt window.");
   }
   if (!(await popup.locator("#issue, #save").count())) {
+    /* SAY WHAT THE PAGE SAYS, not just what it isn't.
+       Three live IPSI runs on 02-09-2026 failed here and at the popup timeout
+       above, and between them reported "no window opened within 180s ... the
+       search itself is what takes the time" and "the window that opened is not
+       the merchant receipt form". Both blame slowness; neither says why. When
+       Go's search selects nothing, or the form is rejected, Tramada re-renders
+       the SEARCH page into the popup instead of opening the receipt form — so
+       the answer was on screen the whole time and nothing read it.
+       CLAUDE.md §6: an empty result list only means "nothing there" when the
+       screen says so. */
+    const onScreen = await popup.evaluate(() => {
+      const out = [];
+      document.querySelectorAll("a, span, li, font, div, td, p").forEach((n) => {
+        if (n.children.length) return;
+        const t = (n.textContent || "").trim();
+        if (t && t.length < 200 &&
+            /no records|not found|must be|is required|is invalid|cannot be|no data|no result/i.test(t)) {
+          out.push(t);
+        }
+      });
+      return [...new Set(out)].slice(0, 6);
+    }).catch(() => []);
+
     throw new Error(
-      `The window that opened is not the merchant receipt form (it is "${await popup.title().catch(() => "?")}").`
+      `The window that opened is not the merchant receipt form (it is "${await popup.title().catch(() => "?")}")` +
+      (onScreen.length
+        ? `. The page says: ${onScreen.join("; ")}`
+        : ". Nothing on it explains why — open the window and look before changing the search.") +
+      " Tramada re-renders the search page here when Go selects nothing or rejects the form, so this is" +
+      " usually the search criteria (debtor, receipt category, bank account or date range), not a slow search."
     );
   }
   return popup;
@@ -839,15 +869,22 @@ async function runIpsiReconciliation(o = {}) {
       r.why = m.reason;
       if (m.remark) r.remark = m.remark;
       const hit = m.receipt || m.payment;
+      /* Guide step 15: "Copy 'Booking No.' from each receipt line in Tramada
+         and paste it in the 'Booking No.' column of the spreadsheet." Tramada's
+         OWN booking number, not the file's own (often blank, or right only by
+         coincidence) — this is what the guide means by copying it back.
+
+         READ OFF ANY HIT, not just a matched one. Since IPSI_REFERENCE_REQUIRED
+         made a booking-fallback row an error, `m.matched` is false for exactly
+         the rows that most need chasing — and this used to sit inside that
+         branch, so the failing row lost the very booking number that says where
+         its money actually is. The receipt is still handed back either way. */
+      if (hit) {
+        r.receiptNo = (hit.receiptNo || hit.paymentNo) || "";
+        r.tramadaBookingNo = hit.bookingNo || "";
+      }
       if (m.matched) {
-        r.receiptNo = (hit && (hit.receiptNo || hit.paymentNo)) || "";
         r.selectId = hit && hit.selectId;
-        // Guide step 15: "Copy 'Booking No.' from each receipt line in
-        // Tramada and paste it in the 'Booking No.' column of the
-        // spreadsheet." Tramada's OWN booking number, not the file's own
-        // (often blank, or right only by coincidence) — this is what the
-        // guide means by copying it back.
-        r.tramadaBookingNo = (hit && hit.bookingNo) || "";
         toTick.push(r.selectId);
       }
       row(r.n, {

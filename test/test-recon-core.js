@@ -532,7 +532,30 @@ console.log("\nthe Mint daily settlement");
   check("both rows read", parsed.rows.length, 2);
   check("only the three columns the run needs, plus what they derive",
     Object.keys(parsed.rows[0]).sort(),
-    ["amount", "amountCents", "line", "rawAmount", "toCompany", "transNo"]);
+    ["amount", "amountCents", "bookingNo", "line", "rawAmount", "recipientReference",
+      "senderReference", "toCompany", "transNo"]);
+  /* THE BOOKING NUMBER, added 02-09-2026 — a Mint row reconciled perfectly well
+     and the results table's Booking column sat empty on every one of them,
+     because nothing on a Mint row named a booking. The MINT payments guide says
+     where it is: "Sender Reference is the Booking Number from Tramada". The
+     sample rows above carry "y" there, which holds no booking, so this stays
+     empty rather than inventing one — that is the right answer for a file whose
+     Sender Reference is not a booking. */
+  check("no booking when Sender Reference carries none", parsed.rows[0].bookingNo, "");
+  {
+    const withBooking = HEAD.map((h) => h);
+    const cells = rowOf("M00640039", "594", "Viva Holidays Pty Ltd");
+    cells[withBooking.indexOf("Sender Reference")] = "MP-4C6P4-14594";
+    const r = C.parseMintRows(withBooking, [cells]).rows[0];
+    check("the booking comes off Sender Reference", r.bookingNo, "14594");
+    // Recipient Reference is the TRAMADA reference, and on a file like our own
+    // fixture it carries the booking too — worth a second look before giving up.
+    const cells2 = rowOf("M00640040", "594", "X");
+    cells2[withBooking.indexOf("Sender Reference")] = "";
+    cells2[withBooking.indexOf("Recipient Reference")] = "MP-4C6P4-14597";
+    check("...or off Recipient Reference when Sender has none",
+      C.parseMintRows(withBooking, [cells2]).rows[0].bookingNo, "14597");
+  }
   check("the trailing space in the header does not hide the column",
     parsed.rows[0].toCompany, "Viva Holidays Pty Ltd");
   check("amounts become cents", parsed.rows[1].amountCents, 368484);
@@ -549,9 +572,13 @@ console.log("\nthe Mint daily settlement");
   // A reordered export must not shift anything — same three values, different
   // column order. This is the by-name rule doing its job.
   const SHUFFLED = ["Amount", "Transaction Reference", "Status", "To Company"];
+  /* And a sheet with NO reference columns at all still parses — they are
+     optional, so an older export keeps reconciling and simply cannot name the
+     booking. Requiring them would have broken every file already on disk. */
   check("a reordered sheet reads the same",
     C.parseMintRows(SHUFFLED, [["594", "M00640038", "Pending at Bank", "Viva Holidays Pty Ltd"]]).rows[0],
     { line: 2, transNo: "M00640038", amount: "594.00", toCompany: "Viva Holidays Pty Ltd",
+      senderReference: "", recipientReference: "", bookingNo: "",
       rawAmount: "594", amountCents: 59400 });
 
   // Nothing is silently dropped.

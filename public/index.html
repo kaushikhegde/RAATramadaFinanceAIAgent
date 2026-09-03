@@ -4813,13 +4813,31 @@ function askMarkStale(){
        but this compact table had nowhere to show it on screen. Added
        31-Aug-2026 so a checks-only run reads success/failure the same way a
        BPay row does, instead of only the export file saying so. */
+    /* BOOKING, on the checks-only table too. Asked for 02-09-2026: Mint,
+       TravelPay and IPSI showed Transaction / Amount / To company and nothing
+       naming the booking, so a flagged row could not be chased without going
+       back to the uploaded file. The writing reports have had the column all
+       along (below); this is the same column for the three that only check.
+
+       TRAMADA'S OWN NUMBER WINS where the run read one back — that is the
+       guide's step 15 for IPSI, "copy Booking No. from each receipt line in
+       Tramada", and it is the one that says what was actually found rather
+       than what the file claimed. The file's own is the fallback. */
     const head = mint
       ? '<th style="width:16px"></th><th>Transaction</th><th class="num">Amount</th>' +
-        '<th>To company</th><th>Reconciled</th><th>Remarks</th>'
+        '<th>Booking</th><th>To company</th><th>Reconciled</th><th>Remarks</th>'
       : '<th style="width:16px"></th><th>Statement line</th><th class="num">Amount</th>' +
         '<th>Booking</th><th>Receipt</th><th>Allocation</th><th>Reconciled</th>' +
         '<th>Remarks</th>';
-    const cols = mint ? 6 : 8;
+    const cols = mint ? 7 : 8;
+    const bookingCell = (r) => {
+      const own = r.tramadaBookingNo || '';
+      const said = r.bookingNo || '';
+      // Both, when they disagree — a row reconciled against a different booking
+      // to the one the file named is exactly the thing worth seeing.
+      const text = own && said && String(own) !== String(said) ? own + ' (file: ' + said + ')' : (own || said);
+      return '<td class="mono">' + (text ? esc(text) : '<span class="muted">—</span>') + '</td>';
+    };
     // The row's own sentence, as a tooltip rather than a column.
     const whyTip = (r) => (r && r.why ? ' title="' + esc(String(r.why)) + '"' : '');
     // Mint/TravelPay/IPSI's own version of BPay's Remarks cell below — same
@@ -4832,6 +4850,7 @@ function askMarkStale(){
       ? '<tr><td><span class="tdot ' + dot(r) + '"></span></td>' +
         '<td><b class="ref">' + esc(r.transNo) + '</b></td>' +
         '<td class="num">' + esc(r.amount) + '</td>' +
+        bookingCell(r) +
         '<td>' + esc(r.toCompany || '') + '</td>' +
         '<td>' + badge(r.reconciliation) + '</td>' +
         remarkCell(r) + '</tr>'
@@ -4920,13 +4939,21 @@ function askMarkStale(){
   const RUN_COLUMNS = [
     { key: 'consultant', label: 'Consultant', only: ['bpay'] },
     { key: 'shop', label: 'Shop', only: ['bpay'] },
-    /* RAA, 29-Aug: "Reconciliation Report page, add Tramada Booking number as a
-       column." Every report has one — BPay receipts against a booking, IPSI's
-       own Booking Number column, TravelPay's booking dug out of Additional
-       Reference — so it is NOT restricted with `only`. Where the uploaded
-       spreadsheet already has a booking column, renderSheetTable prefixes this
-       one with "Tramada " rather than showing two columns of the same name. */
-    { key: 'bookingNo', label: 'Booking No', mono: true },
+    /* NO BOOKING COLUMN HERE, as of 03-09-2026.
+       RAA asked for one on 29-Aug — "Reconciliation Report page, add Tramada
+       Booking number as a column" — and it was added without an `only`. But
+       this list is only ever read by renderSheetTable, which runs for WRITING
+       reports (`sheet && !mint`), and the only writing report is BPay. A BPay
+       file already carries the booking: "TRAMADA BKG NO", one of COLS.bookingNo's
+       own headings. So the column landed beside the file's own copy of itself.
+
+       The "prefix it with Tramada" de-dupe below could not catch it, because it
+       matches on the normalised LABEL — "tramadabkgno" against "bookingno" — and
+       those are two different strings for the same thing.
+
+       The request is still met everywhere it was not already: the checks-only
+       table (Mint, TravelPay, IPSI) draws its own Booking column, and those
+       files have no booking heading of their own to clash with. */
     { key: 'receiptNo', label: 'Receipt No', mono: true, only: ['bpay'] },
     { key: 'allocation', label: 'Allocated', badge: true, only: ['bpay'] },
     { key: 'reconciliation', label: 'Reconciled', badge: true },
