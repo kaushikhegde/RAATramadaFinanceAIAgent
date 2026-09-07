@@ -10,3 +10,13 @@ runs.json
 runs.json.corrupt-*
 .DS_Store
 _to_delete/
+
+# Distribution artifacts (image tarballs are large; do not commit)
+dist/*.tar.gz
+certs/SA_ROOT.crt
+certs/README.md
+Dockerfile
+Dockerfile
+package-lock.json
+package-lock.json
+package.json

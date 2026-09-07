@@ -14,13 +14,33 @@ FROM node:20-slim
 # novnc/websockify — serves the VNC screen as a web page on :6080
 # curl/x11-utils — readiness probes in the entrypoint (CDP up? X up?)
 # dumb-init     — PID 1 that reaps the browser's many child processes
+# The corporate network runs a Palo Alto Prisma forward proxy that re-signs every
+# TLS connection, so nothing in this image can reach HTTPS until it trusts that
+# root. This must land BEFORE `npm ci`: without it every tarball fetch fails with
+# SELF_SIGNED_CERT_IN_CHAIN, and npm reports that as "Exit handler never called!"
+# while still exiting 0 — a build that looks green with an empty node_modules.
+# See certs/README.md. (apt itself is fine either way: Debian repos are plain
+# HTTP with GPG signing.)
+COPY certs/SA_ROOT.crt /usr/local/share/ca-certificates/SA_ROOT.crt
+
+# libnss3-tools: certutil, to teach Chromium's NSS store the same root — Chromium
+# does not read /etc/ssl/certs for this.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       chromium \
       xvfb fluxbox x11vnc novnc websockify \
-      x11-utils curl ca-certificates procps dumb-init \
+      x11-utils curl ca-certificates libnss3-tools procps dumb-init \
       fonts-liberation fonts-noto-color-emoji \
+ && update-ca-certificates \
+ && mkdir -p /etc/pki/nssdb /root/.pki/nssdb \
+ && for db in /etc/pki/nssdb /root/.pki/nssdb; do \
+      certutil -d "sql:$db" -A -t "C,," -n SA_ROOT \
+        -i /usr/local/share/ca-certificates/SA_ROOT.crt || true; \
+    done \
  && rm -rf /var/lib/apt/lists/*
+
+# Node reads its own trust store, not the system one, so point it at the root too.
+ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/SA_ROOT.crt
 
 WORKDIR /app
 
