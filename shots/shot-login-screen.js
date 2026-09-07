@@ -79,6 +79,22 @@ const panelState = (page) => page.evaluate(() => {
   };
 });
 
+/* The sidebar overlay — the same screen, opened by hand rather than by a run.
+   Read separately from panelState() because the whole point of it is that it
+   does not share the inline panel's nodes or its gating. */
+const modalState = (page) => page.evaluate(() => {
+  const bg = document.querySelector("#rcVncModal");
+  const frame = document.querySelector("#rcVncModalFrame");
+  const nav = document.querySelector("#rcVncNav");
+  return {
+    navExists: !!nav,
+    navLit: !!nav && nav.classList.contains("on"),
+    open: !!bg,
+    src: frame ? (frame.getAttribute("src") || "") : null,
+    screen: (document.querySelector(".screen.on") || {}).id || "",
+  };
+});
+
 (async () => {
   const server = http.createServer((req, res) => {
     if (req.url.split("?")[0] === "/vnc.html") {
@@ -177,6 +193,39 @@ const panelState = (page) => page.evaluate(() => {
   await page.screenshot({ path: shot("login-3-pinned.png") });
   console.log("  wrote shots/out/login-3-pinned.png");
 
+  console.log("\nthe sidebar toggle, opened while the run is up");
+  let ms = await modalState(page);
+  check("the sidebar carries a login-screen button", ms.navExists);
+  const screenBefore = ms.screen;
+  await page.locator("#rcVncNav").click();
+  await page.waitForTimeout(600);
+  ms = await modalState(page);
+  check("clicking it opens the screen over the page", ms.open);
+  check("the overlay's iframe points at the login screen", /\/vnc\.html\?/.test(ms.src));
+  check("the button reads as lit", ms.navLit);
+  // It is a toggle, not a destination. If it ever navigated, the run's own
+  // screen would be swapped out from under someone mid-sign-in.
+  check("and it did not navigate anywhere", ms.screen === screenBefore);
+  st = await panelState(page);
+  // Two iframes on one x11vnc both paint the same desktop and split the
+  // keystrokes. The pinned inline panel stands down while the overlay is up.
+  check("the pinned inline panel stands down while the overlay is up", !st.shown);
+  check("...and lets go of its connection", st.src === "");
+  await page.screenshot({ path: shot("login-4-sidebar-midrun.png") });
+  console.log("  wrote shots/out/login-4-sidebar-midrun.png");
+
+  // Hold the node so its src can be read after it has been removed.
+  await page.evaluate(() => { window.__vncFrame = document.querySelector("#rcVncModalFrame"); });
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(600);
+  ms = await modalState(page);
+  check("Escape closes it", !ms.open);
+  check("the button is no longer lit", !ms.navLit);
+  check("AND the overlay cleared its src before going, dropping the VNC socket",
+    await page.evaluate(() => (window.__vncFrame.getAttribute("src") || "")) === "");
+  st = await panelState(page);
+  check("the pinned inline panel comes back", st.shown);
+
   console.log("\nthe run ends");
   send({ type: "recon_done", pageNumber: 10 });
   await page.waitForTimeout(600);
@@ -186,6 +235,31 @@ const panelState = (page) => page.evaluate(() => {
   check("a finished run takes the screen down even pinned", !st.shown);
   check("and drops the connection", st.src === "");
   check("the pin itself is remembered", st.pinned === true);
+
+  console.log("\nthe sidebar toggle with NOTHING running — the reason it exists");
+  /* Before this the screen was reachable only while a run was in flight, and
+     only if that run asked for a login or you had ticked Keep open. With no run
+     there was no way in from the app at all: 5900 and 9222 are never published,
+     so checking whether the container's Chromium was still signed in meant
+     knowing to type :6080/vnc.html by hand. */
+  await page.evaluate(() => document.querySelector('.nav-item[data-go="overview"]').click());
+  await page.waitForTimeout(300);
+  await page.locator("#rcVncNav").click();
+  await page.waitForTimeout(700);
+  ms = await modalState(page);
+  check("the button is still there after the run finished", ms.navExists);
+  check("it opens the screen with no run in flight", ms.open);
+  check("connected to the login screen", /\/vnc\.html\?/.test(ms.src));
+  check("over whatever screen you were on", ms.screen === "s-overview");
+  await page.screenshot({ path: shot("login-5-sidebar-idle.png") });
+  console.log("  wrote shots/out/login-5-sidebar-idle.png");
+
+  await page.evaluate(() => { window.__vncFrame = document.querySelector("#rcVncModalFrame"); });
+  await page.locator("#rcVncModal .xbtn").click();
+  await page.waitForTimeout(500);
+  ms = await modalState(page);
+  check("the close button closes it", !ms.open);
+  check("and drops the connection", await page.evaluate(() => (window.__vncFrame.getAttribute("src") || "")) === "");
 
   console.log("\nunpinned, a page reload forgets nothing it should not");
   await page.evaluate(() => { try { localStorage.setItem("rcVncPin", "0"); } catch (_) {} });

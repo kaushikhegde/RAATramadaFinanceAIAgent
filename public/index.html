@@ -3165,6 +3165,17 @@ function askMarkStale(){
      data blocked THROWS on the read rather than returning null. */
   let vncPin = false;
   try { vncPin = localStorage.getItem('rcVncPin') === '1'; } catch (_) {}
+  /* The same screen again, opened from the sidebar over whatever is on screen.
+     Deliberately NOT folded into vncOpen/vncPin: those two are facts about a
+     RUN — a run asked for a login, or you ticked keep-open while it worked — and
+     both were gated on `running`, so with nothing in flight the app offered no
+     way at all to look at the container's browser. There is no other way in:
+     5900 (raw VNC) and 9222 (CDP) are never published, so short of knowing to
+     type :6080/vnc.html by hand you could not check whether the session was
+     still signed in until you had already started a run.
+     Not persisted, unlike vncPin. Restoring this on load would open a socket to
+     a browser signed into a finance system before anyone had asked to see it. */
+  let vncPanel = false;
   let statementPage = null; // the page a finished run created — the header that
                             // used to show it is hidden in this project
 
@@ -5177,7 +5188,11 @@ function askMarkStale(){
     }
     const wrap = $('#rcVncWrap');
     if (wrap) {
-      const want = !!novncPort && running && (vncOpen || vncPin);
+      /* `!vncPanel` because the overlay frames the SAME screen. Two live
+         iframes means two VNC clients on one x11vnc (-shared, so it works and
+         says nothing) both painting the same desktop — twice the traffic, and a
+         keystroke landing in whichever one has focus. */
+      const want = !!novncPort && !vncPanel && running && (vncOpen || vncPin);
       wrap.style.display = want ? '' : 'none';
       const frame = $('#rcVnc');
       if (frame) {
@@ -5229,6 +5244,91 @@ function askMarkStale(){
       '/vnc.html?autoconnect=1&resize=scale&reconnect=1';
   }
 
+  /* ── the login screen on demand ──
+     Mounted only once the server has said a screen exists (recon_hello). A
+     local `npm start` runs no noVNC and a button framing a dead port is worse
+     than no button — the same reason novncPort starts null. */
+  function mountVncNav() {
+    const nav = document.querySelector('.side nav');
+    if (!nav || !novncPort || document.getElementById('rcVncNav')) return;
+    const lbl = document.createElement('div');
+    lbl.className = 'nav-lbl';
+    lbl.textContent = 'Browser';
+    const btn = document.createElement('button');
+    btn.className = 'nav-item';
+    btn.id = 'rcVncNav';
+    btn.type = 'button';
+    // No data-go: this opens a window over the current screen rather than
+    // navigating to one. See the [data-go] selector in go().
+    btn.innerHTML = '<span class="ico">\u25A3</span> Tramada login screen';
+    btn.addEventListener('click', () => (vncPanel ? closeVncPanel() : openVncPanel()));
+    nav.appendChild(lbl);
+    nav.appendChild(btn);
+  }
+
+  function vncPanelEsc(e) { if (e.key === 'Escape') closeVncPanel(); }
+
+  function openVncPanel() {
+    if (vncPanel || !novncPort) return;
+    vncPanel = true;
+    const bg = document.createElement('div');
+    bg.className = 'modal-bg';
+    bg.id = 'rcVncModal';
+    /* The container's screen is VNC_SCREEN=1440x900 and noVNC scales to fit, so
+       the window is sized to that shape — a short one letterboxes the desktop
+       into a strip and the Tramada login form ends up unreadably small. */
+    bg.innerHTML =
+      '<div class="modal" role="dialog" aria-modal="true" aria-label="Tramada login screen" ' +
+      'style="width:min(1400px,100%);height:min(920px,88vh)">' +
+      '<div class="modal-h">' +
+      '<div><h3>Tramada login screen</h3>' +
+      '<span class="fn">' + esc(location.hostname + ':' + novncPort) +
+      ' \u00B7 the browser this app drives</span></div>' +
+      '<div class="spacer"></div>' +
+      '<a class="btn sm" id="rcVncModalTab" target="_blank" rel="noopener">Open in a tab \u2197</a>' +
+      '<button class="xbtn" data-close aria-label="Close">\u2715</button>' +
+      '</div>' +
+      '<div class="modal-b" style="padding:0;background:#111;overflow:hidden">' +
+      '<iframe id="rcVncModalFrame" title="Tramada login screen" ' +
+      'style="width:100%;height:100%;border:0;display:block"></iframe>' +
+      '</div>' +
+      '<div class="modal-f"><span class="muted">Sign in here. A run picks the session up from ' +
+      'this same browser \u2014 nothing typed on this screen passes through this app.</span></div>';
+    document.body.appendChild(bg);
+    bg.querySelector('#rcVncModalTab').href = vncUrl();
+    /* src assigned after the node is in the document, and exactly once. The
+       inline panel's comment is the reason: re-setting src reloads the screen,
+       and a reload halfway through typing wipes the password. */
+    bg.querySelector('#rcVncModalFrame').setAttribute('src', vncUrl());
+    bg.querySelectorAll('[data-close]').forEach((b) => { b.onclick = closeVncPanel; });
+    /* mousedown on the backdrop ITSELF. A click listener fires after a drag
+       that started inside the remote screen and finished outside it — selecting
+       text on the Tramada page closed the window mid-gesture. */
+    bg.addEventListener('mousedown', (e) => { if (e.target === bg) closeVncPanel(); });
+    document.addEventListener('keydown', vncPanelEsc);
+    const nav = $('#rcVncNav');
+    if (nav) nav.classList.add('on');
+    render();
+  }
+
+  function closeVncPanel() {
+    vncPanel = false;
+    document.removeEventListener('keydown', vncPanelEsc);
+    const bg = document.getElementById('rcVncModal');
+    if (bg) {
+      /* Cleared before the node is removed, for the reason the inline panel
+         clears it: a live iframe holds a socket open to a browser signed into a
+         finance system. Dropping the node would close it too — the explicit
+         clear is what makes that deliberate rather than incidental. */
+      const f = bg.querySelector('#rcVncModalFrame');
+      if (f) f.setAttribute('src', '');
+      bg.remove();
+    }
+    const nav = $('#rcVncNav');
+    if (nav) nav.classList.remove('on');
+    render();
+  }
+
   function note(message, ok) {
     const d = new Date();
     activity.unshift({
@@ -5250,7 +5350,11 @@ function askMarkStale(){
 
   function go(screen) {
     document.querySelectorAll('.screen').forEach((s) => s.classList.toggle('on', s.id === 's-' + screen));
-    document.querySelectorAll('.nav-item').forEach((n) => n.classList.toggle('on', n.dataset.go === screen));
+    /* `[data-go]` and not every .nav-item: the sidebar also carries the login
+       screen toggle, which names no screen. Without the attribute selector this
+       line cleared its lit state on the next navigation, so the button read as
+       off while the screen it opened was still up. */
+    document.querySelectorAll('.nav-item[data-go]').forEach((n) => n.classList.toggle('on', n.dataset.go === screen));
     const t = document.getElementById('topTitle');
     if (t && TITLES[screen]) t.textContent = TITLES[screen];
     window.scrollTo({ top: 0 });
@@ -5491,6 +5595,7 @@ function askMarkStale(){
          Docker image runs a login screen; without this the page would frame a
          port with nothing behind it on every local `npm start`. */
       novncPort = m.novncPort || null;
+      mountVncNav();
       render();
     } else if (m.type === 'recon_login') {
       needLogin = m.message;

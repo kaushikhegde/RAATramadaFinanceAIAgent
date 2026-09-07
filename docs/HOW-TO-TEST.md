@@ -64,9 +64,13 @@ on the login page.
 > That screen *is* the browser the app drives. The app never types your password —
 > a person always signs in. That is by design.
 
-Tick **Keep open** on the panel to leave it up and watch the run work. To sign in
-before you start instead, open **<http://127.0.0.1:6080/vnc.html>** yourself and
-click **Connect** — the panel's "Open in a tab" link goes to the same place.
+Tick **Keep open** on the panel to leave it up and watch the run work.
+
+To sign in **before** you start — or just to check you are still signed in —
+click **Tramada login screen** in the left sidebar, under *Browser*. It is there
+on every screen and works with no run going. Escape, the ✕ or a click outside
+closes it again. (Opening **<http://127.0.0.1:6080/vnc.html>** in its own tab
+still works too; both panels link to it.)
 
 ### 4. Stop the app
 

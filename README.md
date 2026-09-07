@@ -77,9 +77,17 @@ run. The tick is remembered, but the screen still comes down when the run ends:
 a finished run has nothing to sign into, and leaving it up would hold a live
 connection to a signed-in browser open for as long as the tab stayed open.
 
+**Or open it whenever you like.** The sidebar carries a **Tramada login screen**
+button under *Browser*, on every screen, whether or not a run is going. It opens
+the same screen as a window over the page — sign in before you start, or just
+check the session is still alive. Closing it (Escape, the ✕, or a click on the
+backdrop) drops the VNC connection; while it is up, the run's own inline panel
+stands aside so there is only ever one client on the screen. The button only
+appears where a login screen exists — a local `npm start` has none, so it is not
+offered.
+
 `:6080` is still there to open by hand if you would rather have it in its own
-tab — the panel has a link — and it is where to go if you want to sign in
-*before* starting a run.
+tab — both the panel and the window have a link.
 
 That is why there is a window manager and a VNC server in the image at all.
 "Headless" here means no monitor, not no display — a run needs a browser a person
