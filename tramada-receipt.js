@@ -1407,6 +1407,29 @@ async function runTramadaReceipt({
       );
       await sleep(800);
     }
+
+    /* Wait for the receipt ROW to render, not just the list page.
+       The loop above breaks the instant the URL is booking-receipts.htm, but the
+       list's data row lags its own header — worst for a PARTIAL allocation, where
+       Tramada records the split before it paints the row. Reading immediately
+       then found nothing and reported "Receipt was NOT created" for booking 14945
+       — while R.0000009708 for $250 (allocated $200) was in fact sitting on the
+       page, unread, unticked, and lost from the reconciliation. A null read here
+       means "not rendered yet", NOT "no receipt" (§6): so poll for a real R. row
+       before deciding either way. Same table/row test readLatestReceipt uses. */
+    await page.waitForFunction(() => {
+      for (const t of document.querySelectorAll("table")) {
+        const head = t.querySelector("tr");
+        if (head && /Receipt\s*No/i.test(head.textContent)) {
+          for (const row of Array.from(t.querySelectorAll("tr")).slice(1)) {
+            const c = row.querySelectorAll("td");
+            if (c.length >= 9 && /^R\./i.test((c[1].textContent || "").trim())) return true;
+          }
+        }
+      }
+      return false;
+    }, { timeout: 15000 }).catch(() => { /* fall through — the strict check below still fails honestly */ });
+
     const issued = await readLatestReceipt(page);
 
     // STRICT: success means a real receipt number (R.000...) in the list —
