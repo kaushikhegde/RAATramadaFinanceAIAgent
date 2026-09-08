@@ -182,6 +182,12 @@ async function init() {
     pool = new Pool({ connectionString: process.env.DATABASE_URL });
     await pool.query(SCHEMA);
     await load();
+    // Say it out loud, and WITHOUT credentials — host:port/db only, never the
+    // user or password. `url.host`/`url.pathname` drop them; a URL that will not
+    // parse just prints without the location rather than leaking the raw string.
+    let where = "";
+    try { const u = new URL(process.env.DATABASE_URL); where = ` (${u.host}${u.pathname})`; } catch { /* no location, no leak */ }
+    console.log(`  ✓ Postgres connected${where} — ${runs.length} run(s) loaded.`);
   })();
   return ready;
 }
