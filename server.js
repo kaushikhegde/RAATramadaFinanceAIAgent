@@ -940,13 +940,28 @@ async function handleMintRun(session, msg) {
 
 /* ── up ──────────────────────────────────────────────────────────────────── */
 
-// A run still marked "running" is one the last process died holding. Said out
-// loud, because "1 running" on the dashboard is a figure people wait on.
-const orphans = store.reconcileOrphans();
-if (orphans) console.log(`  ⚠ ${orphans} run(s) were still open from a previous server — marked failed.`);
+// The overview and every write go through an in-memory cache that `init()` fills
+// from Postgres, so it has to be loaded BEFORE the first request is answered and
+// before orphans are swept — otherwise a fresh process would report an empty
+// dashboard and re-open no crashed runs. A connection that will not come up is
+// fatal here, on purpose: the run history is where receipts are recorded, and a
+// server that cannot reach it should say so at boot, not silently keep runs in a
+// cache that vanishes on restart.
+(async () => {
+  try {
+    await store.init();
+  } catch (err) {
+    console.error(`  ✗ could not open the run store: ${err.message}`);
+    process.exit(1);
+  }
 
-server.listen(PORT, () => {
-  console.log(`
+  // A run still marked "running" is one the last process died holding. Said out
+  // loud, because "1 running" on the dashboard is a figure people wait on.
+  const orphans = store.reconcileOrphans();
+  if (orphans) console.log(`  ⚠ ${orphans} run(s) were still open from a previous server — marked failed.`);
+
+  server.listen(PORT, () => {
+    console.log(`
 ╔════════════════════════════════════════════════╗
 ║   🏦  Bank reconciliation agent                ║
 ║   🌐  http://localhost:${String(PORT).padEnd(24)}║
@@ -958,4 +973,5 @@ ${NOVNC_PORT ? `  Sign into Tramada on the login screen:
   Start it with "npm run start:chrome" and sign into Tramada in that window —
   credentials are never typed here.`}
 `);
-});
+  });
+})();

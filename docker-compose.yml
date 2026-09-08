@@ -29,9 +29,15 @@ services:
       # itself when a run needs one. Must match the published 6080 above: the
       # page builds the URL from its own hostname and this port.
       NOVNC_PORT: "6080"
-      # runs.json, uploads/ AND the Chrome profile all live under here, so the
-      # Tramada session and the run archive both survive `docker compose down`.
+      # The uploaded report bytes AND the Chrome profile live under here, so the
+      # Tramada session and the report archive both survive `docker compose down`.
+      # The runs themselves live in Postgres now (see DATABASE_URL below).
       RECON_STORE_DIR: /data
+      # Where the run history lives. Point at a Postgres reachable FROM THE
+      # CONTAINER — a database on the host is at host.docker.internal, e.g.
+      #   DATABASE_URL=postgres://user:pass@host.docker.internal:5432/recon
+      # Unset, the server keeps runs in memory only and loses them on restart.
+      DATABASE_URL: ${DATABASE_URL:-}
       # The instance a run drives and the login screen opens. Override here or in
       # a .env beside this file.
       TRAMADA_URL: ${TRAMADA_URL:-https://asp.tramada.com.au/ttms/raatravelsandbox}
@@ -40,8 +46,8 @@ services:
       # A named volume, NOT a host bind mount: this project sits under
       # ~/Documents, which macOS blocks Docker Desktop from mounting (TCC →
       # "operation not permitted"). The volume still outlives `compose down`.
-      # Pull the archive out with:
-      #   docker compose cp recon:/data/runs.json ./runs.json
+      # Pull the kept report files out with:
+      #   docker compose cp recon:/data/uploads ./uploads
       # Delete the profile to force a fresh login:
       #   docker compose run --rm recon rm -rf /data/chrome-profile
       - recon-data:/data

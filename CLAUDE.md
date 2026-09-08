@@ -189,22 +189,40 @@ Read what the page says; never encode today's answer as tomorrow's bug.
 
 ## 6b. Every run is written down
 
-`run-store.js` — `uploads/` for the report exactly as it arrived, `runs.json`
-for the run. The Run overview screen reads this and nothing else.
+`run-store.js` — `uploads/` on disk for the report exactly as it arrived,
+**Postgres** (reached over `DATABASE_URL`) for the run. The Run overview screen
+reads this store and nothing else. The store keeps an in-memory cache of every
+run, loaded from Postgres by `init()` at boot and kept in step by each write, so
+its public functions still return synchronously and the reads never touch the
+wire per request. With no `DATABASE_URL` it runs on that cache alone — offline,
+un-persisted — which is what keeps the test suite offline (§7).
 
 - **Keep the bytes, not just the parse.** "What was actually in the file" is the
-  only thing that settles a disputed figure weeks later.
+  only thing that settles a disputed figure weeks later. The bytes stay on the
+  `RECON_STORE_DIR` volume in `uploads/`, **not** in Postgres — a database backup
+  has no business carrying binary report files; only the `file` metadata is
+  stored with the run.
 - **Write a row when its verdict is known, not at the end.** A run that dies on
-  row 7 has filed six real receipts and nothing rolls back.
-- **Recording a run must never be able to stop one.** Every store call at the
-  server boundary swallows its own failure. A full disk is a reason to lose the
-  archive copy; it is not a reason to abandon a run with receipts already filed.
-- **A `runs.json` that will not parse is moved aside, never overwritten.** It is
-  somebody's record of money that moved, and it became interesting at exactly
-  the moment it stopped parsing.
+  row 7 has filed six real receipts and nothing rolls back. `patchRow` enqueues
+  its `UPDATE` the moment it is called, from the same `onRow` callback that feeds
+  the page.
+- **Recording a run must never be able to stop one.** Every store write updates
+  the cache synchronously and then enqueues the database work on a serial FIFO
+  chain whose failures are swallowed. A database that is down, slow or read-only
+  is a reason to lose the archive copy; it is not a reason to abandon a run with
+  receipts already filed — and the FIFO chain is what stops two enqueued writes
+  from racing or reordering.
+- **Postgres owns durability now.** There is no file to corrupt, so the old
+  "a `runs.json` that will not parse is moved aside, never overwritten" drill is
+  gone. Its replacement is the round-trip test in `test/test-store-pg.js`, which
+  proves a run written by one process is read back whole by the next; it runs
+  only when a `DATABASE_URL` is given and is deliberately **not** in `npm test`.
 - The figures themselves are decided in `recon-core.js` (`runTotals`,
-  `overviewFrom`) and tested offline. A dashboard is the one screen whose being
-  wrong is invisible — every figure on it looks like a figure, and nobody
+  `overviewFrom`) and tested offline — **never** re-implemented as SQL
+  aggregates, which would drop them out of those offline tests. `listRuns()`
+  reads rows out of the cache and hands them to `overviewFrom`. A dashboard is
+  the one screen whose being wrong is invisible — every figure on it looks like a
+  figure, and nobody
   re-adds one.
 
 ---

@@ -6,8 +6,15 @@
  * numbers are decided in recon-core.js, which is pure, and checked here against
  * runs built by hand.
  *
- * The store half writes to a throwaway directory (RECON_STORE_DIR), never the
- * repo — a test suite that leaves runs.json behind is one nobody runs twice.
+ * The store keeps runs in Postgres now, but this suite is OFFLINE (CLAUDE.md
+ * §7 — no network, no database). With no DATABASE_URL the store runs on its
+ * in-memory model alone, which has the same synchronous shape the file store
+ * had, so every assertion here still holds. The real SQL round-trip is proved
+ * separately in test-store-pg.js, which only runs when a DATABASE_URL is given.
+ *
+ * The only thing that still touches disk is the uploaded report BYTES, which
+ * are written to a throwaway directory (RECON_STORE_DIR), never the repo — a
+ * test suite that leaves an uploads/ folder behind is one nobody runs twice.
  */
 const fs = require("fs");
 const os = require("os");
@@ -15,6 +22,9 @@ const path = require("path");
 
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), "recon-store-"));
 process.env.RECON_STORE_DIR = DIR;
+// Forced off, so a developer who has DATABASE_URL set in their shell still runs
+// this suite against the in-memory model and never against a live database.
+delete process.env.DATABASE_URL;
 
 const C = require("../recon-core");
 const S = require("../run-store");
@@ -334,24 +344,18 @@ check("...and an unknown one is empty, not a throw",
 check("...leaving the outstanding ones alone",
   S.listUnresolved("ipsi").map((r) => r.id), [otherDate.id, ipsiB.id]);
 
-console.log("\nwhen the file is not what it should be");
+console.log("\na run the last process died holding");
+// Durability of the archive is Postgres's job now, and the corrupt-file drill
+// the file store needed (a runs.json that would not parse, moved aside not
+// overwritten) has no analogue here — there is no file to corrupt. What still
+// matters is the orphan sweep at startup: a run left "running" by a dead process
+// must be closed, or "1 running" sits on the dashboard forever.
 const orphan = S.startRun({ source: "bpay", rows: [] }, "2026-08-10T15:00:00.000Z");
 check("an orphan starts running", S.getRun(orphan.id).status, "running");
 check("startup closes it", S.reconcileOrphans(), 1);
 check("as failed", S.getRun(orphan.id).status, "failed");
 check("saying what happened", S.getRun(orphan.id).error, "the server stopped while this run was going");
 check("and a second sweep finds nothing left to do", S.reconcileOrphans(), 0);
-
-// A runs.json that will not parse is somebody's record of money that moved.
-// Overwriting it would destroy the only copy at the moment it got interesting.
-const before = S.listRuns().length;
-fs.writeFileSync(path.join(DIR, "runs.json"), "{ this is not json");
-const after = S.listRuns();
-check("a corrupt store reads as empty rather than throwing", after.length, 0);
-ok("and the unreadable one is kept aside, not overwritten",
-  fs.readdirSync(DIR).some((f) => f.startsWith("runs.json.corrupt-")),
-  `dir held: ${fs.readdirSync(DIR).join(", ")}`);
-ok("there was something to lose", before > 0);
 const fresh = S.startRun({ source: "bpay", rows: [] }, "2026-08-10T16:00:00.000Z");
 check("and the store keeps working afterwards", S.getRun(fresh.id).status, "running");
 

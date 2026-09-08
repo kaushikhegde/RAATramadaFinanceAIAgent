@@ -19,6 +19,7 @@
     "test:xlsx": "node test/test-xlsx-lite.js",
     "shots": "node shots/shot-recon.js && node shots/shot-recon-run.js && node shots/shot-mint-run.js && node shots/shot-overview.js && node shots/shot-both.js && node shots/shot-bpay-rules.js && node shots/shot-login-screen.js",
     "test:store": "node test/test-run-store.js",
+    "test:store:pg": "node test/test-store-pg.js",
     "smoke": "node test/smoke-store.js",
     "test:travelpay": "node test/test-travelpay.js",
     "fixtures:bpay": "node tools/make-fixtures.js bpay --limit 5",
@@ -39,6 +40,7 @@
   "dependencies": {
     "dotenv": "^16.6.1",
     "express": "^4.21.0",
+    "pg": "^8.23.0",
     "playwright": "^1.58.2",
     "ws": "^8.18.0"
   },

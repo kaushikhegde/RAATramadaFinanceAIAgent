@@ -94,10 +94,11 @@ That is why there is a window manager and a VNC server in the image at all.
 can reach, because Tramada will ask for a password, and one day an OTP.
 
 **What survives a restart.** A named Docker volume (`recon-data`) holds the Chrome
-profile — so the Tramada session outlives `docker compose down` — along with
-`runs.json` and `uploads/`. Copy the archive out with
-`docker compose cp recon:/data/runs.json ./runs.json`. Force a fresh (signed-out)
-browser with `docker compose run --rm recon rm -rf /data/chrome-profile`.
+profile — so the Tramada session outlives `docker compose down` — along with the
+kept report bytes in `uploads/`. The runs themselves live in Postgres (set
+`DATABASE_URL` to a database the container can reach). Copy the kept reports out
+with `docker compose cp recon:/data/uploads ./uploads`. Force a fresh
+(signed-out) browser with `docker compose run --rm recon rm -rf /data/chrome-profile`.
 
 > A host bind mount (`./data:/data`) is **not** used: this project lives under
 > `~/Documents`, which macOS blocks Docker Desktop from mounting (you get
@@ -253,7 +254,7 @@ they really are matched and ticked. What is withheld is the click that makes the
 *statement* permanent, and the Finance Receipts Issue. The page is left open on
 screen with the ticks in place, for you to look at before committing it by hand.
 
-The run is still recorded in `runs.json`, marked `dryRun: true` — a history that
+The run is still recorded in the store, marked `dryRun: true` — a history that
 could not tell a committed statement from an uncommitted one would be worse than
 no history.
 
@@ -263,7 +264,7 @@ mid-run cannot change what the run in flight is allowed to do.
 ### Looking at a past run
 
 The inbox's **Report date** select is the run picker: *This run*, or any run
-before it, read back from `runs.json`. Choosing one draws that run's rows in the
+before it, read back from the store. Choosing one draws that run's rows in the
 same table, with the chip reading **past run** rather than *live run*; the
 **Report** select beside it narrows a combined run to one of its four reports. A
 new run always snaps the screen back to now — a row arriving for a run you are
@@ -275,11 +276,22 @@ filled, because there are no shops here.
 ## Where a run is written down
 
 ```
-uploads/20260810-143002-mint.xlsx     the report exactly as it arrived
-runs.json                             every run, its rows and its money
+uploads/20260810-143002-mint.xlsx     the report exactly as it arrived (on disk)
+Postgres, over DATABASE_URL           every run, its rows and its money
 ```
 
-The **Run overview** screen is fed from `runs.json` and nothing else. Before it
+The run history lives in **Postgres**, reached over `DATABASE_URL`; the uploaded
+report bytes stay on disk in `uploads/`, because a database backup has no
+business carrying binary report files. `run-store.js` keeps an in-memory cache of
+every run, loaded from Postgres at boot and kept in step by each write, so the
+overview is answered without a query per request. **With no `DATABASE_URL` the
+server runs in memory only** — fine for local dev, but runs are lost on restart,
+and this is what keeps `npm test` offline.
+
+The tables (`runs`, `run_rows`, `run_activity`, `cheat_sheets`) are created on
+first boot; point `DATABASE_URL` at an empty database and it sets itself up.
+
+The **Run overview** screen is fed from this store and nothing else. Before it
 existed that screen showed the design mockup's invented figures behind a "sample
 data" banner, because a finished run had nowhere to go.
 
@@ -294,9 +306,11 @@ page opened long after the run finished:
 
 Rows are written **as they happen**, not at the end: a run that dies on row 7
 has still filed six real receipts, and their numbers have to outlive the process
-that filed them. Writes are atomic, and a `runs.json` that will not parse is
-moved aside rather than overwritten — it is still somebody's record of money
-that moved.
+that filed them. Every write updates the cache, then persists to Postgres on a
+serial queue whose failures are swallowed — recording a run must never be able to
+stop one. The one test that needs a real database, `npm run test:store:pg`,
+proves a run written by one process is read back whole by the next; it skips when
+no `DATABASE_URL` is set.
 
 ## Layout
 
@@ -312,7 +326,8 @@ tools/        the build, the fixture makers, the one-off CLIs
 fixtures/     the sample reports and workbooks tests and tools read
 docs/         the field map, the BPay conformance notes, the history
 
-uploads/  runs.json  csv_uploads/     written by a run, not checked in
+uploads/  csv_uploads/     kept report bytes, written by a run, not checked in
+                           (the runs themselves live in Postgres)
 ```
 
 Everything the running app loads is at the root; everything else is in a
@@ -327,7 +342,7 @@ folder. A file's folder is the answer to "do I need this to reconcile?".
 | `xlsx-lite.js` | Reads .xlsx with no dependencies — a workbook is a zip of XML and node ships `zlib`. |
 | `tramada-receipt.js` | The booking receipt form. |
 | `server.js` | One page, one socket, and the run history over HTTP. |
-| `run-store.js` | `uploads/` and `runs.json` — where a run is written down. |
+| `run-store.js` | `uploads/` on disk and the runs in Postgres — where a run is written down. |
 | `design/recon-wire.html` | The live wiring added to the client's mockup. |
 | `tools/build-recon.js` | `public/index.html` ← `design/recon-ui-mockup.html` + `design/recon-wire.html`, plus the tab title and favicon |
 

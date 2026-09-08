@@ -221,15 +221,17 @@ console.log("\nRAA's own cheat sheet — one sheet, both reports, .xlsx");
   check("nor is a hyphen", C.cheatSheetCandidates("Rail On-line"), ["Rail On-line"]);
 }
 
-console.log("\nthe sheet survives a restart");
+console.log("\nthe sheet keeps its candidates for next time");
 {
-  /* The candidates are worked out when the file is READ and used when a run
-     matches — with a save and a process restart in between. Writing only the
-     cell would leave "Royal Caribbean" un-matchable tomorrow morning, and
-     nothing on screen would say so. */
-  const fs = require("fs"), os = require("os"), path = require("path");
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cheat-"));
-  process.env.RECON_STORE_DIR = dir;
+  /* The candidates are worked out when the sheet is SAVED and used when a run
+     matches — with a save and (in production) a process restart in between.
+     Storing only the cell would leave "Royal Caribbean" un-matchable tomorrow
+     morning, and nothing on screen would say so. The store lives in Postgres
+     now, so surviving an actual restart is a database round-trip proved offline
+     nowhere and in test-store-pg.js when a DATABASE_URL is given; what this
+     offline test pins down is that saveCheatSheet writes the `try` candidates,
+     not just the cell, so getCheatSheet hands them back intact. */
+  delete process.env.DATABASE_URL;                       // in-memory, never a live DB
   delete require.cache[require.resolve("../run-store")];
   const store = require("../run-store");
 
@@ -239,17 +241,15 @@ console.log("\nthe sheet survives a restart");
   ].join("\n"));
   store.saveCheatSheet("suppliers", { name: "Supplier Cheat Sheet.xlsx", pairs: parsed.pairs });
 
-  // Off disk, as a fresh process would see it.
-  const back = JSON.parse(fs.readFileSync(path.join(dir, "cheat-sheets.json"), "utf8")).suppliers;
+  // Read back through the store, the way a fresh page would ask for it.
+  const back = store.getCheatSheet("suppliers");
   check("the file name is kept whatever its format", back.name, "Supplier Cheat Sheet.xlsx");
   const reloaded = C.cheatSheetIndex(back.pairs);
-  check("and both creditors still match after a restart",
+  check("and both creditors still match afterwards",
     [C.supplierMatches("RCL CRUISES LTD", "Royal Caribbean", reloaded).ok,
      C.supplierMatches("RCL CRUISES LTD", "Celebrity Cruises", reloaded).ok],
     [true, true]);
 
-  fs.rmSync(dir, { recursive: true, force: true });
-  delete process.env.RECON_STORE_DIR;
   delete require.cache[require.resolve("../run-store")];
 }
 
