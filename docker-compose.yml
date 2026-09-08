@@ -1,5 +1,6 @@
-# Self-contained reconciliation stack: the server AND a Chromium you sign into
-# through a browser-based VNC screen. No Chrome needed on the host.
+# Self-contained reconciliation stack: the server, a Chromium you sign into
+# through a browser-based VNC screen, AND a Postgres for the run history.
+# Nothing needed on the host but Docker — no Chrome, no database to install.
 #
 #   docker compose up --build          # or: npm run docker:up
 #   → login screen  http://127.0.0.1:6080/vnc.html   (SIGN INTO TRAMADA HERE)
@@ -33,15 +34,27 @@ services:
       # Tramada session and the report archive both survive `docker compose down`.
       # The runs themselves live in Postgres now (see DATABASE_URL below).
       RECON_STORE_DIR: /data
-      # Where the run history lives. Point at a Postgres reachable FROM THE
-      # CONTAINER — a database on the host is at host.docker.internal, e.g.
-      #   DATABASE_URL=postgres://user:pass@host.docker.internal:5432/recon
-      # Unset, the server keeps runs in memory only and loses them on restart.
-      DATABASE_URL: ${DATABASE_URL:-}
+      # Where the run history lives — the bundled `db` service below, so
+      # `docker compose up` needs NO Postgres on the host. Set to `db:5432`
+      # DIRECTLY (not ${DATABASE_URL}) on purpose: docker compose auto-reads the
+      # repo's .env, and that .env points `npm start` at localhost — interpolating
+      # it here would send the container to its own empty localhost and the app
+      # would exit "could not open the run store". To go live, replace this line
+      # with the hosted URL, e.g.
+      #   DATABASE_URL: postgres://user:pass@live-host:5432/db?sslmode=require
+      # or per run: docker compose run -e DATABASE_URL=... recon
+      DATABASE_URL: postgres://recon:recon@db:5432/recon
       # The instance a run drives and the login screen opens. Override here or in
       # a .env beside this file.
       TRAMADA_URL: ${TRAMADA_URL:-https://asp.tramada.com.au/ttms/raatravelsandbox}
       DEBUG: ${DEBUG:-false}
+    # Wait for the bundled Postgres to accept connections before the app boots —
+    # the server treats an unreachable store as fatal (it exits), so starting it
+    # ahead of the DB would just fail. When you point DATABASE_URL at an external
+    # DB you can stop running the db service (see the comment on it below).
+    depends_on:
+      db:
+        condition: service_healthy
     volumes:
       # A named volume, NOT a host bind mount: this project sits under
       # ~/Documents, which macOS blocks Docker Desktop from mounting (TCC →
@@ -55,5 +68,33 @@ services:
     # silently restarted into a browser nobody is signed into.
     restart: "no"
 
+  # Bundled Postgres — so a fresh machine needs nothing installed but Docker.
+  # `docker compose up` brings the database up alongside the app; the app reaches
+  # it over the compose network at `db:5432`. Data lives in a named volume, so it
+  # survives `docker compose down` (use `docker compose down -v` to wipe it).
+  # Going live later: set DATABASE_URL to the hosted DB and you can skip this
+  # service with `docker compose up recon` (it starts only the app).
+  db:
+    image: postgres:16
+    container_name: raa-recon-db
+    environment:
+      POSTGRES_USER: recon
+      POSTGRES_PASSWORD: recon
+      POSTGRES_DB: recon
+    # Not published to the host: the app reaches it in-network at db:5432.
+    # Uncomment to inspect it from a host psql on localhost:5432.
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+    volumes:
+      - recon-pgdata:/var/lib/postgresql/data
+    # depends_on above waits on THIS: the app only boots once pg_isready passes.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recon -d recon"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: "no"
+
 volumes:
   recon-data:
+  recon-pgdata:

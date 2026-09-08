@@ -18,7 +18,29 @@ automatically on first boot — no migration step. The database user just needs
 
 ---
 
-## Local database — pick ONE
+## Easiest: `docker compose` (Postgres is bundled)
+
+If you run the app with Docker, **you don't set up Postgres at all** — the
+compose stack includes it:
+
+```bash
+docker compose up --build          # app + Chromium/VNC + Postgres, one command
+```
+
+- Nothing to install on the machine but Docker — no Homebrew, no local Postgres.
+- The app talks to the bundled database in-network at `db:5432` (already wired in
+  `docker-compose.yml`; the host's `.env` is deliberately NOT used for it).
+- Data persists in the `recon-pgdata` volume (survives `docker compose down`;
+  wipe with `docker compose down -v`).
+- Go live later: replace the `DATABASE_URL:` line in `docker-compose.yml` with
+  the hosted URL, or `docker compose run -e DATABASE_URL=... recon`.
+
+The rest of this doc is only for running the app with **`npm start`** (no Docker),
+where you provide the database yourself.
+
+---
+
+## Local database for `npm start` — pick ONE
 
 Either option gives you a persistent local Postgres. Both end at the same URL:
 `postgres://recon:recon@localhost:5432/recon`.
@@ -60,29 +82,21 @@ Stop/remove with `docker stop recon-pg` (data survives) /
 
 ---
 
-## Point the app at it
+## Point the app at it (`npm start` only)
 
-`DATABASE_URL` lives in `.env` (git-ignored). The host depends on **how you run
-the app**:
-
-| How you run the app | `DATABASE_URL` host |
-|---|---|
-| `npm start` on the host (with `npm run start:chrome`) | `localhost` |
-| `docker compose up` (the bundled Chromium + VNC stack) | `host.docker.internal` |
+For `npm start`, `DATABASE_URL` lives in `.env` (git-ignored):
 
 ```bash
-# npm start:
 DATABASE_URL=postgres://recon:recon@localhost:5432/recon
-
-# docker compose (DB is on the host, app is in the container):
-DATABASE_URL=postgres://recon:recon@host.docker.internal:5432/recon
 ```
 
-For `docker compose`, set it in a `.env` **beside `docker-compose.yml`** (compose
-substitutes `${DATABASE_URL}`) or export it before `docker compose up`.
+(Docker users don't do this — the bundled `db` service is already wired in
+`docker-compose.yml`, and the host `.env` is intentionally ignored for it so a
+`localhost` URL meant for `npm start` can't send the container to itself.)
 
-Verify: open **http://localhost:3000** → **Run overview** loads (empty on a fresh
-DB, no error), and `\dt` in the database shows the 4 tables.
+Verify (either way): open **http://localhost:3000** → **Run overview** loads
+(empty on a fresh DB, no error). On boot the terminal prints
+`✓ Postgres connected (host:port/db) — N run(s) loaded.`
 
 ---
 
