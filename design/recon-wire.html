@@ -2373,6 +2373,23 @@ header.top { display: none !important }
       if (!t) return;
       e.preventDefault();
       go(t.dataset.go);
+      /* A Review button names the run it belongs to. Without this it landed on
+         the report screen's default "This run" — empty in a fresh session — so
+         Review read as an empty, broken page. Select that run so Review opens
+         its rows, reusing the picker's own change handler (the one path that
+         fetches and draws a stored run). */
+      if (t.dataset.run) {
+        const openIt = () => {
+          const sel = document.getElementById('ibDate');
+          if (!sel) return false;
+          sel.value = t.dataset.run;
+          if (sel.value !== t.dataset.run) return false;   // option not loaded yet
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        };
+        // If the run is not in the picker yet (list still loading), refresh and retry.
+        if (!openIt()) refreshRuns().then(openIt);
+      }
     });
   }
 
@@ -3054,7 +3071,7 @@ header.top { display: none !important }
         '<td class="num mid">' + esc((r.amountCents / 100).toFixed(2)) + '</td>' +
         variance +
         '<td class="muted mid">' + esc((r.proposal || '').slice(0, 90)) + '</td>' +
-        '<td class="rowact mid"><button class="btn sm" data-go="inbox">Review</button></td>' +
+        '<td class="rowact mid"><button class="btn sm" data-go="inbox" data-run="' + esc(r.runId) + '">Review</button></td>' +
         '</tr>';
     }).join('');
   }
