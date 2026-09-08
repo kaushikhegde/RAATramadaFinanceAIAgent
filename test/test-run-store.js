@@ -244,7 +244,7 @@ check("the dashboard sees both runs", dash.runs, 2);
 check("one completed", dash.completed, 1);
 check("one failed", dash.failed, 1);
 
-console.log("\nIPSI's pending settlements — resolved is manual, never automatic");
+console.log("\nIPSI's pending settlements — the store never resolves on its own");
 const ipsiA = S.startRun({
   source: "ipsi", statementDate: "2026-08-09", transactionTotal: "3035.85", rows: [],
 }, "2026-08-11T09:00:00.000Z");
@@ -254,6 +254,10 @@ S.finishRun(ipsiA.id, { summary: { ticked: 1, total: 2 } });
 const ipsiB = S.startRun({
   source: "ipsi", statementDate: "2026-08-11", transactionTotal: "18668.07", rows: [],
 }, "2026-08-11T10:00:00.000Z");
+// Finished for the same reason ipsiA is, and because the pending list only
+// carries runs that have finished — a run still going has not asked for
+// anything yet. See listUnresolved.
+S.finishRun(ipsiB.id, {});
 check("the NUVEI amount is stored with the run", S.getRun(ipsiA.id).transactionTotal, "3035.85");
 check("a run starts unresolved", S.getRun(ipsiA.id).resolved, false);
 check("both show as unresolved, most recent first",
@@ -261,18 +265,74 @@ check("both show as unresolved, most recent first",
 check("a report with no unresolved runs is an empty list, not a crash",
   S.listUnresolved("travelpay"), []);
 
+/* A run still going is not pending work. It may be about to come back clean
+   and resolve itself — listing it made a settlement that turned out to be
+   entirely reconciled show as outstanding for as long as the run took. */
+const inFlight = S.startRun({
+  source: "ipsi", statementDate: "2026-08-12", rows: [],
+}, "2026-08-11T11:00:00.000Z");
+check("a run still going is not listed",
+  S.listUnresolved("ipsi").map((r) => r.id), [ipsiB.id, ipsiA.id]);
+check("it is still in the store, running", S.getRun(inFlight.id).status, "running");
+S.finishRun(inFlight.id, { error: "stopped" });
+check("and appears the moment it finishes with something outstanding",
+  S.listUnresolved("ipsi").map((r) => r.id), [inFlight.id, ipsiB.id, ipsiA.id]);
+S.markResolved(inFlight.id);
+
 S.markResolved(ipsiA.id);
 check("resolving one drops it off the list", S.listUnresolved("ipsi").map((r) => r.id), [ipsiB.id]);
 check("but it is still in the run's own history, marked", S.getRun(ipsiA.id).resolved, true);
 ok("with when", !!S.getRun(ipsiA.id).resolvedAt);
 check("resolving a run that isn't there is null, not a throw", S.markResolved("nope"), null);
 
-// A run finishing cleanly does not resolve it on its own — the guide's own
-// "Other features" wants a PERSON to decide that, and a dry run's own
-// preview can look clean while still being one Save away from being real.
+/* `finishRun` still never resolves anything. Whether a settlement is finished
+   is not a thing the store can know — it depends on whether the receipts came
+   off Receipts To Reconcile, which only the run itself saw. server.js decides
+   (`settlementComplete`) and calls in; a summary that merely looks clean here
+   can still be a dry run's preview, one Save away from being real. */
 S.finishRun(ipsiB.id, { summary: { ticked: 2, total: 2 } });
 check("finishing clean still leaves it unresolved",
   S.listUnresolved("ipsi").map((r) => r.id), [ipsiB.id]);
+
+/* ── A settlement is not a run ────────────────────────────────────────────
+   One settlement is fixed across several attempts, so several runs share a
+   statement date. When it finally reconciles they are all finished — and a
+   successful run clearing only ITSELF left every earlier attempt on the
+   pending list, so the list never emptied. Measured on the client's own
+   store, 08-09-2026: twenty-two unresolved runs, every one of them
+   2026-09-02, one settlement. */
+console.log("\nresolving a settlement clears every attempt at it");
+const tryA = S.startRun({
+  source: "ipsi", statementDate: "2026-09-02", transactionTotal: "1496.24", rows: [],
+}, "2026-09-08T01:25:00.000Z");
+const tryB = S.startRun({
+  source: "ipsi", statementDate: "2026-09-02", transactionTotal: "1496.24", rows: [],
+}, "2026-09-08T02:09:00.000Z");
+const otherDate = S.startRun({
+  source: "ipsi", statementDate: "2026-09-03", rows: [],
+}, "2026-09-08T02:10:00.000Z");
+const otherReport = S.startRun({
+  source: "bpay", statementDate: "2026-09-02", rows: [],
+}, "2026-09-08T02:11:00.000Z");
+for (const r of [tryA, tryB, otherDate, otherReport]) S.finishRun(r.id, {});
+
+const cleared = S.markSettlementResolved("ipsi", "2026-09-02");
+check("both attempts at that settlement resolve together", cleared.length, 2);
+check("and drop off the list", S.listUnresolved("ipsi").map((r) => r.id), [otherDate.id, ipsiB.id]);
+ok("each keeps when it was resolved", !!S.getRun(tryA.id).resolvedAt && !!S.getRun(tryB.id).resolvedAt);
+check("another settlement date is untouched", S.getRun(otherDate.id).resolved, false);
+check("another report's run of the same date is untouched", S.getRun(otherReport.id).resolved, false);
+check("resolving it again clears nothing further",
+  S.markSettlementResolved("ipsi", "2026-09-02").length, 0);
+
+/* Without a statement date there is nothing to say which attempts belong
+   together, so it resolves nothing rather than guessing — guessing here would
+   clear runs that are still outstanding. */
+check("no settlement date resolves nothing", S.markSettlementResolved("ipsi", null).length, 0);
+check("...and an unknown one is empty, not a throw",
+  S.markSettlementResolved("ipsi", "1999-01-01"), []);
+check("...leaving the outstanding ones alone",
+  S.listUnresolved("ipsi").map((r) => r.id), [otherDate.id, ipsiB.id]);
 
 console.log("\nwhen the file is not what it should be");
 const orphan = S.startRun({ source: "bpay", rows: [] }, "2026-08-10T15:00:00.000Z");

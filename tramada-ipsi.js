@@ -335,6 +335,18 @@ function popupTarget(url) {
  */
 const IPSI_FROM_DAYS = parseInt(process.env.IPSI_FROM_DAYS || "2", 10);
 
+/**
+ * How far either side of the settlement the DIAGNOSTIC search reaches.
+ *
+ * Wide on purpose, and used for nothing but explaining a row that already
+ * failed — never handed to a matcher. Ninety days each way covers a receipt
+ * keyed weeks late as easily as one keyed early, and reaching forward is the
+ * whole point: a receipt raised to FIX a flagged row is dated after the
+ * settlement it belongs to, which is exactly where the narrow window cannot
+ * look.
+ */
+const IPSI_DIAGNOSE_DAYS = parseInt(process.env.IPSI_DIAGNOSE_DAYS || "90", 10);
+
 async function searchIssueReceipts(page, {
   debtorCode = "MASTER",
   debtorLabel = "MasterCard/Visa/Debit",
@@ -627,6 +639,64 @@ async function readReceiptsToReconcile(popup) {
 }
 
 /**
+ * Every receipt on ONE booking, reconciled or not.
+ *
+ * The reconcile screens only ever show what is still WAITING, so they cannot
+ * answer "was this already done?" — a receipt that reconciled yesterday is
+ * absent from them for the same reason a receipt that was never raised is.
+ * The booking's own Receipts page shows both, which is what makes it the
+ * place to settle that question.
+ *
+ * Cancelled rows are marked rather than dropped: a booking that has been
+ * corrected a few times carries the cancelled originals alongside the live
+ * one, at the same reference and often the same amount, and a caller matching
+ * on reference would otherwise pick a receipt that no longer exists.
+ *
+ * READ-ONLY, and on a page of its own — the caller's form tab holds the
+ * `dataContainerId` its tick handles depend on, and navigating that away
+ * mid-run would cost the run its selection.
+ */
+async function readBookingReceipts(page, bookingNo) {
+  await page.goto(
+    `${TRAMADA_BASE_URL}/booking/booking-receipts.htm?id=${encodeURIComponent(bookingNo)}`,
+    { waitUntil: "domcontentloaded" }
+  );
+  await sleep(1200);
+  return await page.evaluate(() => {
+    const clean = (s) => String(s == null ? "" : s).replace(/\s+/g, " ").trim();
+    const table = [...document.querySelectorAll("table")]
+      .find((t) => /Receipt\s*No/i.test(t.textContent));
+    if (!table) return [];
+    const trs = [...table.querySelectorAll("tr")];
+    const head = trs.find((r) => /Receipt\s*No/i.test(r.textContent));
+    if (!head) return [];
+    const headers = [...head.children].map((c) => clean(c.textContent).toLowerCase());
+    const at = (pattern) => headers.findIndex((h) => new RegExp(pattern, "i").test(h));
+    const iNo = at("receipt\\s*no");
+    const iType = at("receipt\\s*type");
+    const iRef = at("reference");
+    const iDate = at("date\\s*received");
+    const iAmt = at("^amount$|amount");
+    const iAlloc = at("allocated");
+
+    return trs
+      .filter((r) => r !== head)
+      .map((r) => [...r.children].map((c) => clean(c.textContent)))
+      // The last row is a TOTALS line, not a receipt.
+      .filter((c) => c.length > iAlloc && iNo >= 0 && /^R\./i.test(c[iNo] || ""))
+      .map((c) => ({
+        receiptNo: c[iNo],
+        receiptType: iType >= 0 ? c[iType] : "",
+        reference: iRef >= 0 ? c[iRef] : "",
+        dateReceived: iDate >= 0 ? c[iDate] : "",
+        amount: iAmt >= 0 ? c[iAmt] : "",
+        allocated: iAlloc >= 0 ? c[iAlloc] : "",
+        cancelled: /cancel/i.test(iType >= 0 ? c[iType] : ""),
+      }));
+  });
+}
+
+/**
  * The "Payments To Reconcile" rows — same shape as `readReceiptsToReconcile`,
  * a different table. Refunds tick here; nothing else on an IPSI run does.
  */
@@ -769,21 +839,41 @@ async function issueMerchantReceipt(popup, { payerName, amountCents, reference, 
   await popup.waitForLoadState("domcontentloaded").catch(() => {});
   await sleep(2000);
 
+  /* WHAT THIS PAGE SAYS IS NOT WHETHER IT WORKED.
+     Measured live 08-09-2026 against a receipt that DID issue — four receipts
+     confirmed off Receipts To Reconcile afterwards — the page it leaves behind
+     still has `#save`, still holds the typed header values, and carries
+     Tramada's own "Amount Received must equal the allocated amount", because
+     the allocation it just consumed is gone and the header figure now matches
+     nothing. Every signal on the form says rejected; the ledger says issued.
+
+     This used to throw on both of those. `stillOnForm` is simply not a failure
+     signal and has been dropped. The banner is still READ — it is the only
+     thing that can explain a genuine rejection — but it is carried out as
+     evidence rather than acted on here, and the caller decides after checking
+     the receipts themselves. Widening the pattern without that change would
+     have made this worse, not better: it would have started reporting
+     "Receipt rejected" on receipts that issued. */
   const after = await popup.evaluate(() => {
     const clean = (s) => String(s || "").replace(/\s+/g, " ").trim();
     const errs = [...document.querySelectorAll("a, span, li, font, div")]
       .filter((n) => !n.children.length)
       .map((n) => clean(n.textContent))
-      .filter((t) => t && t.length < 200 && /must be|is required|is invalid|cannot be/i.test(t));
+      .filter((t) => t && t.length < 200 &&
+        /must be|must equal|must match|is required|is invalid|cannot be|does not match/i.test(t));
     return { stillOnForm: !!document.querySelector("#save"), error: errs[0] || "" };
   }).catch(() => ({ stillOnForm: false, error: "" }));
 
-  if (after.error) throw new Error(`Receipt rejected: ${after.error}`);
-  if (after.stillOnForm) {
-    throw new Error("Issue was pressed but the merchant receipt form is still showing.");
-  }
-  say(`Issued $${core.money(amountCents)}.`, true);
-  return { issued: true, amount: core.money(amountCents), payer: back.payer };
+  say(`Issue pressed for $${core.money(amountCents)} — checking the receipts.`);
+  return {
+    // Not `true`: nothing here has confirmed anything yet. The caller
+    // re-reads Receipts To Reconcile and decides.
+    issued: null,
+    pageError: after.error || null,
+    stillOnForm: after.stillOnForm,
+    amount: core.money(amountCents),
+    payer: back.payer,
+  };
 }
 
 /* ── the run ─────────────────────────────────────────────────────────────── */
@@ -858,6 +948,7 @@ async function runIpsiReconciliation(o = {}) {
       `${waitingPayments.length} payment${waitingPayments.length === 1 ? "" : "s"} waiting to be reconciled.`);
 
     const toTick = [];
+    const misses = [];
     for (const r of results) {
       // Refunds tick against Payments To Reconcile; everything else — a
       // Purchase or a Capture — ticks against Receipts To Reconcile.
@@ -867,7 +958,22 @@ async function runIpsiReconciliation(o = {}) {
       r.matchedOn = m.matched ? m.on : null;
       r.ticked = false;
       r.why = m.reason;
+      /* `on: null` is the matcher saying "nothing on the list at all", which is
+         the one verdict it cannot explain — see explainIpsiMiss for the three
+         very different situations that produce it. Collected now, explained
+         after the ticking, so the explanation costs nothing on a clean run. */
+      if (!m.matched && !m.on) misses.push(r);
+      /* A VERDICT THAT CAN CLEAR ITSELF.
+         This used to be `if (m.remark) r.remark = m.remark` — fill-only — so a
+         row flagged on one run and fixed in Tramada before the next came back
+         still wearing the old flag: reconciled, ticked, and captioned
+         "Booking number mismatch or not found". The rerun is the moment that
+         text is most likely to be read and most likely to be wrong.
+         Only the matcher's own remarks are cleared; a REMARKS.review the
+         parser put there for a problem in the FILE is not the matcher's to
+         withdraw. */
       if (m.remark) r.remark = m.remark;
+      else if (core.isIpsiMatcherRemark(r.remark)) r.remark = "";
       const hit = m.receipt || m.payment;
       /* Guide step 15: "Copy 'Booking No.' from each receipt line in Tramada
          and paste it in the 'Booking No.' column of the spreadsheet." Tramada's
@@ -887,9 +993,15 @@ async function runIpsiReconciliation(o = {}) {
         r.selectId = hit && hit.selectId;
         toTick.push(r.selectId);
       }
+      /* `remark: r.remark || ""` — the empty string is load-bearing. The page
+         merges each patch onto the row it already has (`{...results[i],
+         ...m.row}`) and the patch travels as JSON, which DROPS an undefined
+         key entirely. A cleared remark sent as undefined therefore arrives as
+         "no opinion" and the stale text stays on screen — the exact bug this
+         is fixing. An empty string survives the trip and overwrites. */
       row(r.n, {
         reconciliation: m.matched ? "Reconciled" : "Not reconciled",
-        why: r.why, remark: r.remark, receiptNo: r.receiptNo, tramadaBookingNo: r.tramadaBookingNo,
+        why: r.why, remark: r.remark || "", receiptNo: r.receiptNo, tramadaBookingNo: r.tramadaBookingNo,
       });
       say(`Row ${r.n}: ${m.reason}`, m.matched);
     }
@@ -897,11 +1009,107 @@ async function runIpsiReconciliation(o = {}) {
     const sel = await tickReceipts(form, toTick, say);
     for (const r of results) if (r.selectId && sel.ticked.includes(r.selectId)) r.ticked = true;
 
+    /* ── Explain the rows that found nothing ──────────────────────────────
+       Only on the failure path, and never with a list the matcher can see:
+       widening what a run reconciles against would trade away the "match
+       against the minimum" rule the narrow window exists to hold. This only
+       explains a verdict already reached.
+
+       Its own page, because the form tab holds the `dataContainerId` the tick
+       handles depend on and navigating that away would cost the run its
+       selection — and the form is brought back to the front afterwards,
+       because Chrome throttles a background tab into the multi-minute stalls
+       that `IPSI_FROM_DAYS` documents. */
+    if (misses.length) {
+      say(`${misses.length} row${misses.length === 1 ? "" : "s"} found nothing — checking why…`);
+      const probe = await ctx.newPage();
+      try {
+        const wideFrom = core.daysBefore(o.toDate, IPSI_DIAGNOSE_DAYS);
+        const wideTo = core.daysBefore(o.toDate, -IPSI_DIAGNOSE_DAYS);
+        const wideForm = await searchIssueReceipts(probe, {
+          debtorCode: o.debtorCode || "MASTER",
+          debtorLabel: o.debtorLabel || "MasterCard/Visa/Debit",
+          fromDate: wideFrom,
+          toDate: wideTo,
+        }, () => {});
+        const [wideReceipts, widePayments] = await Promise.all([
+          readReceiptsToReconcile(wideForm),
+          readPaymentsToReconcile(wideForm),
+        ]);
+
+        // One booking page per miss, and only for the ones the wide list did
+        // not already account for.
+        const window = { from: o.fromDate || core.daysBefore(o.toDate, IPSI_FROM_DAYS), to: o.toDate };
+        for (const r of misses) {
+          const wide = r.isRefund ? widePayments : wideReceipts;
+          let bookingReceipts = null;
+          const waiting = wide.some((x) =>
+            (x.reference && core.refKey(x.reference) === core.refKey(r.reference)) ||
+            (x.bookingNo && core.refKey(x.bookingNo) === core.refKey(r.bookingNo)));
+          if (!waiting && r.bookingNo) {
+            bookingReceipts = await readBookingReceipts(wideForm, r.bookingNo).catch(() => null);
+          }
+
+          const verdict = core.explainIpsiMiss(r, { wide, bookingReceipts, window });
+          r.why = verdict.why;
+          r.remark = verdict.remark;
+          r.missKind = verdict.kind;
+          if (verdict.kind === "already-reconciled") {
+            /* Reconciled, just not by this run. It is not an error and must
+               not be reported as one: a settlement that reconciled yesterday
+               reran today as a wall of red "not found" and sat on the pending
+               list forever. */
+            r.alreadyReconciled = true;
+            r.receiptNo = verdict.receipt.receiptNo;
+          }
+          row(r.n, {
+            reconciliation: r.alreadyReconciled ? "Reconciled" : "Not reconciled",
+            why: r.why, remark: r.remark || "", receiptNo: r.receiptNo,
+          });
+          say(`Row ${r.n}: ${verdict.why}`, verdict.kind === "already-reconciled");
+        }
+        if (wideForm !== probe) await wideForm.close().catch(() => {});
+      } finally {
+        await probe.close().catch(() => {});
+        await form.bringToFront().catch(() => {});
+      }
+    }
+
     const summary = core.summariseIpsi(results);
+    const alreadyDone = results.filter((r) => r.alreadyReconciled);
+
     if (!summary.ticked) {
+      /* THE WHOLE SETTLEMENT WAS ALREADY DONE. Not a failed run — a finished
+         one, rerun. There is nothing to tick, nothing to issue and nothing for
+         a person to fix, so it reports clean and clears itself off the pending
+         list (see server.js `settlementComplete`). */
+      if (alreadyDone.length === results.length && results.length) {
+        say(
+          `Every row on this settlement was already reconciled — ` +
+          `${alreadyDone.length} receipt${alreadyDone.length === 1 ? "" : "s"}, nothing left to issue.`,
+          true
+        );
+        ok = true;
+        return { results, summary, issued: null, alreadyReconciled: true, allClean: true };
+      }
       say("Nothing matched, so no receipt was issued.", false);
       ok = true;
       return { results, summary, issued: null };
+    }
+
+    /* Part done, part outstanding. The entered Transaction Total covers the
+       WHOLE settlement including the rows already reconciled, so it cannot be
+       used as Amount Received for the remainder — the total check below will
+       stop this, and it should. Said plainly here so the stop reads as the
+       arithmetic it is rather than as a fresh fault. */
+    if (alreadyDone.length) {
+      say(
+        `${alreadyDone.length} of ${results.length} rows were already reconciled by an earlier run. ` +
+        `The Transaction Total covers all of them, so it cannot be the Amount Received for the ` +
+        `${results.length - alreadyDone.length} still outstanding — reconcile those as their own ` +
+        `settlement, or resolve this one by hand.`,
+        false
+      );
     }
 
     // BR08 — before anything is typed into the receipt header, because a
@@ -943,6 +1151,50 @@ async function runIpsiReconciliation(o = {}) {
       reference: o.reference || ipsiReference(o.dateReceived || o.toDate),
       dateReceived: o.dateReceived,
     }, !!o.dryRun || !allClean, say);
+
+    /* ── Confirm it against the ledger, not against the form ──────────────
+       `issueMerchantReceipt` comes back with `issued: null` on a real attempt
+       because the page it leaves behind cannot tell us: a receipt that issued
+       perfectly leaves a form that still has Save and a red "must equal the
+       allocated amount" banner over it. The receipts are the truth. Re-search
+       and see whether the ones we ticked are still waiting.
+
+       The re-search costs one more trip through the popup, and it only runs on
+       a real issue — never on a preview, never on a run that stopped at the
+       gate. That is the right place to spend it: it is the only moment in the
+       run where money has actually moved and nobody has checked. */
+    if (issued && issued.issued === null) {
+      const tickedNos = results.filter((r) => r.ticked && r.receiptNo).map((r) => r.receiptNo);
+      const recheck = await searchIssueReceipts(page, {
+        debtorCode: o.debtorCode || "MASTER",
+        debtorLabel: o.debtorLabel || "MasterCard/Visa/Debit",
+        fromDate: o.fromDate,
+        toDate: o.toDate,
+      }, () => {});
+      const stillWaiting = await readReceiptsToReconcile(recheck);
+      if (recheck !== form && recheck !== page) await recheck.close().catch(() => {});
+
+      const check = core.confirmIpsiIssued(tickedNos, stillWaiting);
+      issued.issued = check.confirmed;
+      issued.confirmed = check;
+
+      if (!check.confirmed) {
+        /* Genuinely not issued. The banner captured off the form is the only
+           thing that can say WHY, so it leads — this is the one case where it
+           was telling the truth. */
+        throw new Error(
+          issued.pageError
+            ? `Receipt rejected: ${issued.pageError}`
+            : `Issue was pressed but ${check.stillWaiting.length} of ${check.checked} ` +
+              `receipt${check.stillWaiting.length === 1 ? " is" : "s are"} still waiting to be reconciled.`
+        );
+      }
+      say(
+        `Issued $${issued.amount} — confirmed, ${check.checked} receipt` +
+        `${check.checked === 1 ? " is" : "s are"} no longer waiting to be reconciled.`,
+        true
+      );
+    }
 
     ok = true;
     return { results, summary, issued, totalCheck, allClean };
@@ -1002,7 +1254,8 @@ async function searchWaitingReceipts(o = {}) {
 
 module.exports = {
   runIpsiReconciliation, searchWaitingReceipts, ipsiReference,
-  searchIssueReceipts, readReceiptsToReconcile, readPaymentsToReconcile, tickReceipts, issueMerchantReceipt,
+  searchIssueReceipts, readReceiptsToReconcile, readPaymentsToReconcile, readBookingReceipts,
+  tickReceipts, issueMerchantReceipt,
   fillAutocomplete, RECEIPT_COLUMNS, PAYMENT_COLUMNS,
   popupTarget, RECEIPT_FORM_URL, chooseWindow, POPUP_TIMEOUT_MS,
 };

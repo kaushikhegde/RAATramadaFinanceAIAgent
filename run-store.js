@@ -161,10 +161,17 @@ function startRun({ source, file, statementDate, openingBalance, closingBalance,
 }
 
 /**
- * A person says a settlement is done with, independent of what any run against
- * it reported. Reconciliation Guide — IPSI's "Other features": errors can take
- * days to resolve, across several attempts, and the accounts team — not this
- * code — is the one who knows when it is really finished.
+ * A settlement is done with.
+ *
+ * Reconciliation Guide — IPSI's "Other features": errors can take days to
+ * resolve, across several attempts, and for a settlement that STOPPED the
+ * accounts team — not this code — is the one who knows when it is really
+ * finished. That is what the button on the dashboard is for.
+ *
+ * A settlement that got all the way through is different, and `closeRun` calls
+ * this itself for one: every row reconciled, the total agreed, Issue pressed,
+ * and the receipts confirmed off Receipts To Reconcile. Nothing is left to
+ * decide, and a pending list that keeps finished work stops being read.
  */
 function markResolved(runId, at = new Date().toISOString()) {
   const doc = readAll();
@@ -177,6 +184,40 @@ function markResolved(runId, at = new Date().toISOString()) {
 }
 
 /**
+ * Every unresolved attempt at ONE settlement, resolved together.
+ *
+ * A settlement is not a run. `listUnresolved` deliberately returns every run
+ * rather than one per settlement date — two attempts are two pieces of
+ * evidence and collapsing them would hide that a second was ever made — but
+ * that cuts the other way when one finally succeeds: the successful run
+ * clearing only itself leaves every earlier attempt at the same settlement
+ * sitting on the pending list, and the list never empties. Measured 08-09-2026
+ * on the client's own store: twenty-two unresolved runs, all of them
+ * 2026-09-02, one settlement.
+ *
+ * They are attempts at the same thing. When the thing is done they are all
+ * done, and nothing is lost — the runs keep their own status, rows and
+ * activity in the store, they just stop being asked about.
+ *
+ * A run with no settlement date resolves alone: without one there is nothing
+ * to say which other attempts belong to it, and guessing would clear runs that
+ * are still outstanding.
+ */
+function markSettlementResolved(source, statementDate, at = new Date().toISOString()) {
+  if (!statementDate) return [];
+  const doc = readAll();
+  const hit = (doc.runs || []).filter(
+    (r) => r.source === source && r.statementDate === statementDate && !r.resolved
+  );
+  for (const r of hit) {
+    r.resolved = true;
+    r.resolvedAt = at;
+  }
+  if (hit.length) writeAll(doc);
+  return hit.map((r) => r.id);
+}
+
+/**
  * Every run for a report that is still sitting unresolved, most recent first.
  *
  * IPSI is the only report this is for — BPay/Mint/TravelPay finish in one
@@ -185,10 +226,19 @@ function markResolved(runId, at = new Date().toISOString()) {
  * attempts against the same date are two different pieces of evidence (what
  * changed between them), and collapsing them would hide that a second attempt
  * was ever made.
+ *
+ * A run still RUNNING is not listed. This list means "settlements needing
+ * someone's attention", and a run that started ninety seconds ago has not
+ * asked for anything yet — it may be about to come back clean and resolve
+ * itself. Listing it made a settlement that turned out to be entirely
+ * reconciled appear as pending work for as long as the run took.
+ *
+ * Nothing hides behind this. A run that dies mid-flight is swept to `failed`
+ * by `reconcileOrphans` on the next start-up, and appears then.
  */
 function listUnresolved(source) {
   return listRuns()
-    .filter((r) => r.source === source && !r.resolved)
+    .filter((r) => r.source === source && !r.resolved && r.status !== "running")
     .sort((a, b) => (b.startedAt || "").localeCompare(a.startedAt || ""));
 }
 
@@ -343,6 +393,6 @@ module.exports = {
   UPLOADS, RUNS,
   saveUpload, startRun, patchRow, appendActivity, finishRun,
   listRuns, getRun, overview, reconcileOrphans,
-  markResolved, listUnresolved,
+  markResolved, markSettlementResolved, listUnresolved,
   saveCheatSheet, getCheatSheet, readCheatSheets,
 };

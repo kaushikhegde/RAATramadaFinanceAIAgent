@@ -718,9 +718,15 @@ async function handleIpsiRun(session, msg) {
     closeRun(run, out);
     send(session, {
       type: "recon_progress",
-      message: `${s.ticked} of ${s.total} matched and ticked` +
-        (s.onBooking ? ` (${s.onReference} on reference, ${s.onBooking} on booking)` : "") +
-        (out.issued && out.issued.issued ? `, receipt issued for $${out.issued.amount}` : ", nothing issued"),
+      // "0 of 4 matched and ticked, nothing issued" is a true and terrible way
+      // to describe a settlement that was already fully reconciled, so that
+      // case gets its own sentence rather than the tally.
+      message: out.alreadyReconciled
+        ? `All ${s.total} rows were already reconciled — nothing left to tick or issue.`
+        : `${s.ticked} of ${s.total} matched and ticked` +
+          (s.alreadyReconciled ? `, ${s.alreadyReconciled} already reconciled earlier` : "") +
+          (s.onBooking ? ` (${s.onReference} on reference, ${s.onBooking} on booking)` : "") +
+          (out.issued && out.issued.issued ? `, receipt issued for $${out.issued.amount}` : ", nothing issued"),
     });
     send(session, { type: "recon_done", summary: s, runId: run && run.id });
   } catch (err) {
@@ -775,6 +781,42 @@ function openRun(session, source, msg, rows) {
   }
 }
 
+/**
+ * A settlement that is finished — say so without being asked.
+ *
+ * `markResolved` was built for a person to press, because an IPSI settlement
+ * can take days and several attempts to fix and only the accounts team knows
+ * when it is really done. That is still true of a settlement that STOPPED.
+ * It is not true of one that got all the way through, and there are two ways
+ * to be all the way through:
+ *
+ *   ISSUED   every row reconciled, the total agreed, Issue pressed, and the
+ *            receipts confirmed off Receipts To Reconcile.
+ *   ALREADY  every row was reconciled by an EARLIER run, so this one had
+ *            nothing to tick and nothing to issue. A rerun of finished work
+ *            is finished work; it used to report four "not found" errors and
+ *            sit on the pending list forever.
+ *
+ * Deliberately narrow either way. A preview never qualifies — the dry-run
+ * branch returns `issued: false` and only a confirmed live issue sets `true`.
+ * A run that stopped at the gate never reaches Issue. And `allClean` is
+ * required alongside, so a settlement that somehow issued while a row was
+ * still flagged stays on the list for a human.
+ */
+function settlementComplete(run, out) {
+  if (!run || run.source !== "ipsi" || !out) return false;
+  /* TWO SHAPES, because there are two ways in. A combined upload runs IPSI
+     alongside the statement-page reports and collects its result under
+     `out.ipsi`; an IPSI-only upload has its own handler and hands back what
+     `runIpsiReconciliation` returned, directly. This only understood the
+     combined shape at first, so the path RAA actually uses — an IPSI file on
+     its own — never resolved anything. */
+  const runs = Array.isArray(out.ipsi) ? out.ipsi : [out];
+  if (!runs.length) return false;
+  return runs.every((r) =>
+    r && r.allClean && ((r.issued && r.issued.issued === true) || r.alreadyReconciled === true));
+}
+
 function closeRun(run, out, error) {
   if (!run) return;
   try {
@@ -786,6 +828,19 @@ function closeRun(run, out, error) {
       balances: out && out.balances,
       error: error || null,
     });
+    if (!error && settlementComplete(run, out)) {
+      /* The whole settlement, not just this attempt. Twenty-two runs against
+         2026-09-02 were sitting unresolved when this was written; clearing
+         only the one that finally worked would have left twenty-one behind
+         and the list would never empty. */
+      const cleared = run.statementDate
+        ? store.markSettlementResolved(run.source, run.statementDate)
+        : (store.markResolved(run.id) ? [run.id] : []);
+      console.log(
+        `  ✓ settlement complete — cleared ${cleared.length} unresolved ` +
+        `${cleared.length === 1 ? "entry" : "entries"} for ${run.statementDate || run.id}`
+      );
+    }
   } catch (err) {
     console.error(`  ⚠ could not close the run record: ${err.message}`);
   }

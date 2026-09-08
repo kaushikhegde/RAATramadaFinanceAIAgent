@@ -568,5 +568,233 @@ console.log("\nrow numbers survive a combined run");
     keep([{ n: 7 }, {}, { n: 9 }]).map((r) => r.n), [7, 2, 9]);
 }
 
+/* ── A verdict that can clear itself ──────────────────────────────────────
+   The rerun case. A row flagged on Monday and fixed in Tramada by Tuesday must
+   come back with an EMPTY Remarks cell — the fill-only `if (m.remark)` left the
+   Monday text on a row that had since reconciled, which is the reading most
+   likely to be believed and most likely to be wrong. */
+console.log("\nremarks clear when a row is fixed");
+
+/* The rule tramada-ipsi.js applies, kept here in one place so the test is
+   testing the decision rather than a copy of it. */
+const settleRemark = (existing, m) =>
+  m.remark ? m.remark : (C.isIpsiMatcherRemark(existing) ? "" : existing);
+
+ok("the matcher's own remarks are recognised",
+  C.isIpsiMatcherRemark(C.IPSI_REMARKS.booking) &&
+  C.isIpsiMatcherRemark(C.IPSI_REMARKS.reference) &&
+  C.isIpsiMatcherRemark("Incorrect amount — a difference of $2.55"));
+ok("a parser remark is not the matcher's to withdraw",
+  !C.isIpsiMatcherRemark("Please review"));
+ok("and neither is nothing at all",
+  !C.isIpsiMatcherRemark("") && !C.isIpsiMatcherRemark(undefined));
+
+// Monday: booking 14648's receipt is not on the searched list.
+const mondayMiss = C.matchIpsiAgainstReceipts(
+  { reference: "IP-1WJQU-14648", bookingNo: "14648", amountCents: 83250 }, receipts);
+check("Monday: flagged", settleRemark(undefined, mondayMiss), C.IPSI_REMARKS.booking);
+
+// Tuesday: the receipt has been re-dated into the window and now matches.
+const fixed = receipts.concat([
+  { receiptNo: "R.0000009666", bookingNo: "14648", reference: "IP-1WJQU-14648", receiptAmount: "832.50" },
+]);
+const tuesdayHit = C.matchIpsiAgainstReceipts(
+  { reference: "IP-1WJQU-14648", bookingNo: "14648", amountCents: 83250 }, fixed);
+ok("Tuesday: it reconciles", tuesdayHit.matched, JSON.stringify(tuesdayHit));
+check("and the Monday remark is gone, not carried",
+  settleRemark(C.IPSI_REMARKS.booking, tuesdayHit), "");
+
+check("an amount remark clears the same way",
+  settleRemark("Incorrect amount — a difference of $2.55", tuesdayHit), "");
+check("a parser's own flag survives a clean match",
+  settleRemark("Please review", tuesdayHit), "Please review");
+
+// Still flagged, but for a different reason now: the remark must be replaced,
+// not merely left alone.
+const nowWrongAmount = C.matchIpsiAgainstReceipts(
+  { reference: "IP-1WJQU-14648", bookingNo: "14648", amountCents: 99999 }, fixed);
+ok("a row that fails differently gets the NEW remark",
+  settleRemark(C.IPSI_REMARKS.booking, nowWrongAmount).startsWith(C.IPSI_REMARKS.amount),
+  settleRemark(C.IPSI_REMARKS.booking, nowWrongAmount));
+
+/* The empty string is load-bearing: the page merges patches and they travel as
+   JSON, which drops an undefined key — so a cleared remark sent as undefined
+   arrives as "no opinion" and the stale text stays on screen. */
+const patch = JSON.parse(JSON.stringify({ remark: settleRemark(C.IPSI_REMARKS.booking, tuesdayHit) || "" }));
+ok("a cleared remark survives JSON as an empty string, not a dropped key",
+  "remark" in patch && patch.remark === "", JSON.stringify(patch));
+const asUndefined = JSON.parse(JSON.stringify({ remark: undefined }));
+ok("...which is why undefined would not have worked", !("remark" in asUndefined));
+
+/* ── Did the Issue take? ──────────────────────────────────────────────────
+   Measured live 08-09-2026: a merchant receipt that issued perfectly leaves a
+   page that still has #save, still holds the typed header, and carries
+   Tramada's own "Amount Received must equal the allocated amount" — because
+   the allocation it just consumed is gone. Every signal on the form said
+   rejected; the four receipts had already dropped off Receipts To Reconcile.
+   Success is the ledger, not the form. */
+console.log("\nissue is confirmed from the receipts, not the form");
+
+const ticked = ["R.0000009674", "R.0000009633", "R.0000009668", "R.0000009670"];
+const others = [{ receiptNo: "R.0000009529" }, { receiptNo: "R.0000009558" }];
+
+const allGone = C.confirmIpsiIssued(ticked, others);
+ok("all four off the waiting list is a confirmed issue", allGone.confirmed, JSON.stringify(allGone));
+check("and it says how many it checked", allGone.checked, 4);
+
+const oneLeft = C.confirmIpsiIssued(ticked, others.concat([{ receiptNo: "R.0000009668" }]));
+ok("one still waiting is NOT confirmed", !oneLeft.confirmed, JSON.stringify(oneLeft));
+check("and names it", oneLeft.stillWaiting, ["r.0000009668"]);
+
+ok("none of them gone is not confirmed",
+  !C.confirmIpsiIssued(ticked, ticked.map((n) => ({ receiptNo: n }))).confirmed);
+
+/* An empty tick list must never read as success — a run that ticked nothing
+   never reached Issue, and "confirmed" there would report a receipt that was
+   never raised. */
+ok("ticking nothing is not a confirmed issue", !C.confirmIpsiIssued([], []).confirmed);
+ok("...nor is it when the list is missing entirely",
+  !C.confirmIpsiIssued(undefined, undefined).confirmed);
+
+check("receipt numbers compare regardless of case or padding style",
+  C.confirmIpsiIssued(["R.0000009674"], [{ receiptNo: "r.0000009674" }]).stillWaiting,
+  ["r.0000009674"]);
+
+/* ── What clears a settlement off the pending list ────────────────────────
+   The rule server.js applies, kept here so the decision is tested rather than
+   a copy of it. */
+console.log("\nunresolved settlements clear only on a confirmed live issue");
+
+const settlementComplete = (run, out) => {
+  if (!run || run.source !== "ipsi" || !out) return false;
+  const runs = Array.isArray(out.ipsi) ? out.ipsi : [out];
+  if (!runs.length) return false;
+  return runs.every((r) =>
+    r && r.allClean && ((r.issued && r.issued.issued === true) || r.alreadyReconciled === true));
+};
+const ipsiRun = { source: "ipsi" };
+
+ok("a clean, confirmed issue resolves it",
+  settlementComplete(ipsiRun, { ipsi: [{ allClean: true, issued: { issued: true } }] }));
+ok("a preview does NOT — nothing was issued",
+  !settlementComplete(ipsiRun, { ipsi: [{ allClean: true, issued: { issued: false } }] }));
+ok("an unconfirmed issue does not",
+  !settlementComplete(ipsiRun, { ipsi: [{ allClean: true, issued: { issued: null } }] }));
+ok("a run that stopped at the gate does not",
+  !settlementComplete(ipsiRun, { ipsi: [{ allClean: false, issued: null }] }));
+ok("a run that never touched IPSI does not",
+  !settlementComplete(ipsiRun, { ipsi: [] }) && !settlementComplete(ipsiRun, {}) && !settlementComplete(ipsiRun, null));
+ok("and one clean settlement does not carry a stopped one with it",
+  !settlementComplete(ipsiRun, { ipsi: [
+    { allClean: true, issued: { issued: true } },
+    { allClean: false, issued: null },
+  ] }));
+ok("a settlement already reconciled by an earlier run also resolves",
+  settlementComplete(ipsiRun, { ipsi: [{ allClean: true, issued: null, alreadyReconciled: true }] }));
+ok("...but not if it was not clean",
+  !settlementComplete(ipsiRun, { ipsi: [{ allClean: false, issued: null, alreadyReconciled: true }] }));
+
+/* TWO SHAPES. A combined upload collects IPSI under `out.ipsi`; an IPSI file
+   on its own has a handler that hands back what runIpsiReconciliation
+   returned, directly. Only the combined shape was understood at first, so the
+   path RAA actually uses never resolved anything. */
+ok("an IPSI-only run resolves from its own shape, with no .ipsi wrapper",
+  settlementComplete(ipsiRun, { allClean: true, issued: null, alreadyReconciled: true }));
+ok("...and when it issued and confirmed",
+  settlementComplete(ipsiRun, { allClean: true, issued: { issued: true } }));
+ok("...but not a preview",
+  !settlementComplete(ipsiRun, { allClean: true, issued: { issued: false } }));
+ok("...nor one that stopped",
+  !settlementComplete(ipsiRun, { allClean: false, issued: null }));
+
+/* closeRun is shared by every report. A statement-page run's output has none
+   of these fields and must never resolve anything. */
+ok("a BPay/Mint/TravelPay run never resolves an IPSI settlement",
+  !settlementComplete({ source: "bpay" }, { allClean: true, alreadyReconciled: true }));
+ok("and a statement-page result shape resolves nothing",
+  !settlementComplete(ipsiRun, { results: [], pageNumber: 3, summary: {} }));
+
+/* ── The tally the pending list shows ─────────────────────────────────── */
+console.log("\na settlement already reconciled does not read as 0 of 4");
+const already4 = C.summariseIpsi([
+  { ticked: false, alreadyReconciled: true, amountCents: 14554 },
+  { ticked: false, alreadyReconciled: true, amountCents: 20000 },
+  { ticked: false, alreadyReconciled: true, amountCents: 83250 },
+  { ticked: false, alreadyReconciled: true, amountCents: 31820 },
+]);
+check("all four count as reconciled", already4.reconciled, 4);
+check("none of them is unmatched", already4.unmatched, 0);
+check("but this run ticked nothing", already4.ticked, 0);
+check("so it allocates nothing — an earlier receipt already did",
+  already4.allocatedCents, 0);
+
+const mixed = C.summariseIpsi([
+  { ticked: true, amountCents: 20000, matchedOn: "reference" },
+  { ticked: false, alreadyReconciled: true, amountCents: 14554 },
+  { ticked: false, amountCents: 83250 },
+]);
+check("a mixed run counts both kinds", mixed.reconciled, 2);
+check("and still names what is genuinely outstanding", mixed.unmatched, 1);
+check("allocating only what it ticked itself", mixed.allocatedCents, 20000);
+
+/* ── Three answers, one sentence ──────────────────────────────────────────
+   "Nothing on the list carries reference X" described a receipt that did not
+   exist, a receipt sitting two days outside the search window, and a receipt
+   already reconciled — identically. They need opposite actions. */
+console.log("\nan unmatched row says WHICH kind of nothing it found");
+
+const missRow = { reference: "IP-1WJQU-14648", bookingNo: "14648", amountCents: 83250 };
+const searched = { from: "31-08-2026", to: "02-09-2026" };
+
+const late = C.explainIpsiMiss(missRow, {
+  wide: [{ receiptNo: "R.0000009666", bookingNo: "14648", reference: "IP-1WJQU-14648",
+           receiptAmount: "832.50", dateReceived: "04-09-2026" }],
+  bookingReceipts: null, window: searched,
+});
+check("waiting, but outside the window", late.kind, "out-of-window");
+ok("names the receipt, the date and the fix",
+  /R\.0000009666/.test(late.why) && /04-09-2026/.test(late.why) &&
+  /outside the 31-08-2026 → 02-09-2026 search window/.test(late.why), late.why);
+
+const done = C.explainIpsiMiss(missRow, {
+  wide: [],
+  bookingReceipts: [
+    { receiptNo: "R.0000009666", reference: "IP-1WJQU-14648", dateReceived: "04-09-2026",
+      amount: "832.50", cancelled: true },
+    { receiptNo: "R.0000009668", reference: "IP-1WJQU-14648", dateReceived: "02-09-2026",
+      amount: "832.50", cancelled: false },
+  ],
+  window: searched,
+});
+check("not waiting anywhere, but live on the booking", done.kind, "already-reconciled");
+ok("names which receipt did it", /R\.0000009668/.test(done.why), done.why);
+check("and carries no remark, because it is not an error", done.remark, "");
+
+ok("a cancelled receipt is never mistaken for a reconciled one",
+  C.explainIpsiMiss(missRow, {
+    wide: [],
+    bookingReceipts: [{ receiptNo: "R.0000009666", reference: "IP-1WJQU-14648",
+      dateReceived: "04-09-2026", amount: "832.50", cancelled: true }],
+    window: searched,
+  }).kind === "missing");
+
+ok("a live receipt at the WRONG amount is not a reconciliation either",
+  C.explainIpsiMiss(missRow, {
+    wide: [],
+    bookingReceipts: [{ receiptNo: "R.0000009664", reference: "IP-1WJQU-14648",
+      dateReceived: "02-09-2026", amount: "796.35", cancelled: false }],
+    window: searched,
+  }).kind === "missing");
+
+const nowhere = C.explainIpsiMiss(missRow, { wide: [], bookingReceipts: [], window: searched });
+check("nothing anywhere is genuinely missing", nowhere.kind, "missing");
+ok("and says to raise one", /raise it in Tramada/.test(nowhere.why), nowhere.why);
+
+/* Not looking is not the same as looking and finding nothing. */
+const notChecked = C.explainIpsiMiss(missRow, { wide: [], bookingReceipts: null, window: searched });
+check("without a booking lookup it does not claim to know", notChecked.kind, "missing");
+ok("and words it as what it actually checked",
+  /no unreconciled receipt anywhere/.test(notChecked.why), notChecked.why);
+
 console.log(`\n${fail ? "❌" : "✅"} ${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

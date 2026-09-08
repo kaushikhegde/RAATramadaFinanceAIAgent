@@ -1826,6 +1826,68 @@ const IPSI_REMARKS = {
   fileTotal: "Total transaction amounts does not match.",   // step 9 / BR01
 };
 
+/**
+ * Was this remark one the MATCHER put there, rather than the parser?
+ *
+ * A verdict has to be able to clear itself. `matchIpsiAgainstReceipts` runs
+ * fresh on every run, so a row flagged "Booking number mismatch or not found"
+ * on Monday and fixed in Tramada by Tuesday must come back with an EMPTY
+ * Remarks cell, not the Monday text — the whole point of a rerun is to see
+ * what changed, and a remark that only ever fills in is a verdict that cannot
+ * say "this is fine now".
+ *
+ * It is not a blanket blank, though. `parseIpsiRows` can put REMARKS.review on
+ * a row at upload time for a data problem in the FILE, which no amount of
+ * fixing Tramada resolves and which the matcher knows nothing about. So only
+ * the matcher's own three row-level remarks are clearable; anything else — a
+ * parser's flag, or a remark some later caller added — is left alone.
+ *
+ * `amount` is matched as a prefix because it is issued with the size of the
+ * gap appended ("Incorrect amount — a difference of $2.55").
+ */
+function isIpsiMatcherRemark(text) {
+  const t = String(text == null ? "" : text).trim();
+  if (!t) return false;
+  return (
+    t === IPSI_REMARKS.booking ||
+    t === IPSI_REMARKS.reference ||
+    t.startsWith(IPSI_REMARKS.amount)
+  );
+}
+
+/**
+ * Did the Issue actually take? Answered from the RECEIPTS, not from the form.
+ *
+ * Measured live 08-09-2026: a merchant receipt that issued perfectly well
+ * leaves the browser sitting on a page that still has `#save`, still holds the
+ * typed header values, and — because the allocation it just consumed is now
+ * gone — paints Tramada's own "Amount Received must equal the allocated
+ * amount" over the top. Read as a form, that page is indistinguishable from a
+ * rejection. It is not one: the four receipts it reconciled had already
+ * dropped off Receipts To Reconcile.
+ *
+ * So success is not "the form went away" and not "no red text on screen". It
+ * is: the receipts we ticked are no longer waiting to be reconciled. That is
+ * the thing the run exists to cause, and the only signal that cannot be
+ * imitated by a stale DOM.
+ *
+ * @param ticked   receipt numbers this run ticked
+ * @param waiting  Receipts To Reconcile, re-read AFTER the save
+ */
+function confirmIpsiIssued(ticked, waiting) {
+  const want = (ticked || []).map(refKey).filter(Boolean);
+  const left = new Set((waiting || []).map((r) => refKey(r.receiptNo)).filter(Boolean));
+  const stillWaiting = want.filter((n) => left.has(n));
+  return {
+    // No receipt numbers to check is not a confirmation — a run that ticked
+    // nothing never reached Issue, and saying "confirmed" here would let an
+    // empty run report success.
+    confirmed: want.length > 0 && stillWaiting.length === 0,
+    checked: want.length,
+    stillWaiting,
+  };
+}
+
 /** BR03 — a transaction line is a match within three cents either way. */
 const IPSI_LINE_TOLERANCE_CENTS = 3;
 /** BR08 — the total allocated in Tramada is a match within twenty cents. */
@@ -2109,6 +2171,139 @@ function matchIpsiAgainstPayments(row, payments) {
 }
 
 /**
+ * Why a row found nothing. Three different answers wearing one sentence.
+ *
+ * `matchIpsiAgainstReceipts` can only speak about the list it was handed, and
+ * that list is narrow twice over: it runs from the settlement date back
+ * `IPSI_FROM_DAYS`, and it only ever holds receipts that are STILL WAITING to
+ * be reconciled. So "nothing on the list carries reference X or booking Y" is
+ * true in three situations that could not be more different:
+ *
+ *   out-of-window      the receipt exists and is waiting, just not in the
+ *                      dates we searched — fix the date, rerun
+ *   already-reconciled the receipt exists and is DONE, reconciled by an
+ *                      earlier run — there is nothing to do at all
+ *   missing            there is genuinely no receipt — raise one
+ *
+ * The middle one is the trap. A settlement that reconciled perfectly yesterday
+ * reruns today as four red "not found" errors, reads as a total failure, and
+ * keeps the settlement sitting on the pending list forever. It is the opposite
+ * of a problem and it looked identical to one.
+ *
+ * Each step is decisive, which is why they are in this order:
+ *   1. In the WIDE waiting list? Then it is unreconciled — a window problem.
+ *   2. Not waiting anywhere, but a live receipt on the booking carries this
+ *      reference at this amount? Then it was reconciled. Nothing else removes
+ *      a receipt from the waiting list.
+ *   3. Neither? It was never raised.
+ *
+ * DIAGNOSTIC ONLY. Nothing here ticks, and neither list is ever handed to a
+ * matcher — widening what a run reconciles against would trade away the "match
+ * against the minimum" rule the narrow window exists to hold.
+ *
+ * @param row   the unmatched row
+ * @param wide  Receipts (or Payments) still waiting, over a wider window
+ * @param bookingReceipts  live receipts on this row's booking, or null if not
+ *                         looked up — step 2 is skipped when it is null, and
+ *                         the answer degrades to "not waiting anywhere" rather
+ *                         than claiming something it did not check
+ * @param window  { from, to } the narrow window that was actually searched
+ */
+function explainIpsiMiss(row, { wide, bookingReceipts, window = {} } = {}) {
+  const list = wide || [];
+  const isRefund = !!row.isRefund;
+  const noun = isRefund ? "payment" : "receipt";
+  const want = Math.abs(row.amountCents || 0);
+
+  const amountOf = (r) => {
+    const c = cents(isRefund ? r.dueAmount : r.receiptAmount);
+    return c == null ? null : Math.abs(c);
+  };
+  const dateOf = (r) => toIsoDate(r.dateReceived || r.paymentDate) || "";
+  const idOf = (r) => r.receiptNo || r.paymentNo || "";
+
+  const from = toIsoDate(window.from);
+  const to = toIsoDate(window.to);
+  const outsideWindow = (r) => {
+    const d = dateOf(r);
+    if (!d) return false;
+    return (!!from && d < from) || (!!to && d > to);
+  };
+
+  /* ── 1. Still waiting, somewhere ─────────────────────────────────────── */
+  const byRef = list.filter((r) => r.reference && refKey(r.reference) === refKey(row.reference));
+  const byBooking = list.filter((r) => r.bookingNo && refKey(r.bookingNo) === refKey(row.bookingNo));
+  const hits = byRef.length ? byRef : byBooking;
+  const on = byRef.length ? "reference" : "booking";
+
+  if (hits.length) {
+    const best = hits.slice().sort((a, b) =>
+      Math.abs((amountOf(a) || 0) - want) - Math.abs((amountOf(b) || 0) - want))[0];
+    const amt = amountOf(best);
+    const where = `${idOf(best)} (booking ${best.bookingNo || "—"}) at $${money(amt)} dated ${toTramadaDate(dateOf(best))}`;
+
+    // The reasons stack: a row can be out of window AND short a reference AND
+    // out by a few dollars, and fixing only the one named sends it round the
+    // loop again. Every one that applies is listed.
+    const wrong = [];
+    if (outsideWindow(best)) {
+      wrong.push(
+        `its date is outside the ${toTramadaDate(from) || "start"} → ${toTramadaDate(to) || "end"} search window` +
+        ` — set Date Received to the settlement date`);
+    }
+    if (on === "booking") {
+      wrong.push(best.reference
+        ? `its reference is "${best.reference}", not "${row.reference}"`
+        : `its reference is blank — it needs "${row.reference}"`);
+    }
+    if (amt != null && Math.abs(amt - want) > IPSI_LINE_TOLERANCE_CENTS) {
+      wrong.push(`it holds $${money(amt)}, not the $${money(want)} on this row`);
+    }
+
+    return {
+      kind: "out-of-window",
+      receipt: best,
+      why: wrong.length
+        ? `${where} — ${wrong.join("; ")}`
+        : `${where} — on the wider list but not the searched one; check its date and debtor`,
+      remark: IPSI_REMARKS.booking,
+    };
+  }
+
+  /* ── 2. Not waiting anywhere — was it already reconciled? ────────────── */
+  if (bookingReceipts) {
+    const live = bookingReceipts.filter((r) => !r.cancelled);
+    const sameRef = live.filter((r) => r.reference && refKey(r.reference) === refKey(row.reference));
+    const done = sameRef.find((r) => {
+      const c = cents(r.amount);
+      return c != null && Math.abs(Math.abs(c) - want) <= IPSI_LINE_TOLERANCE_CENTS;
+    });
+    if (done) {
+      return {
+        kind: "already-reconciled",
+        receipt: done,
+        why: `already reconciled by ${done.receiptNo} on ${toTramadaDate(toIsoDate(done.dateReceived))}` +
+          ` at $${money(cents(done.amount))} — nothing to do`,
+        // Not an error, so nothing goes in the Remarks column.
+        remark: "",
+      };
+    }
+  }
+
+  /* ── 3. Genuinely not there ──────────────────────────────────────────── */
+  return {
+    kind: "missing",
+    receipt: null,
+    why: bookingReceipts
+      ? `no ${noun} on booking ${row.bookingNo} carries reference ${row.reference} at $${money(want)}` +
+        ` — raise it in Tramada first`
+      : `no unreconciled ${noun} anywhere for reference ${row.reference} or booking ${row.bookingNo}`,
+    remark: IPSI_REMARKS.booking,
+  };
+}
+
+
+/**
  * Step 9 / BR01 — the settlement file's OWN total against the NUVEI figure a
  * human read off the bank statement and typed in, to the cent, checked before
  * Tramada is touched at all. NOT the same check as BR08 below: this is the
@@ -2172,14 +2367,24 @@ function checkIpsiAllocatedTotal(allocatedCents, entered) {
 function summariseIpsi(results) {
   const r = results || [];
   const ticked = r.filter((x) => x.ticked);
+  /* Reconciled by an EARLIER run. Not ticked by this one — there was nothing
+     left to tick — but reconciled all the same, so it is not "unmatched" and
+     the settlement is not "0 of 4". A rerun of finished work read as a total
+     failure on the pending list until this counted them. */
+  const already = r.filter((x) => !x.ticked && x.alreadyReconciled);
   return {
     total: r.length,
     ticked: ticked.length,
-    unmatched: r.filter((x) => !x.ticked).length,
+    alreadyReconciled: already.length,
+    // What the settlement has accounted for, however it got there — this is
+    // the figure the pending list shows as "n/total reconciled".
+    reconciled: ticked.length + already.length,
+    unmatched: r.filter((x) => !x.ticked && !x.alreadyReconciled).length,
     onReference: r.filter((x) => x.matchedOn === "reference").length,
     onBooking: r.filter((x) => x.matchedOn === "booking").length,
-    // The receipt is for what it ALLOCATES, which is the rows that were ticked
-    // — not the file's headline settlement figure.
+    // The receipt is for what it ALLOCATES, which is the rows THIS run ticked
+    // — not the file's headline settlement figure, and not rows an earlier
+    // run already allocated against a receipt of its own.
     allocatedCents: ticked.reduce((a, x) => a + (x.amountCents || 0), 0),
   };
 }
@@ -3150,7 +3355,10 @@ module.exports = {
   TRAVELPAY_COLUMNS, parseTravelPayRows, serialDate, bookingFromReference,
   bookingFromDelimitedReference, REPORTS, RUN_ORDER,
   IPSI_COLUMNS, IPSI_REMARKS, IPSI_REFERENCE_REQUIRED, isPreAuth, parseIpsiRows, matchIpsiAgainstReceipts,
-  matchIpsiAgainstPayments, filterIpsiSettlementDate, checkIpsiFileTotal, checkIpsiAllocatedTotal, summariseIpsi,
+  matchIpsiAgainstPayments,
+  explainIpsiMiss,
+  isIpsiMatcherRemark,
+  confirmIpsiIssued, filterIpsiSettlementDate, checkIpsiFileTotal, checkIpsiAllocatedTotal, summariseIpsi,
   tidyError,
   summarise,
   MINT_REMARKS, TRAVELPAY_REMARKS, CHEAT_SHEET_COLUMNS,
