@@ -360,9 +360,12 @@ header.top { display: none !important }
            already builds, wearing the same .btn as the three beside it. The
            mockup's own markup is not touched; #stmtDate was already being
            replaced by this block long before the checkbox existed. */
+        /* Hidden on request. The checkbox stays in the DOM (unchecked), so
+           dryOn() still reads false and every run goes live — dryRun is not
+           removed, just no longer offered from this toolbar. */
         '<label class="btn" id="rcDryWrap" title="Files the receipts as normal, but does not ' +
         'press Done on the statement page and does not issue the Finance Receipt." ' +
-        'style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">' +
+        'style="display:none;align-items:center;gap:8px;cursor:pointer;user-select:none">' +
         '<input type="checkbox" id="rcDryRun" style="margin:0;flex:none">Dry run</label>';
       old.replaceWith(box);
       // The card quotes the balances (and, now, the totals) back, so it has to
