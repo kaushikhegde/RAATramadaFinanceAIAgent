@@ -679,6 +679,17 @@ tr.cited{animation:cpulse 1.5s ease-out 2}
    a finished run created — moves into the inbox's own lede. */
 header.top { display: none !important }
 
+/* A LOADED CARD IS GREEN. The amber "loaded but not reconciled" colour was
+   tried and rejected: a file that read and parsed is a success, and colouring
+   it like a warning had people hunting for a problem that was not there.
+   Finished-vs-not still shows — the icon (✓ / ⇪), the badge and the ✓ on the
+   result line all come off cardDone — it just is not the card's colour.
+   `.result` needs no override: `.dz .result` is already var(--ok). */
+.dz.ready{border-style:solid;border-color:#bfe3d2;background:#f6fcf9}
+.dz.ready .di{background:var(--ok-bg);color:var(--ok)}
+/* The success line, in the slot the warnings and errors use. */
+.rc-hint .rc-ok{color:var(--ok);font-weight:600}
+
 </style>
 </head>
 <body>
@@ -3650,9 +3661,19 @@ function askMarkStale(){
      Reconciliation Guide — IPSI, "Other features": errors found on one day's
      settlement can take days to resolve, across more than one attempt, so more
      than one can be sitting here at once and it has to say so, not just the
-     latest. A person decides one is finished (see run-store.markResolved) —
-     a run coming back clean does not clear it on its own, because "clean" here
-     can still just be a dry run's preview, one Save away from being real. */
+     latest.
+
+     A settlement leaves this list by BEING RECONCILED, which is what RAA asked
+     for when they had the "Mark resolved" button removed (see below). The
+     server clears it — `server.js settlementComplete` — on a run that either
+     issued and confirmed the receipts off Receipts To Reconcile, or found
+     every row already reconciled by an earlier attempt. A preview never
+     qualifies: "clean" there is still one Save away from being real.
+
+     It clears the whole SETTLEMENT, every attempt at that statement date, not
+     just the run that happened to succeed. Twenty-two runs against 2026-09-02
+     were on this list when that was written, and clearing one at a time meant
+     it never emptied. */
   let ipsiPending = [];
 
   function loadIpsiPending() {
@@ -3665,7 +3686,12 @@ function askMarkStale(){
   function pendingTitle(run) {
     const when = run.startedAt ? new Date(run.startedAt).toLocaleDateString() : 'unknown upload date';
     const s = run.summary || {};
-    const tally = s.total != null ? (s.ticked || 0) + '/' + s.total + ' reconciled' : 'not yet run';
+    /* `reconciled`, not `ticked` — a settlement whose rows were all reconciled
+       by an EARLIER attempt ticks nothing on this one, and reading "0/4" on
+       work that is finished is how it got left on this list in the first
+       place. Falls back to ticked for runs recorded before that existed. */
+    const did = s.reconciled != null ? s.reconciled : (s.ticked || 0);
+    const tally = s.total != null ? did + '/' + s.total + ' reconciled' : 'not yet run';
     // BR01/step 3 — the NUVEI figure that attempt was entered against, so the
     // list itself says what was typed without needing to Load first.
     const nuvei = run.transactionTotal ? ' · NUVEI ' + dollars(run.transactionTotal) : ' · no NUVEI amount entered';
@@ -3924,6 +3950,27 @@ function askMarkStale(){
     if (orphan) console.warn('[recon] ' + orphan + ' run field(s) had no card to live in');
   }
 
+  /* ── Is this card's work actually finished? ──
+     "A file is loaded" and "the money is reconciled" are different facts and
+     the card used to show one green tick for both. This is the second one:
+     every runnable row of this kind came back Reconciled and none of them
+     needs a person (NEEDS_ACTION — the same predicate the report's Action
+     required tab uses, so the card and the report can never disagree).
+
+     Skipped rows are excluded. They were never going to reconcile — a PreAuth,
+     a Decline, a Void — and the card says so on its own line; counting them
+     here would mean a settlement could never go green. */
+  function cardRows(kind) {
+    return results.filter((r) => r.src === kind && !r.skipped);
+  }
+  function cardDone(kind) {
+    if (running) return false;
+    const rs = cardRows(kind);
+    return rs.length > 0 &&
+      rs.every((r) => r.reconciliation === 'Reconciled') &&
+      !rs.some(NEEDS_ACTION);
+  }
+
   function renderSource() {
     const grid = $('#tileGrid');
     if (!grid) return;
@@ -3992,14 +4039,16 @@ function askMarkStale(){
       // An open preview takes the full width. In a shared column the company
       // names wrap to five lines each and the table is unreadable — which
       // defeats the point of a preview being the check before a run.
-      return '<div class="dz done" data-kind="' + kind + '"' +
+      // Amber until it is reconciled. See cardDone.
+      const finished = cardDone(kind);
+      return '<div class="dz ' + (finished ? 'done' : 'ready') + '" data-kind="' + kind + '"' +
         (s.previewOpen ? ' style="grid-column:1/-1"' : '') + '>' +
-        '<div class="di">' + (isActive && running ? '◐' : '✓') + '</div><div style="flex:1">' +
+        '<div class="di">' + (isActive && running ? '◐' : finished ? '✓' : '⇪') + '</div><div style="flex:1">' +
         head + state + '</h3>' +
         '<p>' + def.blurb + '</p>' +
         '<span class="file">' + esc(s.file.name) + ' · ' + s.rows.length + ' row' +
         (s.rows.length === 1 ? '' : 's') + ' · ' + kb(s.file.size) + esc(balances) + '</span>' +
-        '<span class="result">✓ ' + sourceStats(kind) + '</span>' +
+        '<span class="result">' + (finished ? '✓ ' : '') + sourceStats(kind) + '</span>' +
         (kind === 'ipsi' ? ipsiNuveiField() : '') +
         '<div class="muted rc-figs" data-figs="' + kind + '" style="margin-top:8px"></div>' +
           '<div class="muted rc-hint" data-hint="' + kind + '" style="margin-top:8px">' + hintSeed + '</div>' +
@@ -4144,6 +4193,17 @@ function askMarkStale(){
       lines.push('<span class="rc-spin"></span>Reading the consultant and shop names from Tramada — ' +
         '<strong>do not press Start run until they have been matched.</strong>');
     }
+    /* The success line goes in the slot the warnings and errors use, because
+       that is the line people already look at on this card. It leads, so a
+       card that finished says so first — but the skipped-rows note below it
+       STAYS: "reconciled" and "four lines were never run" are both true, and
+       hiding the second under the first is how a settlement looks more
+       complete than it is. */
+    if (cardDone(kind)) {
+      const n = cardRows(kind).length;
+      lines.push('<span class="rc-ok">✓ Reconciled in Tramada — all ' + n + ' row' +
+        (n === 1 ? '' : 's') + ' matched, nothing outstanding.</span>');
+    }
     if (cardNote[kind]) lines.push(cardNote[kind]);
     // IPSI's own warning shares this line with the note above it — "N rows
     // skipped" first, "the NUVEI amount is needed" red beneath it — so it has
@@ -4162,7 +4222,11 @@ function askMarkStale(){
       hint(kind, lines.join('<br>'));
       return;
     }
-    if (lines.length) hint(kind, lines.join('<br>'));
+    /* Repaint even to blank once a card is finished: the line may be holding a
+       warning from BEFORE the run — a total mismatch, a missing balance — that
+       the run has since settled, and the guard below would leave it there
+       under a green card. */
+    if (lines.length || cardDone(kind)) hint(kind, lines.join('<br>'));
   }
 
   /* ── the run alert, and the fields it points at ──
@@ -4480,12 +4544,46 @@ function askMarkStale(){
     // Skipped rows are said out loud. A quietly shortened file reads as "that
     // was all there was".
     if (skipped && skipped.length) {
-      cardNote[kind] = ('<span style="color:var(--warn,#8a6d00)">Skipped ' +
-        (skipped.length === 1 ? 'line ' : 'lines ') + skipped.join(', ') + ' — ' +
-        (checksOnly(kind) ? 'missing a reference or amount, or the transaction did not succeed.'
-                         : 'missing a reference, booking number or amount.') + '</span>');
+      cardNote[kind] = skippedNote(kind, skipped, skippedRows);
       paintHint(kind);
     }
+  }
+
+  /* ── Why a line was left out ──
+     Two different things were wearing one sentence: "missing a reference or
+     amount, OR the transaction did not succeed". Those need opposite
+     reactions. A PreAuth, a Decline or a Void is the filter working — the
+     money never moved, there is nothing in Tramada to reconcile it against,
+     and nobody has anything to fix. A missing reference or amount is a real
+     hole in the file that somebody has to go and look at.
+
+     `parseIpsiRows` already decides which is which and marks the row
+     `excludedType`, so this reads that rather than guessing. Reports whose
+     parser does not set it (BPay's) fall through to the second sentence,
+     which is the only one that ever applied to them. */
+  function skippedNote(kind, skipped, skippedRows) {
+    const byLine = {};
+    (skippedRows || []).forEach((r) => { if (r && r.line != null) byLine[r.line] = r; });
+
+    const filtered = [], problems = [];
+    (skipped || []).forEach((line) => {
+      (byLine[line] && byLine[line].excludedType ? filtered : problems).push(line);
+    });
+
+    const list = (ns) => (ns.length === 1 ? 'line ' : 'lines ') + ns.join(', ');
+    const out = [];
+    if (filtered.length) {
+      out.push('Filtered out ' + list(filtered) +
+        ' — PreAuth, declined or voided removed.');
+    }
+    if (problems.length) {
+      out.push('Skipped ' + list(problems) + ' — ' +
+        (checksOnly(kind) ? 'missing a reference or amount.'
+                          : 'missing a reference, booking number or amount.'));
+    }
+    return out.length
+      ? '<span style="color:var(--warn,#8a6d00)">' + out.join('<br>') + '</span>'
+      : '';
   }
 
   function reject(kind, name, why) {
