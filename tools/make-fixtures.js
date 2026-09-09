@@ -126,7 +126,27 @@ const DRY = has("--dry-run");
 // `--limit 0` is honoured, unlike the older scripts where the string "0" is
 // truthy and the number 0 is falsy so the limit silently vanished.
 const rawLimit = valueOf("--limit", null);
-const LIMIT = rawLimit == null ? null : parseInt(rawLimit, 10);
+const EXPLICIT_LIMIT = rawLimit == null ? null : parseInt(rawLimit, 10);
+
+/* HOW MANY ROWS EACH REPORT MAKES, when `--limit` is not given.
+ *
+ * Per report, not one number for all four, because they are not asked for
+ * together: BPay and IPSI are the demo pair and want ten rows each, while
+ * TravelPay and Mint are checked at five. One shared `--limit 5` in the npm
+ * scripts used to decide it for everything, so bumping the pair meant bumping
+ * reports nobody asked about — and every extra row is a REAL Tramada booking,
+ * so that is minutes of creation and rows to clean up afterwards.
+ *
+ * `--limit` still wins when passed, and still caps rather than conjures: the
+ * bookings file has to hold that many entries (see loadBookings).
+ */
+const ROWS_FOR = {
+  bpay: parseInt(process.env.BPAY_ROWS || "10", 10),
+  travelpay: parseInt(process.env.TRAVELPAY_ROWS || "5", 10),
+  mint: parseInt(process.env.MINT_ROWS || "10", 10),
+  // IPSI counts its own way — a TOTAL and a SPLIT, see IPSI_TOTAL_ROWS.
+  ipsi: null,
+};
 const IN = path.resolve(valueOf("--file", path.join(__dirname, "..", "fixtures", "bookings.json")));
 /* The CSVs land in csv_uploads/, not the repo root.
    Two reasons. It is the folder you open when you go to upload something, so
@@ -564,12 +584,14 @@ function loadBookings() {
      the output — reported as "I've added limit 5 but it creates only 3". Say
      it plainly instead: the fix is more entries in the bookings file, not a
      different flag. */
-  if (LIMIT != null && LIMIT > opened.length) {
-    console.log(`  NOTE: --limit ${LIMIT} was asked for, but ${shortPath(IN)} holds only ` +
+  const want = EXPLICIT_LIMIT != null ? EXPLICIT_LIMIT : ROWS_FOR[WHAT];
+  if (want != null && want > opened.length) {
+    const asked = EXPLICIT_LIMIT != null ? `--limit ${want}` : `${want} rows for ${WHAT}`;
+    console.log(`  NOTE: ${asked} was asked for, but ${shortPath(IN)} holds only ` +
       `${opened.length} booking${opened.length === 1 ? "" : "s"}. Creating ${opened.length}.`);
-    console.log(`        Add more entries to that file to get ${LIMIT}.\n`);
+    console.log(`        Add more entries to that file to get ${want}.\n`);
   }
-  return LIMIT == null ? opened : opened.slice(0, LIMIT);
+  return want == null ? opened : opened.slice(0, want);
 }
 
 /**
@@ -1554,8 +1576,12 @@ const IPSI_EXCLUDED = [
    fill whatever is left of the total, so a booking that fails to create shifts
    the split without shrinking the file — the count on the upload note is the
    whole point of this fixture. */
-const IPSI_TOTAL_ROWS = parseInt(process.env.IPSI_TOTAL_ROWS || "8", 10);
-const IPSI_VIABLE_ROWS = parseInt(process.env.IPSI_VIABLE_ROWS || "4", 10);
+const IPSI_TOTAL_ROWS = parseInt(process.env.IPSI_TOTAL_ROWS || "10", 10);
+/* Ten rows, seven viable — which leaves exactly three excluded, one of each
+   kind in IPSI_EXCLUDED. That is the point of the split: the upload note says
+   "filtered out lines … — PreAuth, declined or voided", and with one of each
+   the card demonstrates all three reasons rather than the same one repeated. */
+const IPSI_VIABLE_ROWS = parseInt(process.env.IPSI_VIABLE_ROWS || "7", 10);
 
 function ipsiExcludedRows(made, today, want) {
   const n = Math.max(IPSI_EXCLUDED.length, want == null ? IPSI_EXCLUDED.length : want);

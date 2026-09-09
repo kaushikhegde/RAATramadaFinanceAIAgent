@@ -570,18 +570,31 @@ async function handleReconRun(session, msg) {
     });
     const s = out.summary;
     closeRun(run, out);
+    /* THE TALLY, AND ONLY WHEN IT MEANS SOMETHING.
+       On a day that was already done it would read "0 of 7 allocated, 0
+       reconciled" — true, and indistinguishable from a broken run. The run
+       itself has already said what happened, with the date, so this line is
+       skipped rather than restated: three sentences arrived for one event and
+       two of them were near-copies of the third. */
+    if (!out.alreadyFiled) {
+      send(session, {
+        type: "recon_progress",
+        /* NO "fully clean". POC feedback BPAY 05: "What does 'fully clean' means?
+           Doesn't sound like a term RAA uses, can remove if not needed." It was
+           a third count for rows that were both allocated AND reconciled — which
+           the first two numbers already let you work out, under a name Finance
+           does not use. `s.both` is still computed and still on the run record;
+           it just no longer gets a made-up label in the sentence a person reads. */
+        message: `${s.allocated} of ${s.total} allocated, ${s.reconciled} reconciled` +
+          (s.failed ? `, ${s.failed} failed` : ""),
+      });
+    }
     send(session, {
-      type: "recon_progress",
-      /* NO "fully clean". POC feedback BPAY 05: "What does 'fully clean' means?
-         Doesn't sound like a term RAA uses, can remove if not needed." It was
-         a third count for rows that were both allocated AND reconciled — which
-         the first two numbers already let you work out, under a name Finance
-         does not use. `s.both` is still computed and still on the run record;
-         it just no longer gets a made-up label in the sentence a person reads. */
-      message: `${s.allocated} of ${s.total} allocated, ${s.reconciled} reconciled` +
-        (s.failed ? `, ${s.failed} failed` : ""),
+      type: "recon_done", pageNumber: out.pageNumber, summary: s, runId: run && run.id,
+      // So the page knows not to add its own "page N created" — nothing was
+      // created, and the run has already said so.
+      alreadyFiled: !!out.alreadyFiled,
     });
-    send(session, { type: "recon_done", pageNumber: out.pageNumber, summary: s, runId: run && run.id });
   } catch (err) {
     // The receipts already filed are real. Say how far it got rather than
     // implying the whole run rolled back — nothing here rolls back.

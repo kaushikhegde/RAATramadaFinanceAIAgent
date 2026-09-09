@@ -5694,7 +5694,11 @@ function askMarkStale(){
         if (last.indexOf(firstSentence(m.error).replace(/…$/, '')) < 0) {
           note('Run stopped: ' + m.error, false);
         }
-      } else {
+      } else if (!m.alreadyFiled) {
+        /* "created" is only true when this run created it. On a day whose page
+           already existed the run has already said so — with the date and the
+           reason — and this line repeated it in wording that claimed the page
+           had just been made. */
         note('Run finished' + (m.pageNumber ? ' — reconciliation page ' + m.pageNumber + ' created.' : '.'), true);
       }
       if (m.pageNumber) statementPage = m.pageNumber;
