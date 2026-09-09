@@ -4,18 +4,27 @@
  * The page puts a login screen on screen when `recon_login` arrives and takes it
  * down when `recon_login_ok` does. Those two frames are a pair: a run that fires
  * the first without ever firing the second leaves a live view of a browser
- * signed into a finance system open on the page for the rest of the run, and
- * nothing about that failure is visible in the code you are reading at the time
- * — it is visible three files away, in whichever module happened to have its own
- * copy of ensureLoggedIn.
+ * signed into a finance system open on the page for the rest of the run.
  *
- * That is not hypothetical. `tramada-ipsi.js` and `tramada-receipt.js` each keep
- * their OWN ensureLoggedIn, and when recon-run.js gained the paired callback
- * those two did not. An IPSI run opened the login screen and never closed it.
+ * This test used to scan FIVE files, because `ensureLoggedIn` had five copies
+ * and they drifted — `tramada-ipsi.js` gained the ask without the tell, so an
+ * IPSI run opened the login screen and never closed it.
  *
- * So this is a source check, not a behaviour one — deliberately. The pairing is
- * a property of five separate copies of one function, and the thing worth
- * asserting is that no copy drifts out of step with the others again.
+ * The copies are now one function in `tramada-auth.js`, which is a better fix
+ * than the test was. So the test changed shape with it: it still checks the
+ * pairing, and it now also checks THAT THERE IS STILL ONLY ONE COPY — because
+ * re-adding a local ensureLoggedIn is exactly how this regressed the first time,
+ * and a second copy would carry a second, drifting answer to "whose Tramada
+ * session is this?" (tramada-auth.js, the identity rule).
+ *
+ * The probe and wait-loop checks below were written when those lived in each of
+ * the five copies and were asserted against all of them. They are NOT dropped
+ * now the code moved — the properties they defend (the wait must not navigate,
+ * the probe must read the body) are the two bugs that cost the most live runs,
+ * and they are asserted against tramada-auth.js, the one copy left.
+ *
+ * Still a source check, deliberately: CLAUDE.md §7 forbids mocking Playwright,
+ * and the property worth asserting is about the shape of the code, not a run.
  */
 const fs = require("fs");
 const path = require("path");
@@ -34,28 +43,31 @@ const read = (f) => fs.readFileSync(path.join(__dirname, "..", f), "utf8");
    never reach a page; they are left out on purpose rather than by oversight. */
 const REACHABLE = ["recon-run.js", "tramada-ipsi.js", "tramada-receipt.js"];
 
-console.log("\nevery module that can ask for a login can also report one");
+console.log("\nthe login lives in exactly one place");
+const auth = read("tramada-auth.js");
+{
+  const asks = (auth.match(/^\s*if \(typeof onNeedLogin === "function"\) onNeedLogin\(/gm) || []).length;
+  const tells = (auth.match(/^\s*if \(typeof onLoginOk === "function"\) onLoginOk\(\);/gm) || []).length;
+  ok(`tramada-auth.js: ${asks} ask(s) for a login, ${tells} report(s) one`, asks > 0 && asks === tells,
+    `onNeedLogin() is called ${asks} time(s) but onLoginOk() ${tells} — a login screen would be opened and never closed`);
+}
+
 for (const f of REACHABLE) {
   const src = read(f);
-  // Only the invocations, never the parameter list or a comment mentioning it.
-  const asks = (src.match(/^\s*if \(typeof onNeedLogin === "function"\) onNeedLogin\(\);/gm) || []).length;
-  const tells = (src.match(/^\s*if \(typeof onLoginOk === "function"\) onLoginOk\(\);/gm) || []).length;
-  ok(`${f}: ${asks} ask(s) for a login, ${tells} report(s) one`, asks > 0 && asks === tells,
-    `onNeedLogin() is called ${asks} time(s) but onLoginOk() ${tells} — a login screen would be opened and never closed`);
+  ok(`${f}: does not define its own ensureLoggedIn`, !/^async function ensureLoggedIn/m.test(src),
+    "a second copy is how the ask/tell pair drifted apart before, and it would now also carry a second answer to whose session this is");
+  ok(`${f}: gets it from tramada-auth`, /require\("\.\/tramada-auth"\)/.test(src));
 }
 
 console.log("\nand every call site hands the pair through");
 for (const f of REACHABLE) {
   const src = read(f);
   // `cb.onNeedLogin` / `callbacks.onNeedLogin` passed anywhere must be
-  // accompanied on the same line by its partner.
-  const lines = src.split("\n");
-  const orphans = lines
-    .map((l, i) => ({ l, n: i + 1 }))
-    .filter(({ l }) => /\b(cb|callbacks)\.onNeedLogin\b/.test(l))
-    .filter(({ l }) => !/\b(cb|callbacks)\.onLoginOk\b/.test(l));
-  ok(`${f}: no call site passes onNeedLogin without onLoginOk`, orphans.length === 0,
-    orphans.map((o) => `${f}:${o.n}  ${o.l.trim()}`).join("\n      "));
+  // accompanied on the same line — or, now that the call spans lines, within
+  // the same call — by its partner.
+  const orphans = (src.match(/ensureLoggedIn\(page, \{[\s\S]{0,400}?\}\)/g) || [])
+    .filter((c) => /onNeedLogin/.test(c) && !/onLoginOk/.test(c));
+  ok(`${f}: no call site passes onNeedLogin without onLoginOk`, orphans.length === 0, orphans.join("\n      "));
 }
 
 /* THE WAIT MUST NOT NAVIGATE.
@@ -68,26 +80,26 @@ for (const f of REACHABLE) {
  * the only path the moment the app started showing the login screen itself.
  *
  * The loop must poll the request-based probe, which shares the cookie jar but
- * never navigates.
+ * never navigates. Asserted against tramada-auth.js now the five copies are one.
  */
 console.log("\nthe wait for a login does not reload the page under the human");
-for (const f of REACHABLE) {
-  const src = read(f);
-  ok(`${f}: has a probe that does not navigate`, /async function tramadaIsAuthedQuietly\(/.test(src),
+{
+  ok("tramada-auth.js: has a probe that does not navigate", /async function tramadaIsAuthedQuietly\(/.test(auth),
     "the 3-second wait needs a check that does not call page.goto()");
   // The body of the wait loop, from `while (Date.now() < deadline)` to the
   // throw that ends it.
-  const m = src.match(/while \(Date\.now\(\) < deadline\) \{[\s\S]*?\n  \}/);
-  ok(`${f}: the wait loop was found`, !!m);
-  if (!m) continue;
-  const body = m[0];
-  ok(`${f}: the loop polls the quiet probe`, /tramadaIsAuthedQuietly\(page\)/.test(body));
-  /* One goto is allowed and required: the one AFTER the probe says they are in,
-     which puts the run's own tab back on a real page. More than one means
-     something in the wait is navigating again. */
-  const gotos = (body.match(/page\s*\n?\s*\.goto\(|page\.goto\(/g) || []).length;
-  ok(`${f}: the loop navigates at most once, after the sign-in (${gotos})`, gotos <= 1,
-    "a goto inside the wait reloads the login form and wipes what the human typed");
+  const m = auth.match(/while \(Date\.now\(\) < deadline\) \{[\s\S]*?\n  \}/);
+  ok("tramada-auth.js: the wait loop was found", !!m);
+  if (m) {
+    const body = m[0];
+    ok("tramada-auth.js: the loop polls the quiet probe", /tramadaIsAuthedQuietly\(page\)/.test(body));
+    /* One goto is allowed and required: the one AFTER the probe says they are in,
+       which puts the run's own tab back on a real page. More than one means
+       something in the wait is navigating again. */
+    const gotos = (body.match(/page\s*\n?\s*\.goto\(|page\.goto\(/g) || []).length;
+    ok(`tramada-auth.js: the loop navigates at most once, after the sign-in (${gotos})`, gotos <= 1,
+      "a goto inside the wait reloads the login form and wipes what the human typed");
+  }
 }
 
 /* THE RELOAD CAME BACK ON 25-08-2026, and this is why. The quiet probe decided
@@ -96,29 +108,29 @@ for (const f of REACHABLE) {
    when signed out — a 200, address bar unchanged, no redirect. So url-only read
    a logged-out page as signed in, ensureLoggedIn fell into its confirm-navigation
    on every poll, and the login form reloaded every three seconds under whoever
-   was trying to type a password. The fix reads the response BODY. These check no
-   copy drifts back to trusting the URL, and — against the captured bytes — that
-   the body check actually fires on the page that fooled the old one. */
+   was trying to type a password. The fix reads the response BODY. These check the
+   one remaining copy never drifts back to trusting the URL, and — against the
+   captured bytes — that the body check actually fires on the page that fooled it. */
 console.log("\nthe quiet auth probe reads the body, not just the URL");
-for (const f of REACHABLE) {
-  const src = read(f);
-  const m = src.match(/async function tramadaIsAuthedQuietly\s*\([^)]*\)\s*\{[\s\S]*?\n\}/);
-  ok(`${f}: has tramadaIsAuthedQuietly`, !!m);
-  if (!m) continue;
-  const q = m[0];
-  ok(`${f}: quiet probe reads the response body`, /\.text\(\)/.test(q),
-    "decides on res.url() alone — a login form served at the protected URL then reads as signed in and reloads every poll");
-  ok(`${f}: quiet probe looks for the login form`, /password|loginForm_login|login\.htm/i.test(q));
+{
+  const m = auth.match(/async function tramadaIsAuthedQuietly\s*\([^)]*\)\s*\{[\s\S]*?\n\}/);
+  ok("tramada-auth.js: has tramadaIsAuthedQuietly", !!m);
+  if (m) {
+    const q = m[0];
+    ok("tramada-auth.js: quiet probe reads the response body", /\.text\(\)/.test(q),
+      "decides on res.url() alone — a login form served at the protected URL then reads as signed in and reloads every poll");
+    ok("tramada-auth.js: quiet probe looks for the login form", /password|loginForm_login|login\.htm/i.test(q));
+  }
 }
 
 /* Behaviour, against the exact bytes that caused it — a 200 whose URL never says
    login.htm, so the fix has to catch it by CONTENT. The regex tested is the one
-   the code runs, lifted out of recon-run.js, so loosening it there breaks here. */
+   the code runs, lifted out of tramada-auth.js (it was recon-run.js before the
+   five copies became one), so loosening it there breaks here. */
 console.log("\nthe fix classifies the real logged-out page as a login screen");
 const loggedOut = read("fixtures/tramada-home-loggedout.html");
-const reSrc = read("recon-run.js")
-  .match(/const showingLogin\s*=\s*\n?\s*(\/[\s\S]*?\/[a-z]*)\.test\(body\)/);
-ok("the login-detection regex was found in recon-run.js", !!reSrc);
+const reSrc = auth.match(/const showingLogin\s*=\s*\n?\s*(\/[\s\S]*?\/[a-z]*)\.test\(body\)/);
+ok("the login-detection regex was found in tramada-auth.js", !!reSrc);
 if (reSrc) {
   const re = eval(reSrc[1]); // the literal from the source, evaluated as itself
   ok("it matches the captured logged-out home.htm (so: NOT signed in)", re.test(loggedOut),
@@ -130,6 +142,24 @@ if (reSrc) {
   ok("it does NOT match a dashboard with no login form (so: signed in)", !re.test(dashboard),
     "a logged-in home page is being read as the login screen");
 }
+
+/* ── the identity rule ───────────────────────────────────────────────────────
+   Not a style point. Without these, a run reuses whoever's Tramada session
+   happens to be warm in the shared browser, and files one person's receipts
+   under another person's name with nothing on screen looking wrong. */
+console.log("\nthe shared session is checked against WHO should be in it");
+ok("ensureLoggedIn compares the session owner to the run's user",
+  /_signedInAs === wantUser/.test(auth),
+  "without this it only asks whether ANYONE is signed in — which is how Sarah's receipts get filed as Tim");
+ok("a session that is not provably theirs is signed out",
+  /await signOut\(page, say\)/.test(auth),
+  "reusing an unknown session is the bug this whole file guards");
+ok("an unverified manual login is recorded as owner-unknown, not assumed",
+  /_signedInAs = wantUser \|\| null;/.test(auth),
+  "if nobody typed a username on our behalf we do not know who arrived");
+ok("signOut refuses rather than guessing when it cannot prove it worked",
+  /Refusing to file anything under a name/.test(auth),
+  "CLAUDE.md §3 — stop and ask rather than guess, and here the guess is whose name goes on the money");
 
 console.log("\nthe server sends both, and the page listens for both");
 const server = read("server.js");

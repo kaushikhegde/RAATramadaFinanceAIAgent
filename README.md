@@ -131,6 +131,41 @@ would then sit waiting for a login against a window that was never there.
 profile, or the `npm run docker:*` scripts (which shell out to `docker compose`)
 will not find it.
 
+## Signing in
+
+**Off by default.** With no Azure configured the app has no login, exactly as
+before: anything that reaches the port can use it, which is fine for a local
+`npm start` behind a loopback bind and is not fine on a shared server. The
+startup banner says which of the two you are running.
+
+Turn it on and two things change:
+
+1. **People sign in with their work account** (Entra / Azure AD) before they can
+   reach the app, the run history, or the WebSocket that starts a run.
+2. **The app signs into Tramada as them**, using credentials stored per person
+   in Azure Key Vault — instead of waiting for someone to type them into the
+   noVNC screen. If Tramada wants more than a password, the noVNC screen still
+   opens so they can finish, and closes itself again.
+
+Set-up is nine steps in the Azure Portal: **[docs/azure-setup.md](docs/azure-setup.md)**.
+The five values it produces go in `.env` (see `.env.example`).
+
+> **This reverses CLAUDE.md §5.** The rule was "never type credentials — the
+> human signs in", and with a vault configured the app now types them. That is a
+> deliberate decision made with the client, not drift. The human still answers
+> anything Tramada asks beyond the password.
+
+**One run at a time, for the whole server.** There is one browser and one
+Tramada session, so a second run would sign that browser in as somebody else
+while the first was still filing receipts. The second person is told who is
+running and asked to wait.
+
+**Whose session is it?** Because the profile is shared, a run checks that the
+browser is signed in *as the person running it* — not merely that somebody is —
+and signs out and back in if not. Without that check, Sarah's receipts get filed
+under Tim's name with nothing on screen looking wrong. See the header of
+`tramada-auth.js`.
+
 ## The BPay rules
 
 The run reproduces *Reconciliation Guide — BPAY (daily)*. Two parts of it are

@@ -42,6 +42,25 @@ services:
       # a .env beside this file.
       TRAMADA_URL: ${TRAMADA_URL:-https://asp.tramada.com.au/ttms/raatravelsandbox}
       DEBUG: ${DEBUG:-false}
+      # ─── Entra sign-in (docs/azure-setup.md) ──────────────────────────────
+      # Forwarded, not baked in: the secret lives in a git-ignored .env beside
+      # this file, never in the image. All empty by default, so a stack with no
+      # .env behaves exactly as it did before sign-in existed.
+      #
+      # SESSION_SECRET is not optional once the three AZURE_* are set — the
+      # server REFUSES TO BOOT without it rather than sign cookies with a
+      # predictable value, so a half-filled block here fails loudly at startup
+      # instead of quietly serving forgeable sessions.
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID:-}
+      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:-}
+      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:-}
+      # Must match a Redirect URI on the app registration EXACTLY, and must be
+      # the host you actually browse: the cookie is set on the origin you came
+      # from, so being sent back to a different one is a silent sign-in loop.
+      AZURE_REDIRECT_URI: ${AZURE_REDIRECT_URI:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      # Per-person Tramada credentials. Unset, a run still waits for a human.
+      AZURE_KEYVAULT_URL: ${AZURE_KEYVAULT_URL:-}
     volumes:
       # A named volume, NOT a host bind mount: this project sits under
       # ~/Documents, which macOS blocks Docker Desktop from mounting (TCC →

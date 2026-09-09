@@ -25,6 +25,7 @@ const { chromium } = require("playwright");
    exact receipt already been filed?" is a judgement about money, so it lives in
    recon-core with the rest of them and is tested offline. */
 const core = require("./recon-core");
+const { ensureLoggedIn } = require("./tramada-auth");
 
 const TRAMADA_BASE_URL =
   process.env.TRAMADA_URL || "https://asp.tramada.com.au/ttms/raatravelsandbox";
@@ -137,105 +138,10 @@ async function openBrowser(onProgress) {
   }
 }
 
-/**
- * Ensure we have an authenticated Tramada session on `page`.
- * If credentials are supplied and we land on login.htm, it logs in.
- * If the session is already warm (attached CDP Chrome), it just returns —
- * so a browser a human already signed into (past OTP) is reused as-is.
- */
-/**
- * Signed in? Asked of a PROTECTED page, and answered by what is ON it.
- *
- * The URL alone is not enough in either direction. `login.htm` serves the form
- * even when authenticated, which reads as logged out; and — measured
- * 17-Aug-2026 — an expired session serves the LOGIN FORM at the protected URL
- * you asked for, with the address bar still saying `booking-search.htm`. A
- * URL-only check answers "signed in" to that, `ensureLoggedIn` returns
- * immediately, and every row of the run then fails with "could not be opened"
- * while nothing ever asks the human to sign in. That is exactly what a whole
- * run did before this was tightened.
- *
- * So: the presence of a password field is the answer.
- */
-async function tramadaIsAuthed(page) {
-  await page
-    .goto(`${TRAMADA_BASE_URL}/home/home.htm`, { waitUntil: "domcontentloaded" })
-    .catch(() => {});
-  if (page.url().includes("login.htm")) return false;
-  const showingLogin = await page
-    .evaluate(() => !!document.querySelector("input[type=password], #loginForm_login"))
-    .catch(() => false);
-  return !showingLogin;
-}
-
-/* The same question as tramadaIsAuthed, asked WITHOUT touching the page.
-   tramadaIsAuthed NAVIGATES, and the wait loop below asks every three seconds —
-   on the very tab the human is typing their password into. Every ask reloaded
-   the login form and wiped both fields, so the login page appeared to reload
-   forever and there was no way to sign in at all. It went unnoticed while the
-   workflow was "sign in first, then start a run"; it became the only path the
-   moment the app started showing the login screen itself.
-
-   This shares the browser's cookie jar, so it sees the same session no matter
-   which tab the login happened in, and it never navigates anything. */
-async function tramadaIsAuthedQuietly(page) {
-  try {
-    const res = await page.request.get(`${TRAMADA_BASE_URL}/home/home.htm`, { timeout: 15000 });
-    // The URL is not the answer, for the same reason tramadaIsAuthed above stops
-    // trusting it: measured 25-08-2026, signed out this GET comes back 200 with
-    // the address still .../home/home.htm and the LOGIN FORM in the body — no
-    // redirect to login.htm. A url-only check read that as "signed in", so the
-    // wait loop's confirm-navigation fired every three seconds and reloaded the
-    // login form under the human, wiping the password before it could be typed.
-    // So read the BODY the way tramadaIsAuthed reads the DOM: a password field
-    // or the login form means NOT signed in, whatever the address bar says.
-    if (res.url().includes("login.htm")) return false;
-    const body = await res.text();
-    const showingLogin =
-      /type=["']?password|name=["']?password|loginForm_login|action=["'][^"']*login\.htm/i.test(body);
-    return !showingLogin;
-  } catch {
-    // A probe that could not run has not proved anything — least of all that
-    // somebody is signed in (CLAUDE.md §6).
-    return false;
-  }
-}
-
-async function ensureLoggedIn(page, { username, password, onNeedLogin, onLoginOk } = {}) {
-  if (await tramadaIsAuthed(page)) return; // warm session — nothing to do
-
-  if (username && password) {
-    await page.goto(`${TRAMADA_BASE_URL}/login.htm`, { waitUntil: "domcontentloaded" });
-    await page.waitForSelector("#username", { state: "visible", timeout: 15000 });
-    await page.fill("#username", username);
-    await page.fill("#loginForm_password", password);
-    await page.click("#loginForm_login");
-    await page.waitForURL((u) => !u.toString().includes("login.htm"), { timeout: 30000 }).catch(() => {});
-    if (page.url().includes("login.htm")) throw new Error("Tramada login failed (check credentials / OTP).");
-    await sleep(500);
-    return;
-  }
-
-  // No credentials — ask the user to sign in and WAIT (don't quit the run).
-  if (typeof onNeedLogin === "function") onNeedLogin();
-  const deadline = Date.now() + 5 * 60 * 1000;
-  while (Date.now() < deadline) {
-    await sleep(3000);
-    if (!(await tramadaIsAuthedQuietly(page))) continue;
-    /* Signed in. This tab is still on the login form, so put it on a real page
-       and confirm THERE — the probe proves the session is good, not that this
-       tab is usable. The only navigation in the whole wait, and it happens
-       after the human has finished. */
-    if (!(await tramadaIsAuthed(page))) continue;
-    await sleep(500);
-    // Paired with onNeedLogin above: the page put a login screen up on that
-    // frame and only this one takes it down. The credentialed branch returns
-    // earlier without either, which is right — it never asked anybody.
-    if (typeof onLoginOk === "function") onLoginOk();
-    return;
-  }
-  throw new Error("Timed out waiting for Tramada login. Sign in to the shared Chrome and try again.");
-}
+/* Signed-in-ness lives in tramada-auth.js now — ONE copy, because with per-user
+   credentials the identity check there decides whose name goes on a receipt, and
+   this file used to hold one of five copies that had already drifted apart once.
+   See the header of tramada-auth.js. */
 
 /* ─────────────────────────────────────────────────────────────────────────
  * Step 1 — resolve the booking (req 5)
@@ -1194,8 +1100,8 @@ async function readLatestReceipt(page) {
  * Create (and optionally issue) a receipt against an existing booking.
  *
  * @param {object} args
- * @param {string} [args.username] / [args.password]  Only used if the shared
- *        Chrome session is NOT already logged in (avoids re-triggering OTP).
+ * @param {{username,password,forEmail}} [args.auth]  This person's Tramada
+ *        credentials from the vault. Absent means a human signs in.
  * @param {string|number} args.bookingNo   Booking to receipt against (req 5:
  *        if you don't have one, call searchBookingsForReceipt first and let the
  *        user pick).
@@ -1217,8 +1123,11 @@ async function readLatestReceipt(page) {
  * @returns {Promise<{details, segments, staged, receipt?, previewImage?}>}
  */
 async function runTramadaReceipt({
-  username,
-  password,
+  /* {username, password, forEmail} from the vault, via tramada-creds.js — or
+     null, which means a human signs in. Was a loose username/password pair;
+     they travel together now because tramada-auth.js needs `forEmail` with them
+     to know whose session it is about to reuse. */
+  auth = null,
   bookingNo,
   receipt = {},
   dryRun = false,
@@ -1262,7 +1171,14 @@ async function runTramadaReceipt({
     page = await context.newPage();
 
     onProgress(12, "Checking Tramada session...");
-    await ensureLoggedIn(page, { username, password, onNeedLogin: callbacks.onNeedLogin, onLoginOk: callbacks.onLoginOk });
+    await ensureLoggedIn(page, {
+      auth,
+      onNeedLogin: callbacks.onNeedLogin,
+      onLoginOk: callbacks.onLoginOk,
+      // This module's onProgress carries a percentage; tramada-auth.js only has
+      // words. Pin them to the step the login happens on rather than invent one.
+      onProgress: (m) => onProgress(12, m),
+    });
 
     onProgress(25, `Opening booking ${bookingNo}...`);
     const details = await getBookingDetails(page, bookingNo);
@@ -1462,13 +1378,13 @@ async function runTramadaReceipt({
  * Convenience wrapper for the "no booking number" branch (req 5):
  * open a search, return the list for the chat to display.
  */
-async function searchBookingsForReceipt({ username, password, status, clientName, bookingNo } = {}) {
+async function searchBookingsForReceipt({ auth = null, status, clientName, bookingNo } = {}) {
   let browser, page;
   try {
     ({ browser } = await openBrowser(() => {}));
     const context = browser.contexts()[0] || (await browser.newContext());
     page = await context.newPage();
-    await ensureLoggedIn(page, { username, password });
+    await ensureLoggedIn(page, { auth });
     return await searchBookings(page, { status, clientName, bookingNo });
   } finally {
     try { if (page) await page.close(); } catch {}

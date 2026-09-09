@@ -689,6 +689,17 @@ header.top { display: none !important }
 .dz.ready .di{background:var(--ok-bg);color:var(--ok)}
 /* The success line, in the slot the warnings and errors use. */
 .rc-hint .rc-ok{color:var(--ok);font-weight:600}
+/* ── who is signed in, in the sidebar ──
+   The EMAIL, not just a display name: it is the key their Tramada credentials
+   are looked up under (tramada-creds.js), so the thing worth putting on screen
+   is the thing the vault is keyed on. Someone signed in under an address the
+   vault does not know gets "no credentials found" mid-run; seeing the address
+   here is what makes that legible before the run rather than during it. */
+.rc-acct {
+  padding: 2px 12px 8px; font-size: 11px; color: var(--ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.side nav form { margin: 0 }
 
 </style>
 </head>
@@ -5367,6 +5378,46 @@ function askMarkStale(){
     nav.appendChild(btn);
   }
 
+  /* ── who is signed in ──
+     Mounted only when the server says Entra is actually on. A local `npm start`
+     has no sign-in at all, and a "Sign out" button that ends nothing is worse
+     than no button — the same reason the noVNC nav above waits for recon_hello. */
+  async function mountAccountNav() {
+    const nav = document.querySelector('.side nav');
+    if (!nav || document.getElementById('rcAcctNav')) return;
+    let me;
+    // A failure here is not worth a message: the page has a socket that will
+    // report the server being unreachable far more loudly than a missing chip.
+    try { me = await fetch('/api/me', { credentials: 'same-origin' }).then((r) => r.json()); } catch { return; }
+    if (!me || !me.entra || !me.user) return;
+
+    const lbl = document.createElement('div');
+    lbl.className = 'nav-lbl';
+    lbl.textContent = 'Account';
+
+    const who = document.createElement('div');
+    who.className = 'rc-acct';
+    who.id = 'rcAcctNav';
+    who.textContent = me.user.email || me.user.name || '';
+    who.title = me.vault
+      ? 'A run signs into Tramada as this person, using the credentials stored for them'
+      : 'No Tramada credentials are stored — a run will ask you to sign into Tramada yourself';
+
+    /* A real form POST, not an <a>. /auth/logout ends the session, and a GET
+       that changes state is one a prefetcher, a link scanner or a browser's
+       address-bar guess can fire without anybody clicking it. */
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/auth/logout';
+    const btn = document.createElement('button');
+    btn.className = 'nav-item';
+    btn.type = 'submit';
+    btn.innerHTML = '<span class="ico">\u21AA</span> Sign out';
+    form.appendChild(btn);
+
+    nav.appendChild(lbl); nav.appendChild(who); nav.appendChild(form);
+  }
+
   function vncPanelEsc(e) { if (e.key === 'Escape') closeVncPanel(); }
 
   function openVncPanel() {
@@ -6380,6 +6431,7 @@ function askMarkStale(){
     // allowed to be right about screens that still are not.
     mountCheatSheetScreen();
     mountNav(); mountSources(); renderOverview(); markSamples(); hideUnwired();
+    mountAccountNav();
     render(); connect(); loadOverview(); loadCheatSheets(); loadIpsiPending();
     /* Open on Sources & upload, not on Run overview.
        The mockup ships with the overview marked `on`, which made sense when it
