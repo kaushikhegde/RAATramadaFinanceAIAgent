@@ -165,5 +165,41 @@ ok("and it matches the port websockify is actually told to serve",
   /websockify --web=\/usr\/share\/novnc 6080/.test(entry),
   "NOVNC_PORT and the websockify port must be the same number");
 
+/* ── The statement balance Edit button is scoped to ITS OWN field ─────────
+   Measured live 08-09-2026 on Reconcile Bank Statement Page 23: eleven
+   `dl.edit` blocks, ONE Edit button, and it belonged to the closing balance:
+
+       data-fn-click="EditToggleTextField.toggleTextField('closingBalance');"
+
+   The old selector scoped to `dl.edit` and took `.first()` — DOM order, not
+   relevance — so it clicked that one, unlocked the closing balance correctly,
+   and then the caller asserted on `#openingBalance` and stopped a seven-row
+   run. The opening balance has no Edit on a continuation page at all: Tramada
+   carries it forward from the previous page's closing figure.
+
+   Source-level, like the rest of this file: what matters is that neither
+   selector can address a field other than the one it names. */
+console.log("\nthe balance Edit button cannot reach another field");
+{
+  const R = require("../recon-run");
+
+  for (const field of ["openingBalance", "closingBalance"]) {
+    const byHandler = R.balanceEditByHandler(field);
+    const sameBlock = R.balanceEditInSameBlock(field);
+    ok(`${field}: the handler selector names the field it unlocks`,
+      byHandler.includes(`toggleTextField('${field}')`), byHandler);
+    ok(`${field}: and the fallback is scoped to that field's own dl.edit`,
+      sameBlock.split(",").every((sel) => sel.includes(`dl.edit:has(#${field})`)), sameBlock);
+  }
+
+  const other = "closingBalance";
+  ok("a selector for one field never matches the other's handler",
+    !R.balanceEditByHandler("openingBalance").includes(other),
+    R.balanceEditByHandler("openingBalance"));
+  ok("...and its fallback is not merely `dl.edit`, which matched eleven blocks",
+    !/dl\.edit\s+dt/.test(R.balanceEditInSameBlock("openingBalance")),
+    R.balanceEditInSameBlock("openingBalance"));
+}
+
 console.log(`\n${fail === 0 ? "✅" : "❌"} ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

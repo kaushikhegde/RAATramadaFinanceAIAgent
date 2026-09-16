@@ -750,14 +750,44 @@ async function readVisibleTransactions(page) {
  * anything is what a single mixed selector cannot do: `.first()` on a
  * comma-list picks by DOM order, not list order, so an unscoped fallback can
  * still win even when it is listed last. */
-const BALANCE_EDIT_BUTTON_SCOPED =
-  'dl.edit dt.input-short-button button, dl.edit input[type="button"][value="Edit"]';
-const BALANCE_EDIT_BUTTON_FALLBACK = 'input.button[type="button"][value="Edit"]';
+/* ASK THE PAGE WHICH FIELD AN EDIT UNLOCKS, rather than inferring it from
+ * where the button sits.
+ *
+ * Measured live 08-09-2026 on Reconcile Bank Statement Page 23. The page
+ * carries ELEVEN `dl.edit` blocks and exactly ONE Edit button, and that button
+ * says what it does:
+ *
+ *     data-fn-click="EditToggleTextField.toggleTextField('closingBalance');"
+ *
+ * The old selector scoped to `dl.edit` and took `.first()`, which is DOM order,
+ * not relevance — so it found the closing balance's Edit, clicked it, unlocked
+ * the closing balance correctly, and then the caller asserted on
+ * `#openingBalance` and stopped a seven-row run with "Clicked Edit but the
+ * statement balance fields are still read-only". Both halves were true and
+ * neither was the problem: the click worked, and the opening balance has no
+ * Edit button on this page at all.
+ *
+ * It has none because Tramada CARRIES THE OPENING BALANCE FORWARD from the
+ * previous page's closing figure — on a continuation page it is derived, not
+ * entered, and read-only is the correct state for it. Scoping by handler is
+ * what tells those two apart: no button for a field means "this field is not
+ * editable here", which is a different sentence from "the click failed".
+ *
+ * The fallback stays scoped to the field's OWN `dl.edit`, so even a tenant
+ * whose buttons carry no handler attribute cannot reach across sections. */
+const balanceEditByHandler = (field) =>
+  `[data-fn-click*="toggleTextField('${field}')"]`;
+const balanceEditInSameBlock = (field) =>
+  `dl.edit:has(#${field}) input[type="button"][value="Edit"], ` +
+  `dl.edit:has(#${field}) dt.input-short-button button`;
 
-async function findBalanceEditButton(page) {
-  const scoped = page.locator(BALANCE_EDIT_BUTTON_SCOPED);
-  if (await scoped.count()) return scoped.first();
-  return page.locator(BALANCE_EDIT_BUTTON_FALLBACK).first();
+/** The Edit that unlocks ONE named balance field, or null if the page has none. */
+async function findBalanceEditButton(page, field) {
+  const byHandler = page.locator(balanceEditByHandler(field));
+  if (await byHandler.count()) return byHandler.first();
+  const sameBlock = page.locator(balanceEditInSameBlock(field));
+  if (await sameBlock.count()) return sameBlock.first();
+  return null;
 }
 
 async function setStatementBalances(page, { openingBalance, closingBalance } = {}, say = () => {}, dryRun = false) {
@@ -796,60 +826,49 @@ async function setStatementBalances(page, { openingBalance, closingBalance } = {
     return { alreadyRight: true, ...want };
   }
 
-  const locked = await page.$eval("#openingBalance", (el) => el.readOnly).catch(() => false);
-  if (locked) {
-    const edit = await findBalanceEditButton(page);
-    if (!(await edit.count())) {
-      const controls = await page.evaluate(() =>
-        [...document.querySelectorAll("input[type=button], input[type=submit]")]
-          .map((n) => `${n.id ? "#" + n.id : ""}[${n.value}]`).join(" | ")).catch(() => "");
-      throw new Error(
-        `The statement balances are read-only and the Edit button that unlocks them is not on the page. It offered: ${controls}`
-      );
+  /* PER FIELD, because the two are not locked or unlocked together and only
+     one of them may even be editable. A field that already reads what the run
+     wants is left alone entirely — clicking Edit to retype the same number is
+     the pure risk the comment above describes. */
+  const readOnlyOf = (field) =>
+    page.$eval(`#${field}`, (el) => el.readOnly).catch(() => false);
+
+  const stuck = [];
+  for (const [field, label] of [["openingBalance", "opening"], ["closingBalance", "closing"]]) {
+    const wanted = want[field];
+    if (!wanted) continue;
+    if (core.cents((showing || {})[field]) === core.cents(wanted)) continue;
+
+    if (await readOnlyOf(field)) {
+      const edit = await findBalanceEditButton(page, field);
+      if (edit) {
+        await edit.click();
+        await page
+          .waitForFunction((f) => {
+            const el = document.querySelector(`#${f}`);
+            return el && !el.readOnly;
+          }, field, { timeout: 10000 })
+          .catch(() => {});
+      }
+      if (await readOnlyOf(field)) {
+        stuck.push({ field, label, hadButton: !!edit, showing: (showing || {})[field], wanted });
+      }
     }
-    await edit.click();
-    await page
-      .waitForFunction(() => {
-        const el = document.querySelector("#openingBalance");
-        return el && !el.readOnly;
-      }, null, { timeout: 10000 })
-      .catch(() => {});
   }
 
-  const stillLocked = await page.$eval("#openingBalance", (el) => el.readOnly).catch(() => true);
-  if (stillLocked) {
-    /* "Clicked Edit but the fields are still read-only" was the whole message,
-       and it names the one thing already known. It cannot say WHICH Edit was
-       clicked — the selector's second half matches any `input.button` valued
-       "Edit" anywhere on the page, so `.first()` may well have pressed one
-       belonging to a different section — nor what state the field ended in.
-       So the page is asked, while it is still open. */
-    const seen = await page.evaluate(() => {
-      const el = document.querySelector("#openingBalance");
-      const where = (n) => {
-        const bits = [];
-        for (let p = n.parentElement, i = 0; p && i < 4; p = p.parentElement, i++) {
-          bits.push(p.tagName.toLowerCase() + (p.className ? "." + String(p.className).trim().split(/\s+/).join(".") : ""));
-        }
-        return bits.join(" < ");
-      };
-      return {
-        field: el ? {
-          readOnly: el.readOnly, disabled: el.disabled,
-          cls: el.className || "", value: el.value || "",
-        } : null,
-        edits: [...document.querySelectorAll('input[type="button"][value="Edit"], button')]
-          .filter((n) => /^edit$/i.test((n.value || n.textContent || "").trim()))
-          .map((n) => ({ cls: n.className || "", inside: where(n) })),
-      };
-    }).catch(() => null);
-    const detail = seen
-      ? ` The field reads readOnly=${seen.field && seen.field.readOnly}, ` +
-        `disabled=${seen.field && seen.field.disabled}, class="${seen.field && seen.field.cls}", ` +
-        `value="${seen.field && seen.field.value}". ${seen.edits.length} Edit button(s) on the page: ` +
-        seen.edits.map((e) => `[${e.cls}] in ${e.inside}`).join(" ; ")
-      : "";
-    const message = `Clicked Edit but the statement balance fields are still read-only.${detail}`;
+  if (stuck.length) {
+    /* Say WHICH field, and whether the page even offered a way to change it.
+       "Clicked Edit but the statement balance fields are still read-only" was
+       the whole message, and it was wrong twice over on the run that produced
+       it: the click had worked, and the field it complained about was one
+       Tramada does not let anybody edit on a continuation page. */
+    const detail = stuck.map((x) => x.hadButton
+      ? `the ${x.label} balance stayed read-only after its Edit was clicked ` +
+        `(it reads $${x.showing}, the run wanted $${x.wanted})`
+      : `the ${x.label} balance has no Edit button on this page — Tramada carries it ` +
+        `forward from the previous statement page, so it reads $${x.showing} and cannot be ` +
+        `set to the $${x.wanted} this run was given`).join("; and ");
+    const message = `The statement balances could not be set: ${detail}.`;
     /* On a dry run this is not worth stopping for. The balances are only ever
        committed by Done, which a dry run never presses, so the figure being
        missing changes nothing about what the run is here to check — and a
@@ -875,8 +894,14 @@ async function setStatementBalances(page, { openingBalance, closingBalance } = {
     await el.press("Tab").catch(() => {});
     await sleep(200);
   };
-  await typeInto("#openingBalance", want.openingBalance);
-  await typeInto("#closingBalance", want.closingBalance);
+  /* Only what needs changing. A field already showing the right figure is not
+     retyped — it may well be read-only precisely because it is derived, and
+     typing into a read-only input succeeds silently and keeps nothing (§6). */
+  for (const field of ["openingBalance", "closingBalance"]) {
+    if (!want[field]) continue;
+    if (core.cents((showing || {})[field]) === core.cents(want[field])) continue;
+    await typeInto(`#${field}`, want[field]);
+  }
 
   // Read back. A balance that did not stick leaves the reconciliation
   // unanchored, and the page is about to be committed.
@@ -1100,12 +1125,25 @@ async function openFreshStatementPage(page, o) {
    * two pages. */
   const taken = core.pageForDate(found.pages, o.statementDate);
   if (taken && !ALLOW_SECOND_STATEMENT) {
-    throw new Error(
+    /* CODED, because refusing is only half an answer.
+       Stopping is right when this run has receipts of its own waiting to be
+       presented — joining a page somebody else may already have pressed Done
+       on is not something to guess at. It is NOT right when every row was
+       already filed by an earlier run: there is nothing of this run's on that
+       page, nothing to tick, and the day is simply finished. The caller can
+       tell those apart and this cannot, so it says what happened and lets it
+       decide (the same shape as BOOKING_NOT_FOUND in tramada-receipt.js). */
+    const err = new Error(
       `${accountLabel} already has a bank statement for ${core.toTramadaDate(o.statementDate)} — ` +
       `page ${taken.pageNo}. BR12 allows one statement per day, so this run stopped rather than ` +
       `creating a second. If that page is wrong, reconcile it in Tramada or change the statement ` +
       `date on the run screen.`
     );
+    err.code = "STATEMENT_DATE_TAKEN";
+    err.pageNo = taken.pageNo;
+    err.statementDate = o.statementDate;
+    err.accountLabel = accountLabel;
+    throw err;
   }
 
   let pageNumber = core.nextPageNumber(found.pages);
@@ -1595,14 +1633,62 @@ async function runReconciliation(o = {}) {
        Opening Balance from the account itself, that figure is carried into
        Closing, and it comes back here so the reconcile screen can be made to
        agree with it. Nothing typed on the Sources screen reaches either form. */
-    const { pageNumber, carriedBalance, closingBalance } = await openFreshStatementPage(page, {
-      accountLabel,
-      statementDate: o.statementDate,
-      // Step 27 — Finance's figure off the Westpac statement, not a copy of
-      // the opening balance.
-      closingBalance: o.closingBalance,
-      say,
-    });
+    /* A DAY THAT IS ALREADY DONE IS NOT A FAILED RUN.
+       BR12 refuses to create a second statement for a date, and that refusal
+       is correct while this run has receipts of its own waiting to be
+       presented. When every row was already filed by an earlier run it has
+       none: nothing of this run's is on that page, there is nothing to tick,
+       and the only thing left to report is that the day is finished. It used
+       to report that as a red error over seven rows that were all perfectly
+       in order. */
+    let opened;
+    try {
+      opened = await openFreshStatementPage(page, {
+        accountLabel,
+        statementDate: o.statementDate,
+        // Step 27 — Finance's figure off the Westpac statement, not a copy of
+        // the opening balance.
+        closingBalance: o.closingBalance,
+        say,
+      });
+    } catch (err) {
+      if (err.code !== "STATEMENT_DATE_TAKEN" || !core.allFiledEarlier(results)) throw err;
+      const n = results.filter((r) => !r.skipped).length;
+      /* Say so on the rows too. They would otherwise sit on "Pending" for ever
+         — the match never ran — which reads as a run that is still going.
+         "Not run" is the honest value and the one skipped rows already use:
+         the receipts are filed, but THIS run did not look at the page that
+         covers them, and must not imply it did. The detail fileReceipts wrote
+         is kept and added to rather than replaced. */
+      for (const r of results) {
+        if (r.skipped) continue;
+        r.reconciliation = "Not run";
+        r.why = `${r.why || "already filed"} — and reconciliation page ${err.pageNo} was ` +
+          `already created for ${core.toTramadaDate(o.statementDate)}, so nothing was reconciled here`;
+        row(r.n, { reconciliation: r.reconciliation, why: r.why });
+      }
+      say(
+        `Run finished — reconciliation page ${err.pageNo} was already created for ` +
+        `${core.toTramadaDate(o.statementDate)}. All ${n} receipt${n === 1 ? " was" : "s were"} ` +
+        `filed by an earlier run, so nothing was reconciled.`,
+        true
+      );
+      ok = true;
+      return {
+        results,
+        pageNumber: err.pageNo,
+        statementRows: 0,
+        summary: core.summarise(results),
+        balances: null,
+        selection: { ticked: [], missing: [], futureDated: [] },
+        finished: { done: false, reason: `reconciliation page ${err.pageNo} was already created for this date, and every row was filed by an earlier run` },
+        // What the caller needs to know it was a no-op rather than a run that
+        // matched nothing.
+        alreadyFiled: true,
+        statementPageNo: err.pageNo,
+      };
+    }
+    const { pageNumber, carriedBalance, closingBalance } = opened;
 
     /* 3 — sort, filter, read, match. Nothing else is clicked here. */
     say(`Sorting by date descending, then filtering to ${core.BPAY_RECEIPT.label}…`);
@@ -2067,4 +2153,7 @@ module.exports = {
   sortPage, applyFilter, filterFor, readVisibleTransactions, fileReceipts,
   readExistingPages, createStatement, openFreshStatementPage, filterAndRead,
   setStatementBalances, selectMatchedTransactions, finishStatementPage,
+  // Exported so the per-field scoping can be pinned offline — the bug it
+  // fixes is a selector that matched the WRONG field's button.
+  balanceEditByHandler, balanceEditInSameBlock,
 };

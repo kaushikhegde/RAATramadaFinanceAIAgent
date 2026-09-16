@@ -1888,6 +1888,28 @@ function confirmIpsiIssued(ticked, waiting) {
   };
 }
 
+/**
+ * Was every row on this run already filed by an EARLIER run?
+ *
+ * `fileReceipts` marks a row "Already filed" when the receipt is on the
+ * booking with the same reference and amount — nothing is filed a second time,
+ * because that takes the money twice. When EVERY row comes back that way the
+ * run has nothing of its own on the statement page: no receipt it raised is
+ * waiting to be presented, so there is nothing for it to tick.
+ *
+ * That is what makes a day whose statement page already exists a completed
+ * run rather than a collision. See `openFreshStatementPage`'s BR12 stop: it
+ * refuses to create a second statement for a date, and refusing is right when
+ * this run has money waiting to be reconciled. When it has none, there is
+ * nothing to refuse and stopping only hides a finished day behind a red error.
+ *
+ * Skipped rows do not count either way — they were never going to be filed.
+ */
+function allFiledEarlier(results) {
+  const rs = (results || []).filter((r) => r && !r.skipped);
+  return rs.length > 0 && rs.every((r) => r.allocation === "Already filed");
+}
+
 /** BR03 — a transaction line is a match within three cents either way. */
 const IPSI_LINE_TOLERANCE_CENTS = 3;
 /** BR08 — the total allocated in Tramada is a match within twenty cents. */
@@ -3358,7 +3380,7 @@ module.exports = {
   matchIpsiAgainstPayments,
   explainIpsiMiss,
   isIpsiMatcherRemark,
-  confirmIpsiIssued, filterIpsiSettlementDate, checkIpsiFileTotal, checkIpsiAllocatedTotal, summariseIpsi,
+  confirmIpsiIssued, allFiledEarlier, filterIpsiSettlementDate, checkIpsiFileTotal, checkIpsiAllocatedTotal, summariseIpsi,
   tidyError,
   summarise,
   MINT_REMARKS, TRAVELPAY_REMARKS, CHEAT_SHEET_COLUMNS,

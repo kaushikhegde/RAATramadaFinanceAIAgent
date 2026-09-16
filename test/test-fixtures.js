@@ -361,20 +361,25 @@ console.log("\nthe IPSI file states the reference its receipts will be raised un
     F.IPSI_BLANK_COLUMNS.every((c) => c !== "Transaction Reference"),
     JSON.stringify(F.IPSI_BLANK_COLUMNS));
 }
-console.log("\nthe IPSI file's split — 8 rows, 4 of them removed on upload");
+console.log("\nthe IPSI file's split — 10 rows, 3 of them removed on upload");
 {
-  /* Asked for 03-09-2026: "generate 8 but 4 of those are preauth or decline or
-     void". Pinned because BOTH numbers are what the demo shows, and neither is
-     `--limit` — routing it through the limit would give `npm run fixtures`
-     (which passes 5 to all four reports) a different split to
-     `npm run fixtures:ipsi`. */
-  check("four viable rows", F.IPSI_VIABLE_ROWS, 4);
-  check("eight rows in the file", F.IPSI_TOTAL_ROWS, 8);
-  check("so four are removed on upload", F.IPSI_TOTAL_ROWS - F.IPSI_VIABLE_ROWS, 4);
+  /* Asked for 03-09-2026 as "generate 8 but 4 of those are preauth or decline
+     or void", widened to ten on 08-09-2026. Pinned because BOTH numbers are
+     what the demo shows, and neither is `--limit`.
 
-  const made = [14801, 14804, 14807, 14810].map((n) => ({ bookingNo: String(n), dueCents: 14554 }));
+     Seven viable leaves exactly three excluded — one PreAuth, one Declined,
+     one Void, no repeats. The upload note names all three reasons, so the
+     card demonstrates each mechanism rather than the same one three times. */
+  check("seven viable rows", F.IPSI_VIABLE_ROWS, 7);
+  check("ten rows in the file", F.IPSI_TOTAL_ROWS, 10);
+  check("so three are removed on upload", F.IPSI_TOTAL_ROWS - F.IPSI_VIABLE_ROWS, 3);
+  check("which is one of every excluded kind, with none repeated",
+    F.IPSI_TOTAL_ROWS - F.IPSI_VIABLE_ROWS, F.IPSI_EXCLUDED.length);
+
+  const made = [14801, 14804, 14807, 14810, 14813, 14816, 14819]
+    .map((n) => ({ bookingNo: String(n), dueCents: 14554 }));
   const excluded = F.ipsiExcludedRows(made, "2026-09-03", F.IPSI_TOTAL_ROWS - made.length);
-  check("four excluded rows are built", excluded.length, 4);
+  check("three excluded rows are built", excluded.length, 3);
 
   // Every kind is represented — a file of four Declines would not show that
   // PreAuths are removed for a DIFFERENT reason (type, not status).

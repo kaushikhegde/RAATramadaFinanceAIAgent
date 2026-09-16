@@ -470,5 +470,35 @@ console.log("\nthe file Finance actually sends");
     /allocation not checked/.test(C.REMARKS.filedEarlier), C.REMARKS.filedEarlier);
 }
 
+/* ── A day that is already done is not a failed run ───────────────────────
+   BR12 refuses to create a second statement for a date, and that refusal is
+   right while the run has receipts of its own waiting to be presented. When
+   every row was already filed by an earlier run it has none — nothing of its
+   own is on that page and there is nothing to tick — and stopping only hid a
+   finished day behind a red error over seven rows that were all in order. */
+console.log("\na run whose rows were all filed earlier has nothing to reconcile");
+{
+  const filed = (over = {}) => ({ allocation: "Already filed", ...over });
+
+  ok("every row already filed",
+    C.allFiledEarlier([filed(), filed(), filed()]));
+  ok("one freshly filed row means this run DOES have something on the page",
+    !C.allFiledEarlier([filed(), { allocation: "Filed" }]));
+  ok("...and so does one that could not be filed at all",
+    !C.allFiledEarlier([filed(), { allocation: "Not allocated" }]));
+
+  /* Skipped rows were never going to be filed, so they neither qualify a run
+     nor disqualify it. */
+  ok("skipped rows are ignored",
+    C.allFiledEarlier([filed(), { skipped: true, allocation: "Not run" }]));
+  ok("but a run of nothing but skipped rows is not a finished day",
+    !C.allFiledEarlier([{ skipped: true, allocation: "Not run" }]));
+
+  // An empty run must never read as "already done" — that would turn a run
+  // with no rows into a clean finish.
+  ok("no rows at all is not a finished day", !C.allFiledEarlier([]));
+  ok("and neither is nothing at all", !C.allFiledEarlier(null) && !C.allFiledEarlier(undefined));
+}
+
 console.log(`\n${fail === 0 ? "✅" : "❌"} ${pass} passed, ${fail} failed\n`);
 process.exit(fail === 0 ? 0 : 1);
