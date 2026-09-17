@@ -231,5 +231,34 @@ console.log("\nthe balance Edit button cannot reach another field");
     R.balanceEditInSameBlock("openingBalance"));
 }
 
+/* THE TWO-FACTOR URL.
+ *
+ * 09-09-2026, a live Mint run: the password was accepted and Tramada served its
+ * verification-code form at `two-fa-login.htm`. Every check here asked whether
+ * the URL `.includes("login.htm")` — which that one does — so the wait after
+ * submitting sat out its full 30 seconds on a page that had already moved on,
+ * and the DOM check that followed navigated to home.htm and threw the code form
+ * away. The human opened the login screen to a blank username/password box, no
+ * code prompt, and no way to finish; the run then failed five minutes later
+ * with "Timed out waiting for the Tramada verification code."
+ *
+ * The URLs below are the real ones, off that run. */
+console.log("\nthe two-factor page is not the login page");
+{
+  const A = require("../tramada-auth");
+  const BASE = "https://asp.tramada.com.au/ttms/raatravelsandbox";
+
+  ok("the login form is the login form",
+    A.isLoginUrl(`${BASE}/login.htm`), `${BASE}/login.htm`);
+  ok("...and the two-factor prompt is NOT — it used to read as one",
+    !A.isLoginUrl(`${BASE}/two-fa-login.htm`), `${BASE}/two-fa-login.htm`);
+  ok("a protected page is not the login page either",
+    !A.isLoginUrl(`${BASE}/home/home.htm`), `${BASE}/home/home.htm`);
+  // Belt and braces on the anchor: the segment has to START at the slash, so
+  // anything hyphenated onto the front of it stays a different page.
+  ok("nor is anything else ending in -login.htm",
+    !A.isLoginUrl(`${BASE}/sso-login.htm`), `${BASE}/sso-login.htm`);
+}
+
 console.log(`\n${fail === 0 ? "✅" : "❌"} ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

@@ -49,6 +49,24 @@ const TRAMADA_BASE_URL =
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Is this URL the login form itself?
+ *
+ * `.includes("login.htm")` is not, and the difference cost a live run on
+ * 09-09-2026. Tramada's two-factor prompt is served at `two-fa-login.htm`,
+ * which CONTAINS `login.htm`, so the wait below sat out its full 30 seconds on
+ * a page that had already moved on — and the DOM check that followed then
+ * navigated to home.htm and threw the verification-code form away. The human
+ * arrived at the noVNC screen to find a blank login form and no code box, with
+ * nothing on screen saying why.
+ *
+ * So the segment has to start at a `/`: `.../login.htm` matches,
+ * `.../two-fa-login.htm` does not.
+ */
+function isLoginUrl(u) {
+  return /\/login\.htm/i.test(String(u || ""));
+}
+
 /* Who this browser's Tramada session belongs to, as an email, or null for
    "nobody, or we do not know". Deliberately module state and not per-run: the
    thing it describes is the shared Chrome profile, which outlives every run and
@@ -177,24 +195,34 @@ async function ensureLoggedIn(page, opts = {}) {
     await page.fill("#username", auth.username);
     await page.fill("#loginForm_password", auth.password);
     await page.click("#loginForm_login");
-    await page.waitForURL((u) => !u.toString().includes("login.htm"), { timeout: 30000 }).catch(() => {});
+    await page.waitForURL((u) => !isLoginUrl(u), { timeout: 30000 }).catch(() => {});
 
     /* Assert, don't assume (§3). Leaving login.htm is not proof: this instance
        serves the login form from protected URLs too, so the address bar can
-       move while the session did not. Ask the DOM. */
-    if (await tramadaIsAuthed(page)) {
+       move while the session did not. Ask the session — over HTTP.
+
+       QUIETLY, and that is the whole point: `tramadaIsAuthed` NAVIGATES to
+       home.htm, and what it navigated away from on 09-09-2026 was Tramada's
+       two-factor prompt with the code box on it. The password had been
+       accepted; the app then destroyed the one screen the human needed, put
+       the noVNC panel up on a blank login form, and waited five minutes for a
+       code nobody could enter. The probe shares the cookie jar, so it answers
+       the same question without touching the page. */
+    if (await tramadaIsAuthedQuietly(page)) {
       _signedInAs = wantUser;
       say("Signed into Tramada.");
       return;                     // nobody was asked anything — no callbacks
     }
 
-    /* Still not in. This is the OTP case, and also the expired-password case,
-       the locked-account case and the Tramada-changed-its-login case — and we
-       deliberately do not try to tell them apart. Nobody has ever captured
-       Tramada's verification-code screen, so any selector for it would be a
-       guess, and a guess here shows the wrong thing to somebody waiting.
-       Handing all four to the human on the noVNC screen is correct for all
-       four, and degrades to exactly what this app did before. */
+    /* Still not in. Usually the OTP case — captured 09-09-2026 on the sandbox:
+       the password is accepted and Tramada serves `two-fa-login.htm`, titled
+       "Authorisation Required", with an `Authentication Code` box, a "Remember
+       my details for this browser" tick and a `Next` button. It is also the
+       expired-password case, the locked-account case and the
+       Tramada-changed-its-login case, and we still do not try to tell them
+       apart: the page is left exactly as Tramada drew it and handed to the
+       human, which is correct for all four. Naming the OTP here would put a
+       claim on screen that the other three make false. */
     say("Tramada wants something more than a password — over to you.");
     return waitForHuman(page, { reason: "otp", wantUser, onNeedLogin, onLoginOk });
   }
@@ -245,4 +273,6 @@ module.exports = {
   tramadaIsAuthedQuietly,
   forgetSession,
   signedInAs,
+  // Exported to be tested offline — see test/test-login-frames.js.
+  isLoginUrl,
 };

@@ -51,7 +51,7 @@ require("dotenv").config();
 const { chromium } = require("playwright");
 const core = require("./recon-core");
 const { runTramadaReceipt } = require("./tramada-receipt");
-const { ensureLoggedIn } = require("./tramada-auth");
+const { ensureLoggedIn, signedInAs } = require("./tramada-auth");
 /* IPSI never touches a bank statement page — it walks Finance Receipts. A
    combined run has to be able to drive it too, or a loaded IPSI file gets
    matched against a page its transactions can never be on. */
@@ -2094,8 +2094,81 @@ async function runCombinedReconciliation(o = {}) {
   }
 }
 
+/**
+ * Sign the shared browser into Tramada and stop there. Nothing else.
+ *
+ * A test control, and only that: no report, no statement page, no receipt. It
+ * exists because the login path — vault credentials in, verification code on
+ * the noVNC screen, Tramada's home page out — was only ever reachable as the
+ * first ten seconds of a run that then goes on to file real money. Proving a
+ * misconfigured vault or a changed login form by starting a reconciliation is
+ * the wrong way round.
+ *
+ * It reuses `ensureLoggedIn` rather than repeating it, for the reason in the
+ * header of tramada-auth.js: a second copy of the identity rule is a copy that
+ * drifts, and this one would drift in the direction of "signing in is fine"
+ * while a run says otherwise.
+ *
+ * @param {object} o
+ * @param {{username, password, forEmail}} [o.auth]  From the vault. Absent, a
+ *        human signs in on the noVNC screen — the same fallback a run has.
+ * @param {object} o.callbacks  onProgress, onNeedLogin, onLoginOk — as a run's.
+ * @returns {Promise<{signedInAs: string|null, title: string, url: string}>}
+ */
+async function runTramadaLogin(o = {}) {
+  const cb = o.callbacks || {};
+  const say = cb.onProgress || (() => {});
+
+  const browser = await openBrowser();
+  let page;
+  let ok = false;
+  try {
+    const ctx = browser.contexts()[0] || (await browser.newContext());
+    page = await ctx.newPage();
+    say(o.auth
+      ? `Signing into Tramada with the stored credentials for ${o.auth.forEmail}...`
+      : "No Tramada credentials are stored — sign in on the login screen.");
+
+    await ensureLoggedIn(page, {
+      auth: o.auth,
+      onNeedLogin: cb.onNeedLogin,
+      onLoginOk: cb.onLoginOk,
+      onProgress: say,
+    });
+
+    /* Assert, don't assume (§3). ensureLoggedIn returning is its own reading of
+       the session; this asks the home page directly, because the whole point of
+       the button is to answer "did it actually land on Tramada" and an answer
+       taken on trust would answer nothing. Never by URL (§6) — this instance
+       serves the login form from protected URLs with the address bar unchanged,
+       which is the exact bug tramadaIsAuthed was written for. */
+    await page.goto(`${TRAMADA_BASE_URL}/home/home.htm`, { waitUntil: "domcontentloaded" });
+    const showingLogin = await page
+      .evaluate(() => !!document.querySelector("input[type=password], #loginForm_login"))
+      .catch(() => false);
+    if (showingLogin) {
+      throw new Error("Tramada is still showing its login form — the sign-in did not take.");
+    }
+
+    const title = (await page.title().catch(() => "")) || "";
+    say(`Tramada home page reached${title ? ` — "${title}"` : ""}.`, true);
+    ok = true;
+    return { signedInAs: signedInAs(), title, url: page.url() };
+  } catch (err) {
+    if (cb.onError) cb.onError(err.message);
+    throw err;
+  } finally {
+    // The tab stays open on failure so the form that would not sign in can be
+    // looked at on the noVNC screen (§5).
+    if (ok && page) await page.close().catch(() => {});
+    await browser.close().catch(() => {});
+  }
+}
+
 module.exports = {
   runReconciliation, runMintReconciliation, runCombinedReconciliation,
+  // A login and nothing else — the test button on the Browser nav.
+  runTramadaLogin,
   sortPage, applyFilter, filterFor, readVisibleTransactions, fileReceipts,
   readExistingPages, createStatement, openFreshStatementPage, filterAndRead,
   setStatementBalances, selectMatchedTransactions, finishStatementPage,

@@ -184,6 +184,11 @@ header.top { display: none !important }
      otherwise, so a page that never hears about a login screen never offers
      one. */
   let novncPort = null;
+  /* True while the Browser nav's "Login into Tramada" is in flight. Separate
+     from `running` on purpose: `running` gates the report table, the Start-run
+     button and the run's activity rail, and a sign-in test drives none of
+     those — it only needs the login screen to come up and go down again. */
+  let loginTest = false;
   let vncOpen = false;  // the run asked for a login and has not been given one
   /* Ticked, the login screen stays up for the whole run so you can watch it
      work. In localStorage because it is a preference about how you like to
@@ -2380,6 +2385,42 @@ header.top { display: none !important }
     btn.addEventListener('click', () => (vncPanel ? closeVncPanel() : openVncPanel()));
     nav.appendChild(lbl);
     nav.appendChild(btn);
+
+    /* Sign in, and nothing else. The login path — credentials out of the vault,
+       a verification code typed on the screen above, Tramada's home page — was
+       only ever reachable as the first ten seconds of a run that goes on to
+       file real receipts. Proving it works should not cost money. */
+    const test = document.createElement('button');
+    test.className = 'nav-item';
+    test.id = 'rcLoginTest';
+    test.type = 'button';
+    test.innerHTML = '<span class="ico">\u21B7</span> Login into Tramada';
+    test.title = 'Signs the shared browser into Tramada using your stored credentials, and stops there.';
+    test.addEventListener('click', startLoginTest);
+    nav.appendChild(test);
+  }
+
+  /* Ask the server to sign the shared browser in. The reply is the run's own
+     recon_login / recon_login_ok frames plus recon_login_test_done, so a
+     verification code puts the same screen up here as it does mid-run. */
+  function startLoginTest() {
+    if (loginTest) return;
+    if (!ws || ws.readyState !== 1) {
+      alertBar('err', '<b>Not connected to the server.</b> Is it still running?');
+      return;
+    }
+    loginTest = true;
+    const btn = $('#rcLoginTest');
+    if (btn) { btn.disabled = true; btn.classList.add('on'); }
+    note('Signing into Tramada (test) - no reconciliation is being run.');
+    render();
+    ws.send(JSON.stringify({ type: 'recon_login_test' }));
+  }
+
+  function endLoginTest() {
+    loginTest = false;
+    const btn = $('#rcLoginTest');
+    if (btn) { btn.disabled = false; btn.classList.remove('on'); }
   }
 
   /* ── who is signed in ──
@@ -2774,6 +2815,30 @@ header.top { display: none !important }
       needLogin = m.message;
       vncOpen = true;
       note(m.message, false);
+      /* The full window, not the 316px activity rail. The rail panel is the
+         width of the column it sits in, and noVNC scales a 1440x900 desktop to
+         fit — so Tramada's login form landed in it about 90px wide, letterboxed
+         in black, with the code box too small to read let alone type into. The
+         same screen the "Tramada login screen" nav button opens is the one that
+         is actually usable, so a run that needs a code opens that.
+
+         The rail panel is left in place as the fallback: closing this window
+         mid-run brings it back rather than leaving nothing on screen. */
+      openVncPanel();
+      render();
+    } else if (m.type === 'recon_login_test_done') {
+      endLoginTest();
+      if (m.error) {
+        note(m.error, false);
+        alertBar('err', '<b>Could not sign into Tramada.</b> ' + esc(firstSentence(m.error)));
+      } else {
+        /* Only on success. On a failure the screen stays up, because the form
+           that would not sign in is on it and closing it hides the one thing
+           worth looking at (CLAUDE.md §5 - leave the broken page open). */
+        if (vncPanel) closeVncPanel();
+        alertBar('ok', '<b>Signed into Tramada.</b> The shared browser reached the home page' +
+          (m.signedInAs ? ' as ' + esc(m.signedInAs) : '') + '. Nothing was reconciled.');
+      }
       render();
     } else if (m.type === 'recon_login_ok') {
       /* The sign-in landed, so down it goes — unless it is pinned. This frame
@@ -2782,6 +2847,13 @@ header.top { display: none !important }
          later. */
       needLogin = null;
       vncOpen = false;
+      /* Down it goes, unless it is pinned — this is the frame that says the
+         sign-in landed, so it is the moment the window has stopped being
+         something anybody needs. Before the window opened itself on
+         recon_login this only had to hide the rail panel; now it has to close
+         what it opened, or a live view of a browser signed into a finance
+         system stays up over the page for the rest of the run. */
+      if (!vncPin) closeVncPanel();
       note(m.message || 'Signed into Tramada — carrying on.', true);
       render();
     } else if (m.type === 'cheat_sheet') {

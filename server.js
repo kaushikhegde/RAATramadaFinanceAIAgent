@@ -23,6 +23,8 @@
  *   page  ◀──recon_login_ok{message}                ...and has now done it
  *   page  ◀──recon_row{n, row}                      one row's verdict
  *   page  ◀──recon_done{pageNumber | error}
+ *   page  ──recon_login_test                    sign in, and nothing else
+ *   page  ◀──recon_login_test_done{signedInAs | error}
  */
 require("dotenv").config();
 
@@ -36,7 +38,7 @@ const reconCore = require("./recon-core");
 const xlsxLite = require("./xlsx-lite");
 const xlsxWrite = require("./xlsx-write");
 const store = require("./run-store");
-const { runReconciliation, runMintReconciliation, runCombinedReconciliation } = require("./recon-run");
+const { runReconciliation, runMintReconciliation, runCombinedReconciliation, runTramadaLogin } = require("./recon-run");
 const { runIpsiReconciliation } = require("./tramada-ipsi");
 const azureAuth = require("./azure-auth");
 const creds = require("./tramada-creds");
@@ -365,6 +367,7 @@ wss.on("connection", (ws, req, user) => {
       else if (msg.type === "cheat_sheet") handleCheatSheet(session, msg);
       else if (msg.type === "cheat_sheet_save") handleCheatSheetSave(session, msg);
       else if (msg.type === "recon_run") await handleReconRun(session, msg);
+      else if (msg.type === "recon_login_test") await handleLoginTest(session);
     } catch (err) {
       // A throw here would take the socket down mid-run and the page would show
       // nothing at all. Report it as a finished run that failed.
@@ -704,6 +707,45 @@ async function handleReconRun(session, msg) {
  * filed is read by recon-core so there is one authority on what a row means.
  * The Mint half already came from this server's own parser.
  */
+/**
+ * The Browser nav's "Login into Tramada" — a sign-in and nothing else.
+ *
+ * It drives the SAME shared Chromium a run drives, and `ensureLoggedIn` will
+ * sign that browser out if the session is not provably this person's. So it
+ * takes the run lock: without it, pressing this mid-run tears down the session
+ * a reconciliation is filing receipts through (CLAUDE.md §6, "two reports = one
+ * run"). The same reason a run refuses while this is in flight.
+ *
+ * It reuses the run's own recon_login / recon_login_ok frames, so the page puts
+ * the noVNC screen up for a verification code exactly as it does mid-run — the
+ * point is to exercise that path, not a second one that resembles it.
+ */
+async function handleLoginTest(session) {
+  if (runLock.heldBy()) {
+    send(session, { type: "recon_login_test_done", error: `${runLock.heldBy()} is running a reconciliation — the browser is busy.` });
+    return;
+  }
+  runLock.take(session);
+  try {
+    // Same source as a run's: the email off the verified Entra session, never
+    // anything the page sent. See tramadaAuthFor.
+    const auth = await tramadaAuthFor(session);
+    // `run` is null — this files nothing, so there is no run record to write
+    // activity against, and inventing one would put a reconciliation that never
+    // happened on the overview screen (§6b).
+    const out = await runTramadaLogin({ auth, callbacks: callbacks(session, null) });
+    send(session, {
+      type: "recon_login_test_done",
+      signedInAs: out.signedInAs,
+      title: out.title,
+    });
+  } catch (err) {
+    send(session, { type: "recon_login_test_done", error: reconCore.tidyError(err.message) });
+  } finally {
+    runLock.release();
+  }
+}
+
 async function handleCombinedRun(session, msg) {
   const given = msg.byReport || {};
   const { rows: bpayRows, problems } = reconCore.parseReconCsv(csvOf(given.bpay));
