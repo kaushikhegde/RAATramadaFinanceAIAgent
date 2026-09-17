@@ -20,3 +20,8 @@ Dockerfile
 package-lock.json
 package-lock.json
 package.json
+
+# Mastercard signing keys — never commit these
+*.p12
+*.pfx
+*-encryption-key.pem

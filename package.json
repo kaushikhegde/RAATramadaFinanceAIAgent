@@ -2,7 +2,7 @@
   "name": "bank-reconciliation-automation",
   "version": "1.0.0",
   "private": true,
-  "description": "RAA Travel bank reconciliation — BPay receipts and Mint daily settlements, filed and checked against a Tramada statement page",
+  "description": "RAA Travel bank reconciliation \u2014 BPay receipts and Mint daily settlements, filed and checked against a Tramada statement page",
   "main": "server.js",
   "scripts": {
     "start": "CDP_MODE=external node server.js",
@@ -36,7 +36,12 @@
     "shots:bpay": "node shots/shot-bpay-rules.js",
     "shots:login": "node shots/shot-login-screen.js",
     "test:export": "node test/test-export.js",
-    "test:creditor": "node test/test-creditor-rules.js"
+    "test:creditor": "node test/test-creditor-rules.js",
+    "test:mastercard": "node test/test-mastercard-oauth.js",
+    "mastercard:ping": "node tools/mastercard-ping.js",
+    "mastercard:reach": "node tools/mastercard-ping.js --reach",
+    "test:payments": "node test/test-ipsi-payment.js",
+    "probe:swipe": "node tools/probe-swipe-form.js"
   },
   "dependencies": {
     "@azure/identity": "^4.13.2",

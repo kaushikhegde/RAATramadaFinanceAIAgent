@@ -1202,3 +1202,125 @@ share an amount, so amount alone would be ambiguous.
 
 `Amount Received` is the total of the rows actually ticked, not the file's
 headline settlement figure — a receipt has to balance against what it allocates.
+
+---
+
+## Issue Debtor Payment Receipt — the IPSI customer-payment form
+
+`booking/booking-debtor-payment-receipt.htm?mode=add&parentId=<booking>`
+Reached from the Receipts list with `#receiptCategory = DEBTOR_PAYMENT_RECEIPT`
+then `#add` ("Add / Issue Receipt"). Measured 16-Sep-2026 on booking 13061.
+
+```
+#receipttransactionTypeCode   "" | CA=Cash | CQ=Cheque | CC=Credit Card CCCF
+                              | CS=Credit Card Swipe | ET=EFT
+#receiptagencyBankAccount     1=[TRUST] Trust Account      ← ONLY option, preselected
+#debtor                       "RAA of SA Limited (Retail)" ← READ-ONLY, prefilled
+#creditor                     "" | 3=RAA- Fees | 89573=Journey Beyond…
+#receiptcreditCard            the dummy cards — see below
+#addCreditCardButton "Add"    #editCreditCardButton "Edit"
+#receiptcreditCardAuthNumber
+#receiptpayerName  #receiptdateReceived (dd-mm-yyyy, defaults to today)
+#receiptreceiptAmount  #receiptreferenceNumber
+#receiptincludeSfeCharge  #receiptsfeAmount  #receipttotalAmountToCharge
+#selectAll / #deselectAll     allocationAmount_<segId> / segmentsToAllocate…
+```
+
+### Two of BR03's three fields need no action
+
+The guide says to set Transaction Type, Bank Account and Received From. Only
+the first is ours to set:
+
+- `#receiptagencyBankAccount` offers **exactly one** option and arrives
+  selected.
+- `#debtor` is **read-only** and arrives holding `RAA of SA Limited (Retail)`.
+
+`payments-core.js` still asserts both rather than assuming them — a form that
+starts offering a General Account must fail loudly, not post money into it.
+
+### RAA's dummy cards are already in Tramada
+
+`#receiptcreditCard` is a dropdown, and the dummy cards BR04 calls for are
+already configured in it:
+
+```
+749  0000           GC - C - Givex Gift Card
+383  520000....5957 CA - C - Mastercard Credit
+382  518868....0008 CA - C - Mastercard Debit
+472  0000           RV - C - Redemption Voucher
+380  411111....1111 VI - C - Visa Credit
+381  404137....6459 VI - C - Visa Debit
+```
+
+**So the run selects a card and never types a card number.** That is a stronger
+§4 guarantee than any validation of a number we typed ourselves: no PAN passes
+through the process at all. `#addCreditCardButton` is not used.
+
+Match on the option's **label**, never on `380`/`381`/… — those ids are
+per-environment and will differ in production.
+
+Brand alone is not enough to choose: `Mastercard` maps to both a Credit and a
+Debit row, and picking one for the customer is the guess BR02 exists to
+prevent. `decideSwipeReceipt` stops and returns both choices.
+
+### Two ordering traps on this form (measured 16-Sep-2026, booking 13061)
+
+**1. Choosing the card OVERWRITES Payer Name.**
+`#receiptpayerName` was empty; selecting `383` in `#receiptcreditCard` left it
+holding `Mastercard Credit` — the card's own label. BR05 says the field must
+carry the actual paying customer, so **set the payer name AFTER the card, never
+before.** A run that fills the form top-to-bottom files every IPSI receipt under
+the name of the card.
+
+**2. Ticking a segment fills the FULL due, not the receipt amount.**
+With `#receiptreceiptAmount` at `100.00`, ticking segment 75584 put `15190.00`
+into `allocationAmount_75584` — the whole debtor due. Tramada then refuses the
+receipt with "Allocation cannot be greater than Amount Received", *after*
+submission, as a banner on a page that no longer names the row.
+
+So the allocation must be overwritten after the tick. `refuseOverAllocation` in
+`tramada-receipt.js` already catches this for the creditor forms; the same trap
+is live here.
+
+Correct order: transaction type → card → **payer name** → amount → reference →
+tick segment → **rewrite allocation** → Issue.
+
+The footer is the check to read before issuing:
+
+```
+Amt Rcvd: 100.00  + Unalloc Rcpts: 0.00  - Seg Total: 100.00  - RO Amt: 0.00  = Unalloc: 0.00
+```
+
+`Unalloc: 0.00` is the green light.
+
+### The swipe receipt grows by a card surcharge — measured, not documented anywhere
+
+Issuing the test receipt on 16-Sep-2026 (booking 13061) with
+`#receiptreceiptAmount = 100.00` produced:
+
+```
+R.0000009903 | Credit Card Swipe | RAA of SA Limited (Retail)
+1792412290cXt4Z | 16-09-2026 | Amount 100.80 | Allocated 100.80
+```
+
+**100.00 in, 100.80 out.** Tramada added an 0.80 card surcharge — the
+`#receiptincludeSfeCharge` / `#receiptsfeAmount` / `#receipttotalAmountToCharge`
+block — and raised the allocation to match, without being asked and without a
+confirmation step.
+
+Two consequences, both unresolved:
+
+1. **The IPSI guide is silent on this.** Step 7 says to take Amount Received
+   straight from the IPSI Approved page. If IPSI already charged the customer
+   the surcharge, entering the gross figure here would add it a second time; if
+   it did not, entering the net figure is correct and Tramada's 0.80 is the
+   agency's own fee. Which of the two is a question for RAA, not a thing to
+   infer from one sandbox receipt.
+
+2. **Reconciliation matches on amount.** An IPSI settlement line of 100.00
+   against a Tramada receipt of 100.80 will not match. Whatever the answer to
+   (1), the IPSI reconciliation side has to know the surcharge exists.
+
+Until RAA answers, a run must not silently accept the difference — read
+`#receipttotalAmountToCharge` back before Issue and stop if it is not the
+amount that was asked for.
