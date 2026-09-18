@@ -15,11 +15,6 @@ _to_delete/
 dist/*.tar.gz
 certs/SA_ROOT.crt
 certs/README.md
-Dockerfile
-Dockerfile
-package-lock.json
-package-lock.json
-package.json
 
 # Mastercard signing keys — never commit these
 *.p12
@@ -29,3 +24,7 @@ package.json
 # Pasted IPSI "Approved" screens — real transaction data, never commit
 approved.txt
 approved*.txt
+
+# The Docker volume: runs.json, uploads/ and the Chrome profile the Tramada
+# login lives in. Bind-mounted so you can read it; never committed.
+data/

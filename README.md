@@ -61,33 +61,14 @@ opens in your own browser.
 ```bash
 docker compose up --build          # or: npm run docker:up
 
-#   app           http://127.0.0.1:3000            ← START HERE
-#   login screen  http://127.0.0.1:6080/vnc.html   ← opens itself when needed
+#   app           http://127.0.0.1:3000
+#   login screen  http://127.0.0.1:6080/vnc.html   ← sign into Tramada here
 ```
 
-**Open the app and start a run — that is the whole flow.** When the run finds it
-is not signed in, the login screen appears inside the app: a real Chromium on a
-virtual display inside the container, already on the Tramada login page. Sign in
-there, by hand, and the screen closes itself the moment the login lands; the run
-carries on from where it stopped. The rule has not moved — the run attaches to a
-browser a **human** signed into, and never types credentials.
-
-Tick **Keep open** on that panel to watch the browser work for the rest of the
-run. The tick is remembered, but the screen still comes down when the run ends:
-a finished run has nothing to sign into, and leaving it up would hold a live
-connection to a signed-in browser open for as long as the tab stayed open.
-
-**Or open it whenever you like.** The sidebar carries a **Tramada login screen**
-button under *Browser*, on every screen, whether or not a run is going. It opens
-the same screen as a window over the page — sign in before you start, or just
-check the session is still alive. Closing it (Escape, the ✕, or a click on the
-backdrop) drops the VNC connection; while it is up, the run's own inline panel
-stands aside so there is only ever one client on the screen. The button only
-appears where a login screen exists — a local `npm start` has none, so it is not
-offered.
-
-`:6080` is still there to open by hand if you would rather have it in its own
-tab — both the panel and the window have a link.
+Open the screen first. It is a real X display inside the container with Chrome
+already on the Tramada login page — sign in there, by hand, exactly as you would
+locally, then go to the app and start a run. The rule has not moved: the run
+attaches to a browser a **human** signed into, and never types credentials.
 
 That is why there is a window manager and a VNC server in the image at all.
 "Headless" here means no monitor, not no display — a run needs a browser a person
@@ -100,12 +81,6 @@ kept report bytes in `uploads/`. The runs themselves live in Postgres (set
 with `docker compose cp recon:/data/uploads ./uploads`. Force a fresh
 (signed-out) browser with `docker compose run --rm recon rm -rf /data/chrome-profile`.
 
-> A host bind mount (`./data:/data`) is **not** used: this project lives under
-> `~/Documents`, which macOS blocks Docker Desktop from mounting (you get
-> `operation not permitted`). To use one anyway, grant Docker Desktop access to
-> Documents under System Settings → Privacy & Security → Files and Folders, then
-> swap the volume line in `docker-compose.yml`.
-
 **Both published ports are bound to `127.0.0.1` only**, and the VNC server has no
 password by design — the loopback bind is what keeps it shut. From another machine,
 tunnel rather than republish:
@@ -114,16 +89,16 @@ tunnel rather than republish:
 ssh -L 6080:localhost:6080 -L 3000:localhost:3000 you@thathost
 ```
 
-**Ports 9222 (CDP) and 5900 (raw VNC) are never published.** Anything reaching the
-debugging port drives a browser signed into a finance system; the app and the noVNC
-bridge reach them on `127.0.0.1` inside the container, and nothing outside needs to.
+**Port 9222 is deliberately not published.** Anything that can reach the
+debugging port drives a browser signed into a finance system; the app reaches it
+on `127.0.0.1` inside the container, and nothing outside needs to.
 
 Point it at a different portal with `TRAMADA_URL` in a `.env` beside the compose
 file. Everything else has a working default.
 
 If any of the six processes dies — Xvfb, fluxbox, Chromium, x11vnc, websockify,
 node — the container stops and says which one. That is on purpose: restarting a
-dead Chromium on its own would hand back a browser nobody is signed into, and a run
+dead Chrome on its own would hand back a browser nobody is signed into, and a run
 would then sit waiting for a login against a window that was never there.
 
 **`docker` not on your PATH?** Docker Desktop installs the CLI at
@@ -208,7 +183,6 @@ that already has a page stops and names the page rather than creating another.
 Keyed on the statement DATE, not on today, so the guide's public-holiday case
 still works: two files uploaded on one Tuesday, dated Monday and Tuesday, get
 their two pages.
-
 ## What it touches, and what it will not
 
 On the reconciliation page it sets the sort, writes the statement balances,
