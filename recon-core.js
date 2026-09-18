@@ -1487,12 +1487,29 @@ const BOOKING_RECEIPT_COLUMNS = {
  * A row with no reference matches nothing — a blank cell must never look like
  * a blank request.
  */
-function findFiledReceipt(rows, { reference, amount, amountCents } = {}) {
+function findFiledReceipt(rows, { reference, amount, amountCents, matchAmount = true } = {}) {
   const wantRef = refKey(reference);
+  if (!wantRef) return null;
+
+  /* `matchAmount: false` — the reference alone identifies the receipt.
+   *
+   * Needed because Tramada adds a card surcharge to a Credit Card Swipe
+   * receipt without asking: $318.20 was asked for on 18-Sep-2026 and
+   * R.0000009927 was filed for $320.75. The next run over the same settlement
+   * file looked for reference + $318.20, did not find it, and filed a SECOND
+   * receipt against a booking that had already been paid.
+   *
+   * An IPSI transaction reference is one payment, so a second receipt under it
+   * is always wrong — whatever the amount ended up being. For BPay and the
+   * rest the pair still holds: a booking can take two receipts of the same
+   * amount under different references, and one reference can be followed by a
+   * correcting receipt for a different figure. */
   const wantCents = amountCents != null ? amountCents : cents(amount);
-  if (!wantRef || wantCents == null) return null;
-  const hits = (rows || []).filter((r) =>
-    refKey(r.reference) === wantRef && cents(r.amount) === wantCents);
+  if (matchAmount && wantCents == null) return null;
+
+  const hits = (rows || []).filter(
+    (r) => refKey(r.reference) === wantRef && (!matchAmount || cents(r.amount) === wantCents)
+  );
   if (!hits.length) return null;
   return { ...hits[0], duplicates: hits.length > 1 ? hits.length : undefined };
 }

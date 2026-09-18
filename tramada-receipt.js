@@ -616,6 +616,9 @@ async function openReceiptForm(page, bookingNo, receipt) {
     const dupe = core.findFiledReceipt(already, {
       reference: receipt.reference,
       amount: receipt.amount,
+      // IPSI passes "reference": Tramada's card surcharge changes the amount
+      // after the fact, so the pair would miss its own receipt on a re-run.
+      matchAmount: receipt.duplicateOn !== "reference",
     });
     if (dupe) return { alreadyFiled: dupe, onBooking: already.length };
   }
@@ -687,6 +690,12 @@ const CARD_ADD_BUTTONS = [
   'a[href*="credit-card"]',
 ];
 const CARD_FIELD = {
+  // Step 6 of "Payments Guide - IPSI.docx": Category "Personal", then the
+  // number; Card Type and Card Sub Type auto-populate from it.
+  // Measured 18-Sep-2026: none of these matched the real Add window, which is
+  // why the category is ALSO looked up by its label. Kept as the fast path.
+  category: ["#cardCategory", "#category", 'select[name*="ategory"]', "#creditCardCategory"],
+  subType: ["#cardSubType", "#creditCardSubType", 'select[name*="ubType"]'],
   number: ["#cardNumberDisplay", "#cardNumber", "#creditCardNumber", 'input[name*="ardNumber"]'],
   type: ["#cardType", "#creditCardType", 'select[name*="ardType"]'],
   holder: ["#cardHolder", "#cardHolderName", 'input[name*="ardHolder"]'],
@@ -739,6 +748,19 @@ async function chooseReceiptCreditor(page, wanted) {
   const sel = await firstPresent(page, ["#creditor", "#receiptcreditor", 'select[name*="reditor"]']);
   if (!sel) return; // this tenant doesn't ask for one
 
+  /* A HIDDEN creditor field is not ours to set.
+   *
+   * Measured 18-Sep-2026, bookings 14510 and 14516: the Client Payment Receipt
+   * form carries `#creditor` in the DOM but never shows it — it is driven by
+   * `SegmentsToAllocate.showOnlyForSelectedCreditor` and only appears on the
+   * forms that pay a creditor. Playwright's selectOption waits for visibility,
+   * so the run sat for 30 seconds per booking and then failed with a wall of
+   * retry log, on a field the user cannot even see.
+   *
+   * Present-but-invisible means Tramada is not asking. Leave it alone. */
+  const visible = await page.locator(sel).first().isVisible().catch(() => false);
+  if (!visible) return;
+
   const options = await page.locator(`${sel} option`).evaluateAll((ns) =>
     ns.map((n) => ({ value: n.value, label: (n.textContent || "").trim() })).filter((o) => o.value)
   );
@@ -769,9 +791,116 @@ async function chooseReceiptCreditor(page, wanted) {
     return;
   }
 
-  const e = new Error("This credit-card receipt needs a creditor.");
+  /* A BLANK option means the form itself is happy with no creditor, and
+     refusing here would be stricter than Tramada.
+     
+     This is the Debtor Payment Receipt: a customer paying US. A creditor is who
+     WE pay, so there is nothing to choose — the IPSI guide never mentions one,
+     and the receipts raised by hand on 16 and 18-Sep-2026 left it empty and
+     issued fine. The requirement belongs to the Agency CC path, where the card
+     pays a supplier.
+     
+     Measured 18-Sep-2026: #creditor offers "" | 3=RAA- Fees | 89573=Journey
+     Beyond — two real creditors and a blank, which is why this threw with
+     "--add-card" on a receipt that needs no creditor at all. */
+  const hasBlank = await page
+    .locator(`${sel} option`)
+    .evaluateAll((ns) => ns.some((n) => !n.value))
+    .catch(() => false);
+  if (hasBlank) return;
+
+  const e = new Error(
+    "This credit-card receipt needs a creditor, and the form offers no blank option. " +
+      "Pass receipt.card.creditor — one of: " +
+      options.map((o) => o.label).join(" | ")
+  );
   e.needsCreditor = { options: options.map((o) => o.label) };
   throw e;
+}
+
+/**
+ * Use a card that is ALREADY in `#receiptcreditCard`.
+ *
+ * The guide's step 6 says to raise the card through "Add" — and that is what
+ * enterNewBookingCard does. But the Add form opens in a separate browser
+ * window, and on 18-Sep-2026 a live run sat waiting on it. RAA's Tramada
+ * already carries a dummy card per type in the dropdown, so selecting one gets
+ * the same receipt raised without opening anything.
+ *
+ * It is NOT silently equivalent: the dropdown's numbers are not BR08's numbers
+ * (measured 16-Sep-2026: 411111….1111 for Visa Credit, where BR08 names
+ * 4242…4242). So the caller is told, loudly, which card it actually used.
+ *
+ * Returns the option's label when it picked one, or null.
+ */
+async function selectExistingCard(page, card, say = () => {}) {
+  const want = String((card && (card.choice || card.type)) || "").trim();
+  if (!want) return null;
+
+  const brand = /^master/i.test(want) ? "mastercard" : /^visa/i.test(want) ? "visa" : null;
+  if (!brand) return null;
+  const sub = /debit/i.test(want) ? "debit" : /credit/i.test(want) ? "credit" : null;
+
+  const options = await page
+    .$$eval("#receiptcreditCard option", (os) =>
+      os.map((o) => ({ value: o.value, label: (o.text || "").trim() })).filter((o) => o.value)
+    )
+    .catch(() => []);
+  if (!options.length) return null;
+
+  /* Brand AND sub-type both have to match. Matching on brand alone would hand a
+     debit customer a credit card, which is the guess BR02 exists to prevent. */
+  const hit = options.find(
+    (o) =>
+      new RegExp(brand, "i").test(o.label) && (!sub || new RegExp(sub, "i").test(o.label))
+  );
+  if (!hit) return null;
+
+  await page.selectOption("#receiptcreditCard", hit.value);
+  await sleep(600);
+  say(`Using the ${want} already in Tramada: ${hit.label}`);
+  return hit.label;
+}
+
+/**
+ * Find a control by the LABEL Tramada renders next to it.
+ *
+ * The Add Credit Card window's Category select was missed entirely by an id
+ * list (#cardCategory / #category / select[name*=ategory]) — measured
+ * 18-Sep-2026, the form came back with "Category must be selected" and the
+ * field still empty, while Card Number, Card Type, Card Holder and Expiry had
+ * all filled correctly. Its id is none of those.
+ *
+ * A label is what the guide names ("Category field, select Personal") and what
+ * survives a Tramada version change, so match on that and let the id be
+ * whatever it is.
+ */
+async function controlByLabel(ctx, labelText, tag = "select") {
+  return await ctx.evaluate(
+    ({ labelText, tag }) => {
+      const want = labelText.trim().toLowerCase();
+      const hit = (el) => (el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase() === want;
+
+      // <label for=...>
+      for (const l of document.querySelectorAll("label")) {
+        if (!hit(l)) continue;
+        const target = l.htmlFor ? document.getElementById(l.htmlFor) : l.querySelector(tag);
+        if (target && target.tagName.toLowerCase() === tag) return target.id || target.name || null;
+      }
+
+      // Tramada's own layout: label in one cell, control in the next.
+      for (const cell of document.querySelectorAll("td, th, div")) {
+        if (!hit(cell)) continue;
+        let sib = cell.nextElementSibling;
+        for (let i = 0; i < 3 && sib; i++, sib = sib.nextElementSibling) {
+          const target = sib.matches(tag) ? sib : sib.querySelector(tag);
+          if (target) return target.id || target.name || null;
+        }
+      }
+      return null;
+    },
+    { labelText, tag }
+  );
 }
 
 async function enterNewBookingCard(page, card) {
@@ -786,6 +915,16 @@ async function enterNewBookingCard(page, card) {
     );
   }
 
+  /* Tramada opens the card form with window.open. Playwright's "popup" event
+     is the clean way to catch that — but it only fires for a window opened by
+     THIS page's own script, and it has been observed not firing here at all
+     (18-Sep-2026, booking 13061: the click landed, no popup event, and the run
+     sat waiting for a card-number field that was never going to appear in this
+     tab). So the event is a fast path, not the only one: whatever happens,
+     compare the context's page list before and after. */
+  const context = page.context();
+  const before = new Set(context.pages());
+
   let popup = null;
   try {
     [popup] = await Promise.all([
@@ -793,7 +932,19 @@ async function enterNewBookingCard(page, card) {
       page.click(addSel),
     ]);
   } catch {
-    popup = null; // fall through to in-page / iframe fallback
+    popup = null; // the event did not fire — look for the window it missed
+  }
+
+  if (!popup) {
+    for (let i = 0; i < 12 && !popup; i++) {
+      const fresh = context.pages().filter((p) => !before.has(p));
+      if (fresh.length) {
+        popup = fresh[fresh.length - 1];
+        await popup.waitForLoadState("domcontentloaded").catch(() => {});
+        break;
+      }
+      await sleep(500);
+    }
   }
 
   // Where did the card form land? Popup, same page, or an iframe — check all
@@ -810,25 +961,113 @@ async function enterNewBookingCard(page, card) {
   }
 
   if (!numberSel) {
-    const where = popup ? "popup" : "same page";
+    const where = popup ? `popup (${popup.url()})` : "no new window opened";
+    const seen = [];
+    for (const p of context.pages()) seen.push(p.url());
     throw new Error(
-      `Clicked ${addSel} but no card-number field appeared (${where}). ` +
-        `Page now: ${page.url()}. Controls present: ` +
-        (await describeControls(popup || page)).join(" | ")
+      `Clicked ${addSel} but no card-number field appeared — ${where}.\n` +
+        `  Pages open: ${seen.join(" , ")}\n` +
+        `  Controls on ${popup ? "the popup" : "this page"}: ` +
+        (await describeControls(popup || page)).join(" | ") +
+        "\n  Run `node tools/probe-card-popup.js <booking>` to see what the Add " +
+        "form really offers."
     );
   }
 
+  /* STEP 6, FIRST LINE: "Category field, select Personal".
+     
+     Tramada refuses the card without it — "Category must be selected" — and it
+     refuses AFTER Done, with every other field already filled, which reads like
+     the save worked. So it is set first and verified, not fired and forgotten. */
+  if (card.category) {
+    let catSel = await firstPresent(cardCtx, CARD_FIELD.category);
+    if (!catSel) {
+      const byLabel = await controlByLabel(cardCtx, "Category", "select");
+      if (byLabel) catSel = "#" + byLabel;
+    }
+    if (!catSel) {
+      throw new Error(
+        "The Add Credit Card form has no Category field I can find, but step 6 " +
+          "requires one. Controls present: " + (await describeControls(cardCtx)).join(" | ")
+      );
+    }
+
+    let set = await cardCtx
+      .selectOption(catSel, { label: String(card.category) })
+      .then(() => true)
+      .catch(() => false);
+    if (!set) {
+      set = await cardCtx.selectOption(catSel, String(card.category)).then(() => true).catch(() => false);
+    }
+    await sleep(400);
+
+    const chosen = await cardCtx.inputValue(catSel).catch(() => "");
+    if (!set || !chosen) {
+      const offered = await cardCtx
+        .$$eval(catSel + " option", (os) => os.map((o) => `${o.value}=${o.text.trim()}`))
+        .catch(() => []);
+      throw new Error(
+        `Could not set Category to "${card.category}" on ${catSel}. The form offered: ` +
+          offered.join(" | ") +
+          ". Tramada rejects the card without a category, so this stops here."
+      );
+    }
+  }
+
   await cardCtx.fill(numberSel, String(card.number));
+  /* MEASURED 18-Sep-2026 on client-edit-credit-card.htm: #cardType is a select
+     of CODES, not names —
+       VI = Visa | CA = MasterCard | DB = Debit Cards | GC = Givex Gift Cards
+       PI = PayID | RV = Redemption Voucher
+     Note "MasterCard", not "Mastercard": selecting by label with our spelling
+     misses, and selecting by value "Mastercard" misses too, so the card would
+     have been saved with no type at all. Map the brand to its code.
+
+     Credit vs debit is NOT chosen here — Tramada derives it from the card
+     number, which is why the receipt form's list reads "VI - C - Visa Credit"
+     and "VI - C - Visa Debit" off two different numbers. */
+  const CARD_TYPE_CODE = { visa: "VI", mastercard: "CA" };
   const typeSel = await firstPresent(cardCtx, CARD_FIELD.type);
   if (card.type && typeSel) {
-    await cardCtx.selectOption(typeSel, { label: card.type }).catch(async () => {
-      await cardCtx.selectOption(typeSel, card.type).catch(() => {});
-    });
+    const code = CARD_TYPE_CODE[String(card.type).trim().toLowerCase()];
+    let set = false;
+    if (code) {
+      set = await cardCtx.selectOption(typeSel, code).then(() => true).catch(() => false);
+    }
+    if (!set) {
+      set = await cardCtx.selectOption(typeSel, { label: card.type }).then(() => true).catch(() => false);
+    }
+    if (!set) {
+      const offered = await cardCtx
+        .$$eval(typeSel + " option", (os) => os.map((o) => `${o.value}=${o.text.trim()}`))
+        .catch(() => []);
+      throw new Error(
+        `Could not set the card type to "${card.type}". The form offered: ` +
+          offered.join(" | ") +
+          ". Saving a card with no type produces a card the receipt form cannot use."
+      );
+    }
+    await sleep(300);
   }
   const holderSel = await firstPresent(cardCtx, CARD_FIELD.holder);
   if (card.holder && holderSel) await cardCtx.fill(holderSel, String(card.holder));
   const expirySel = await firstPresent(cardCtx, CARD_FIELD.expiry);
   if (card.expiry && expirySel) await cardCtx.fill(expirySel, String(card.expiry));
+
+  /* Card Sub Type auto-populates from the number. Setting it is belt and
+     braces — but only when the form did not already agree, so a Tramada that
+     knows better than us is left alone. */
+  if (card.subType) {
+    const subSel = await firstPresent(cardCtx, CARD_FIELD.subType);
+    if (subSel) {
+      const now = await cardCtx.inputValue(subSel).catch(() => "");
+      if (!now || !new RegExp(card.subType, "i").test(now)) {
+        await cardCtx.selectOption(subSel, { label: String(card.subType) }).catch(async () => {
+          await cardCtx.selectOption(subSel, String(card.subType)).catch(() => {});
+        });
+      }
+    }
+  }
 
   // Save the booking card. If it was a popup it closes; the parent refreshes
   // its #receiptcreditCard dropdown with (and auto-selects) the new card.
@@ -1211,6 +1450,7 @@ async function runTramadaReceipt({
       payerName,
       receiptCategory,
       skipIfAlreadyFiled: skipIfAlreadyFiled !== false,
+      duplicateOn: receipt.duplicateOn,
     });
 
     /* THE BOOKING CANNOT TAKE THIS KIND OF RECEIPT.
@@ -1252,19 +1492,68 @@ async function runTramadaReceipt({
     // dryRun skips it so a preview never creates a card).
     if (isCreditCard(txnCode) && !dryRun) {
       onProgress(60, "Entering new booking credit card...");
-      await enterNewBookingCard(page, receipt.card);
+      /* Prefer a card Tramada already holds. `useExistingCard: false` forces
+         the guide's Add path. */
+      let usedExisting = null;
+      if (receipt.card.useExistingCard !== false) {
+        usedExisting = await selectExistingCard(page, receipt.card, (m) => onProgress(58, m));
+      }
+      if (!usedExisting) {
+        await enterNewBookingCard(page, receipt.card);
+      }
+
+      /* CHOOSING A CARD WIPES THE RECEIPT DETAILS. Measured twice:
+       *
+       *   16-Sep-2026, booking 13061 — an empty #receiptpayerName came back
+       *     holding "Mastercard Credit", the card's own label.
+       *   18-Sep-2026, booking 13061 — a live run had Payer Name and Reference
+       *     on screen and #receiptreceiptAmount EMPTY, with Total Amount to
+       *     Receipt blank. The card had just been selected.
+       *
+       * Tramada re-renders the Receipt Details block when the card changes and
+       * does not carry the typed values across. `openReceiptForm` fills them
+       * BEFORE this point, so every one of them has to be put back afterwards
+       * — not just the payer name, which is what the first fix assumed.
+       *
+       * Each is read back. A field that silently reverts here is a wrong name,
+       * or a blank amount, on a money document.
+       */
+      const reassert = [
+        ["#receiptpayerName", payerName, "Payer Name"],
+        ["#receiptreceiptAmount", receipt.amount == null ? null : String(receipt.amount), "Amount Received"],
+        ["#receiptreferenceNumber", receipt.reference, "Reference"],
+      ];
+      for (const [sel, want, label] of reassert) {
+        if (want == null || want === "") continue;
+        const now = await page.inputValue(sel).catch(() => null);
+        if (now != null && now.trim() === String(want).trim()) continue;
+        onProgress(62, `${label} was cleared by the card — putting it back.`);
+        await setFieldWithEvents(page, sel, String(want));
+      }
+      await sleep(400);
+      for (const [sel, want, label] of reassert) {
+        if (want == null || want === "") continue;
+        const back = await page.inputValue(sel).catch(() => null);
+        if (back != null && back.trim() !== String(want).trim()) {
+          throw new Error(
+            `${label} did not stick after choosing the card: wanted "${want}", ` +
+              `the form reads "${back}". Refusing to issue — a receipt with the ` +
+              `wrong ${label.toLowerCase()} is worse than no receipt.`
+          );
+        }
+      }
     }
 
-    // Nothing to allocate (booking already fully paid / no outstanding balance).
-    // With skipIfNoAllocatable, return a clean skip instead of throwing.
-    if ((!segments || segments.length === 0) && skipIfNoAllocatable) {
-      onProgress(100, `Nothing outstanding to allocate on booking ${bookingNo} — no receipt raised.`);
-      _ok = true;
-      return { details, itinerary: itin, segments: [], skipped: true, reason: "nothing to allocate", committed: false };
+    /* `allocation` may be a FUNCTION of the segments the form actually offered.
+       "ALL" cannot express "allocate exactly this receipt": it clicks Tramada's
+       own Select All, which fills every row with its full due — a $100 receipt
+       against booking 13061 asked for $15,140 that way. The caller only learns
+       the segment ids here, so it hands over a planner rather than a list. */
+    let plannedAllocation = receipt.allocation;
+    if (typeof plannedAllocation === "function") {
+      plannedAllocation = await plannedAllocation(segments, receipt.amount);
     }
-
-    onProgress(70, "Allocating to segment(s)...");
-    await allocateSegments(page, receipt.allocation || "ALL", segments, receipt.amount);
+    await allocateSegments(page, plannedAllocation || "ALL", segments, receipt.amount);
     await sleep(400);
 
     const staged = {
@@ -1393,6 +1682,9 @@ async function searchBookingsForReceipt({ auth = null, status, clientName, booki
 }
 
 module.exports = {
+  controlByLabel,
+  chooseReceiptCreditor,
+  selectExistingCard,
   runTramadaReceipt,
   searchBookingsForReceipt,
   // exported for reuse/testing

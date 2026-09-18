@@ -14,7 +14,7 @@
     "docker:up": "docker compose up --build",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f recon",
-    "test": "node test/test-xlsx-lite.js && node test/test-statement-csv.js && node test/test-recon-core.js && node test/test-bpay-rules.js && node test/test-export.js && node test/test-creditor-rules.js && node test/test-travelpay.js && node test/test-ipsi.js && node test/test-run-store.js && node test/test-receipt-guard.js && node test/test-fixtures.js && node test/test-autocomplete-pick.js && node test/test-login-frames.js && node test/test-run-order.js && node test/test-mastercard-oauth.js && node test/test-ipsi-payment.js && node test/test-ipsi-chat.js && node test/test-payments-api.js && node test/test-azure-auth.js && node test/test-run-order.js",
+    "test": "node test/test-xlsx-lite.js && node test/test-statement-csv.js && node test/test-recon-core.js && node test/test-bpay-rules.js && node test/test-export.js && node test/test-creditor-rules.js && node test/test-travelpay.js && node test/test-ipsi.js && node test/test-run-store.js && node test/test-receipt-guard.js && node test/test-fixtures.js && node test/test-autocomplete-pick.js && node test/test-login-frames.js && node test/test-run-order.js && node test/test-mastercard-oauth.js && node test/test-ipsi-payment.js && node test/test-ipsi-chat.js && node test/test-payments-api.js && node test/test-azure-auth.js && node test/test-run-order.js && node test/test-select-card.js && node test/test-receipt-creditor.js && node test/test-control-by-label.js",
     "test:core": "node test/test-recon-core.js",
     "test:xlsx": "node test/test-xlsx-lite.js",
     "shots": "node shots/shot-recon.js && node shots/shot-recon-run.js && node shots/shot-mint-run.js && node shots/shot-overview.js && node shots/shot-both.js && node shots/shot-bpay-rules.js && node shots/shot-login-screen.js",
@@ -43,7 +43,14 @@
     "test:payments": "node test/test-ipsi-payment.js",
     "probe:swipe": "node tools/probe-swipe-form.js",
     "test:chat": "node test/test-ipsi-chat.js",
-    "test:payments:api": "node test/test-payments-api.js"
+    "test:payments:api": "node test/test-payments-api.js",
+    "ipsi:pay": "node tools/ipsi-payment.js",
+    "ipsi:pay:dry": "node tools/ipsi-payment.js --dry",
+    "probe:card": "node tools/probe-card-popup.js",
+    "test:card": "node test/test-select-card.js",
+    "test:creditorfield": "node test/test-receipt-creditor.js",
+    "test:bylabel": "node test/test-control-by-label.js",
+    "ipsi": "node tools/ipsi-payment.js"
   },
   "dependencies": {
     "@azure/identity": "^4.13.2",
@@ -58,5 +65,8 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "jsdom": "^30.1.0"
   }
 }

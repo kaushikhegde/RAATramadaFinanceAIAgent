@@ -269,6 +269,160 @@ function assertNotRealCard(number, dummies) {
   throw e;
 }
 
+/* --------------------------------------- the IPSI settlement file as input */
+
+/**
+ * The IPSI settlement CSV already carries everything step 1 asks a consultant
+ * to read off the Approved screen:
+ *
+ *   Transaction Reference | Card Holder Name | Transaction Amount |
+ *   Card Type | Booking Number
+ *
+ * The guide's own note — "issue receipt at end of day" — is this file. So a
+ * batch run needs no typing at all: the booking numbers come from the file.
+ *
+ * Card Type in the file is a BRAND ("VISA"), never credit or debit. BR02 says
+ * that has to be confirmed with the customer, so the caller states it once for
+ * the run and any row whose brand disagrees is refused rather than coerced.
+ */
+function parseIpsiCsv(text = "") {
+  const lines = String(text).split(/\r?\n/).filter((l) => l.trim());
+  if (!lines.length) return { rows: [], problems: ["The file is empty."] };
+
+  const split = (line) => {
+    // Tramada's exports are plain, but a card holder name can carry a comma.
+    const out = [];
+    let cur = "";
+    let q = false;
+    for (const ch of line) {
+      if (ch === '"') q = !q;
+      else if (ch === "," && !q) { out.push(cur); cur = ""; }
+      else cur += ch;
+    }
+    out.push(cur);
+    return out.map((c) => c.trim());
+  };
+
+  const head = split(lines[0]).map((h) => h.toLowerCase());
+  const at = (name) => head.indexOf(name.toLowerCase());
+  const iRef = at("Transaction Reference");
+  const iBooking = at("Booking Number");
+  const iAmount = at("Transaction Amount");
+  const iHolder = at("Card Holder Name");
+  const iType = at("Card Type");
+  const iStatus = at("Transaction Status");
+
+  const missing = [];
+  if (iRef < 0) missing.push("Transaction Reference");
+  if (iBooking < 0) missing.push("Booking Number");
+  if (iAmount < 0) missing.push("Transaction Amount");
+  if (missing.length) {
+    return { rows: [], problems: ["This file has no " + missing.join(", ") + " column."] };
+  }
+
+  const rows = [];
+  const problems = [];
+  for (let i = 1; i < lines.length; i++) {
+    const c = split(lines[i]);
+    const bookingNo = (c[iBooking] || "").trim();
+    const txnRef = (c[iRef] || "").trim();
+    const status = iStatus >= 0 ? (c[iStatus] || "").trim() : "APPROVED";
+
+    /* A settlement line with no booking number cannot be receipted — the guide
+       starts from the customer reciting one. Report it, do not drop it
+       silently: an unreceipted payment is money that never reaches the
+       booking. */
+    if (!bookingNo) {
+      problems.push(`Row ${i + 1} (${txnRef || "no reference"}) has no booking number — skipped.`);
+      continue;
+    }
+    if (status && !/^approved$/i.test(status)) {
+      problems.push(`Row ${i + 1} (${txnRef}) is "${status}", not APPROVED — skipped.`);
+      continue;
+    }
+
+    rows.push({
+      line: i + 1,
+      bookingNo,
+      txnRef,
+      amount: (c[iAmount] || "").trim(),
+      cardholderName: iHolder >= 0 ? (c[iHolder] || "").trim() : "",
+      brand: iType >= 0 ? normaliseCardType(c[iType] || "") : "",
+    });
+  }
+
+  return { rows, problems };
+}
+
+/* ------------------------------------------------- step 8, the allocation */
+
+/** "1,289.00" / "$100" / 100 -> 128900 / 10000. null when it is not a number. */
+function centsOf(v) {
+  if (v == null || v === "") return null;
+  const n = Number(String(v).replace(/[^0-9.\-]/g, ""));
+  return Number.isFinite(n) ? Math.round(n * 100) : null;
+}
+
+/**
+ * Step 8: "tick the checkbox under column A for the same amount to allocate
+ * to", and BR06: "Segments selected and amounts allocated must match".
+ *
+ * Passing "ALL" does NOT do this. Tramada's own Select All ticks every row and
+ * fills each with its full due — on booking 13061 that turned a $100 receipt
+ * into a $15,140 allocation, which Tramada rejects after the form is gone.
+ *
+ * So the rows are chosen here instead:
+ *   - a segment whose due EXACTLY equals the receipt wins outright, which is
+ *     the case the guide describes and the one a consultant expects;
+ *   - otherwise fill in order until the receipt is used up, the last row
+ *     taking the remainder;
+ *   - a receipt larger than everything outstanding is refused rather than
+ *     part-allocated, because Tramada would refuse it too, later and less
+ *     clearly.
+ *
+ * Returns { ok, allocation: [{segId, amount}] } or { ok:false, reason }.
+ */
+function planAllocation(segments = [], amount) {
+  const cap = centsOf(amount);
+  if (cap == null || cap <= 0) {
+    return { ok: false, reason: `Cannot allocate ${JSON.stringify(amount)} — that is not an amount.` };
+  }
+
+  const rows = segments
+    .map((s) => ({ segId: String(s.segId), due: centsOf(s.debtorDue), segType: s.segType || "" }))
+    .filter((s) => s.due != null && s.due > 0);
+
+  if (!rows.length) {
+    return { ok: false, reason: "Nothing on this booking is outstanding, so there is nothing to allocate to." };
+  }
+
+  const total = rows.reduce((a, r) => a + r.due, 0);
+  if (cap > total) {
+    return {
+      ok: false,
+      reason:
+        `This receipt is $${(cap / 100).toFixed(2)} but only $${(total / 100).toFixed(2)} ` +
+        `is outstanding across ${rows.length} segment(s). Tramada will not allocate more than is due.`,
+    };
+  }
+
+  const exact = rows.find((r) => r.due === cap);
+  if (exact) {
+    return { ok: true, allocation: [{ segId: exact.segId, amount: (cap / 100).toFixed(2) }], exact: true };
+  }
+
+  const allocation = [];
+  let left = cap;
+  for (const r of rows) {
+    if (left <= 0) break;
+    const take = Math.min(left, r.due);
+    allocation.push({ segId: r.segId, amount: (take / 100).toFixed(2) });
+    left -= take;
+  }
+
+  return { ok: true, allocation, exact: false };
+}
+
 /* ------------------------------------------------------- the decision */
 
 /**
@@ -389,6 +543,9 @@ function decideSwipeReceipt(ipsi = {}, payerName, opts = {}) {
 
 module.exports = {
   SWIPE_FIXED,
+  centsOf,
+  planAllocation,
+  parseIpsiCsv,
   SWIPE_SELECTORS,
   CARD_LABELS,
   BR08_CARDS,

@@ -299,4 +299,214 @@ check("every shipped card is one of BR08's four", () => {
   }
 });
 
-console.log("\n" + n + " assertions passed.");
+
+
+/* ------------------------------------------------- step 8, the allocation */
+
+const SEGS = [
+  { segId: "75584", segType: "PKG", debtorDue: "15090.00" },
+  { segId: "75587", segType: "SFE", debtorDue: "50.00" },
+];
+
+check("an exact match takes that one segment alone", () => {
+  const p = pc.planAllocation(SEGS, "50.00");
+  assert.ok(p.ok, p.reason);
+  assert.strictEqual(p.exact, true);
+  assert.deepStrictEqual(p.allocation, [{ segId: "75587", amount: "50.00" }]);
+});
+
+check("a part payment allocates only what was received", () => {
+  // The live failure: "ALL" ticked PKG 15090 + SFE 50 for a $100 receipt.
+  const p = pc.planAllocation(SEGS, "100.00");
+  assert.ok(p.ok, p.reason);
+  const total = p.allocation.reduce((a, x) => a + pc.centsOf(x.amount), 0);
+  assert.strictEqual(total, 10000, "allocated " + total + " cents for a $100 receipt");
+});
+
+check("a payment spanning two segments fills them in order", () => {
+  const p = pc.planAllocation([{ segId: "a", debtorDue: "60.00" }, { segId: "b", debtorDue: "90.00" }], "100.00");
+  assert.deepStrictEqual(p.allocation, [
+    { segId: "a", amount: "60.00" },
+    { segId: "b", amount: "40.00" },
+  ]);
+});
+
+check("it never allocates more than is outstanding", () => {
+  const p = pc.planAllocation(SEGS, "99999.00");
+  assert.ok(!p.ok);
+  assert.ok(/only \$15140\.00/.test(p.reason), p.reason);
+});
+
+check("the total never exceeds the receipt, whatever the split", () => {
+  for (const amt of ["0.01", "49.99", "50.00", "50.01", "15089.99", "15140.00"]) {
+    const p = pc.planAllocation(SEGS, amt);
+    assert.ok(p.ok, amt + ": " + p.reason);
+    const total = p.allocation.reduce((a, x) => a + pc.centsOf(x.amount), 0);
+    assert.strictEqual(total, pc.centsOf(amt), amt + " allocated " + total);
+  }
+});
+
+check("no segment is ever ticked for 0.00", () => {
+  // Checking the TOTAL is not enough: a loop that keeps going after the receipt
+  // is used up adds $0.00 rows, which still total correctly but tick segments
+  // this payment has nothing to do with. BR06 — the segments selected and the
+  // amounts allocated have to match.
+  for (const amt of ["0.01", "50.00", "60.00", "15140.00"]) {
+    const p = pc.planAllocation(SEGS, amt);
+    assert.ok(p.ok, p.reason);
+    for (const row of p.allocation) {
+      assert.ok(pc.centsOf(row.amount) > 0, `${amt} ticked segment ${row.segId} for ${row.amount}`);
+    }
+  }
+});
+
+check("segments with nothing due are skipped, not ticked at zero", () => {
+  const p = pc.planAllocation([{ segId: "z", debtorDue: "0.00" }, { segId: "y", debtorDue: "80.00" }], "80.00");
+  assert.deepStrictEqual(p.allocation, [{ segId: "y", amount: "80.00" }]);
+});
+
+check("a booking with nothing outstanding refuses rather than returning []", () => {
+  const p = pc.planAllocation([{ segId: "z", debtorDue: "0.00" }], "10.00");
+  assert.ok(!p.ok);
+  assert.ok(/nothing to allocate/i.test(p.reason), p.reason);
+});
+
+check("a nonsense amount refuses", () => {
+  for (const bad of [null, "", "abc", "0.00", "-5.00"]) {
+    assert.ok(!pc.planAllocation(SEGS, bad).ok, JSON.stringify(bad) + " was accepted");
+  }
+});
+
+check("centsOf copes with the formats Tramada renders", () => {
+  assert.strictEqual(pc.centsOf("1,289.00"), 128900);
+  assert.strictEqual(pc.centsOf("$100"), 10000);
+  assert.strictEqual(pc.centsOf(100), 10000);
+  assert.strictEqual(pc.centsOf(""), null);
+});
+
+
+
+/* ------------------------------------------- the settlement file as input */
+
+const CSV_HEAD =
+  "Transaction Reference,Transaction Time stamp,Transaction Type,Transaction Status,Channel," +
+  "Card Holder Name,Transaction Amount,Settlement Date,Merchant Reference,Card Type,Custom 5," +
+  "Booking Number,Settlement Amount,Tramada Payment Number";
+
+const csv = (...rows) => [CSV_HEAD, ...rows].join("\n");
+
+check("it reads booking, reference, amount, holder and brand off the file", () => {
+  const { rows } = pc.parseIpsiCsv(
+    csv("IP-T314W-14504,2026-09-01,1,APPROVED,terminal,Spider Gray,145.54,2026-09-01,,VISA,Purchase (1),14504,,")
+  );
+  assert.strictEqual(rows.length, 1);
+  assert.deepStrictEqual(
+    { ...rows[0], line: undefined },
+    { line: undefined, bookingNo: "14504", txnRef: "IP-T314W-14504", amount: "145.54",
+      cardholderName: "Spider Gray", brand: "Visa" }
+  );
+});
+
+check("a row with no booking number is reported, never silently dropped", () => {
+  // An unreceipted payment is money that never reaches a booking. Skipping it
+  // quietly is the failure mode that matters here.
+  const { rows, problems } = pc.parseIpsiCsv(
+    csv("IP-T314W-14507,2026-09-01,1,APPROVED,terminal,Spider Gray,200.00,2026-09-01,,VISA,Purchase (1), ,,")
+  );
+  assert.strictEqual(rows.length, 0);
+  assert.strictEqual(problems.length, 1);
+  assert.ok(/IP-T314W-14507/.test(problems[0]) && /no booking number/.test(problems[0]), problems[0]);
+});
+
+check("a declined transaction is skipped and named", () => {
+  const { rows, problems } = pc.parseIpsiCsv(
+    csv("IP-X,2026-09-01,1,DECLINED,terminal,Spider Gray,200.00,2026-09-01,,VISA,Purchase (1),14507,,")
+  );
+  assert.strictEqual(rows.length, 0);
+  assert.ok(/DECLINED/.test(problems[0]), problems[0]);
+});
+
+check("a comma inside a quoted card holder name does not shift the columns", () => {
+  const { rows } = pc.parseIpsiCsv(
+    csv('IP-Y,2026-09-01,1,APPROVED,terminal,"Gray, Spider",145.54,2026-09-01,,VISA,Purchase (1),14504,,')
+  );
+  assert.strictEqual(rows[0].cardholderName, "Gray, Spider");
+  assert.strictEqual(rows[0].amount, "145.54");
+  assert.strictEqual(rows[0].bookingNo, "14504");
+});
+
+check("a file missing a required column says which", () => {
+  const { rows, problems } = pc.parseIpsiCsv("Transaction Reference,Card Type\nIP-Z,VISA");
+  assert.strictEqual(rows.length, 0);
+  assert.ok(/Booking Number/.test(problems[0]) && /Transaction Amount/.test(problems[0]), problems[0]);
+});
+
+check("an empty file is a problem, not an empty success", () => {
+  const { rows, problems } = pc.parseIpsiCsv("");
+  assert.strictEqual(rows.length, 0);
+  assert.ok(problems.length, "no problem reported for an empty file");
+});
+
+check("the brand is normalised but never becomes a confirmed card type", () => {
+  const { rows } = pc.parseIpsiCsv(
+    csv("IP-A,2026-09-01,1,APPROVED,terminal,S G,10.00,2026-09-01,,MASTERCARD,Purchase (1),14504,,")
+  );
+  assert.strictEqual(rows[0].brand, "Mastercard");
+  assert.strictEqual(rows[0].cardType, undefined, "the file's brand was promoted to a card type");
+});
+
+check("column order is read from the header, not assumed", () => {
+  const text = [
+    "Booking Number,Transaction Amount,Transaction Reference",
+    "14999,42.00,IP-REORDERED",
+  ].join("\n");
+  const { rows } = pc.parseIpsiCsv(text);
+  assert.deepStrictEqual(
+    { b: rows[0].bookingNo, a: rows[0].amount, r: rows[0].txnRef },
+    { b: "14999", a: "42.00", r: "IP-REORDERED" }
+  );
+});
+
+
+
+/* ---------------------------------- the duplicate guard vs the surcharge */
+
+const reconCore = require("../recon-core");
+
+check("a re-run does NOT file a second receipt under the same IPSI reference", () => {
+  // The live failure: asked 318.20, Tramada filed 320.75 with its surcharge.
+  // Matching on reference+amount missed its own receipt and would have taken
+  // the money again.
+  const filed = [{ receiptNo: "R.0000009927", reference: "IP-T314W-14513", amount: "320.75" }];
+  const hit = reconCore.findFiledReceipt(filed, {
+    reference: "IP-T314W-14513",
+    amount: "318.20",
+    matchAmount: false,
+  });
+  assert.ok(hit, "a re-run would have filed a duplicate");
+  assert.strictEqual(hit.receiptNo, "R.0000009927");
+});
+
+check("matching on reference alone still needs the reference to match", () => {
+  const filed = [{ receiptNo: "R.1", reference: "IP-OTHER", amount: "320.75" }];
+  assert.strictEqual(
+    reconCore.findFiledReceipt(filed, { reference: "IP-T314W-14513", amount: "318.20", matchAmount: false }),
+    null
+  );
+});
+
+check("the default still requires BOTH reference and amount", () => {
+  // BPay and the rest rely on the pair: one reference can carry a correcting
+  // receipt for a different figure, and that is not a duplicate.
+  const filed = [{ receiptNo: "R.2", reference: "BP-1", amount: "100.00" }];
+  assert.ok(reconCore.findFiledReceipt(filed, { reference: "BP-1", amount: "100.00" }));
+  assert.strictEqual(reconCore.findFiledReceipt(filed, { reference: "BP-1", amount: "250.00" }), null);
+});
+
+check("reference-only mode does not need an amount at all", () => {
+  const filed = [{ receiptNo: "R.3", reference: "IP-X", amount: "12.34" }];
+  assert.ok(reconCore.findFiledReceipt(filed, { reference: "IP-X", matchAmount: false }));
+  assert.strictEqual(reconCore.findFiledReceipt(filed, { reference: "IP-X" }), null, "the pair mode accepted a missing amount");
+});
+
+console.log("\n" + n + " assertions passed (rules, allocation, settlement file, duplicates).");

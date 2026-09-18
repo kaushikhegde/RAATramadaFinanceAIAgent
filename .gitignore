@@ -25,3 +25,7 @@ package.json
 *.p12
 *.pfx
 *-encryption-key.pem
+
+# Pasted IPSI "Approved" screens — real transaction data, never commit
+approved.txt
+approved*.txt
