@@ -21,7 +21,7 @@ FROM node:20-slim
 # while still exiting 0 — a build that looks green with an empty node_modules.
 # See certs/README.md. (apt itself is fine either way: Debian repos are plain
 # HTTP with GPG signing.)
-COPY certs/SA_ROOT.crt /usr/local/share/ca-certificates/SA_ROOT.crt
+# COPY certs/SA_ROOT.crt /usr/local/share/ca-certificates/SA_ROOT.crt
 
 # libnss3-tools: certutil, to teach Chromium's NSS store the same root — Chromium
 # does not read /etc/ssl/certs for this.

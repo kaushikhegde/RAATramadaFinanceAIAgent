@@ -689,6 +689,17 @@ header.top { display: none !important }
 .dz.ready .di{background:var(--ok-bg);color:var(--ok)}
 /* The success line, in the slot the warnings and errors use. */
 .rc-hint .rc-ok{color:var(--ok);font-weight:600}
+/* ── who is signed in, in the sidebar ──
+   The EMAIL, not just a display name: it is the key their Tramada credentials
+   are looked up under (tramada-creds.js), so the thing worth putting on screen
+   is the thing the vault is keyed on. Someone signed in under an address the
+   vault does not know gets "no credentials found" mid-run; seeing the address
+   here is what makes that legible before the run rather than during it. */
+.rc-acct {
+  padding: 2px 12px 8px; font-size: 11px; color: var(--ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.side nav form { margin: 0 }
 
 </style>
 </head>
@@ -3169,6 +3180,11 @@ function askMarkStale(){
      otherwise, so a page that never hears about a login screen never offers
      one. */
   let novncPort = null;
+  /* True while the Browser nav's "Login into Tramada" is in flight. Separate
+     from `running` on purpose: `running` gates the report table, the Start-run
+     button and the run's activity rail, and a sign-in test drives none of
+     those — it only needs the login screen to come up and go down again. */
+  let loginTest = false;
   let vncOpen = false;  // the run asked for a login and has not been given one
   /* Ticked, the login screen stays up for the whole run so you can watch it
      work. In localStorage because it is a preference about how you like to
@@ -5365,6 +5381,82 @@ function askMarkStale(){
     btn.addEventListener('click', () => (vncPanel ? closeVncPanel() : openVncPanel()));
     nav.appendChild(lbl);
     nav.appendChild(btn);
+
+    /* Sign in, and nothing else. The login path — credentials out of the vault,
+       a verification code typed on the screen above, Tramada's home page — was
+       only ever reachable as the first ten seconds of a run that goes on to
+       file real receipts. Proving it works should not cost money. */
+    const test = document.createElement('button');
+    test.className = 'nav-item';
+    test.id = 'rcLoginTest';
+    test.type = 'button';
+    test.innerHTML = '<span class="ico">\u21B7</span> Login into Tramada';
+    test.title = 'Signs the shared browser into Tramada using your stored credentials, and stops there.';
+    test.addEventListener('click', startLoginTest);
+    nav.appendChild(test);
+  }
+
+  /* Ask the server to sign the shared browser in. The reply is the run's own
+     recon_login / recon_login_ok frames plus recon_login_test_done, so a
+     verification code puts the same screen up here as it does mid-run. */
+  function startLoginTest() {
+    if (loginTest) return;
+    if (!ws || ws.readyState !== 1) {
+      alertBar('err', '<b>Not connected to the server.</b> Is it still running?');
+      return;
+    }
+    loginTest = true;
+    const btn = $('#rcLoginTest');
+    if (btn) { btn.disabled = true; btn.classList.add('on'); }
+    note('Signing into Tramada (test) - no reconciliation is being run.');
+    render();
+    ws.send(JSON.stringify({ type: 'recon_login_test' }));
+  }
+
+  function endLoginTest() {
+    loginTest = false;
+    const btn = $('#rcLoginTest');
+    if (btn) { btn.disabled = false; btn.classList.remove('on'); }
+  }
+
+  /* ── who is signed in ──
+     Mounted only when the server says Entra is actually on. A local `npm start`
+     has no sign-in at all, and a "Sign out" button that ends nothing is worse
+     than no button — the same reason the noVNC nav above waits for recon_hello. */
+  async function mountAccountNav() {
+    const nav = document.querySelector('.side nav');
+    if (!nav || document.getElementById('rcAcctNav')) return;
+    let me;
+    // A failure here is not worth a message: the page has a socket that will
+    // report the server being unreachable far more loudly than a missing chip.
+    try { me = await fetch('/api/me', { credentials: 'same-origin' }).then((r) => r.json()); } catch { return; }
+    if (!me || !me.entra || !me.user) return;
+
+    const lbl = document.createElement('div');
+    lbl.className = 'nav-lbl';
+    lbl.textContent = 'Account';
+
+    const who = document.createElement('div');
+    who.className = 'rc-acct';
+    who.id = 'rcAcctNav';
+    who.textContent = me.user.email || me.user.name || '';
+    who.title = me.vault
+      ? 'A run signs into Tramada as this person, using the credentials stored for them'
+      : 'No Tramada credentials are stored — a run will ask you to sign into Tramada yourself';
+
+    /* A real form POST, not an <a>. /auth/logout ends the session, and a GET
+       that changes state is one a prefetcher, a link scanner or a browser's
+       address-bar guess can fire without anybody clicking it. */
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/auth/logout';
+    const btn = document.createElement('button');
+    btn.className = 'nav-item';
+    btn.type = 'submit';
+    btn.innerHTML = '<span class="ico">\u21AA</span> Sign out';
+    form.appendChild(btn);
+
+    nav.appendChild(lbl); nav.appendChild(who); nav.appendChild(form);
   }
 
   function vncPanelEsc(e) { if (e.key === 'Escape') closeVncPanel(); }
@@ -5719,6 +5811,30 @@ function askMarkStale(){
       needLogin = m.message;
       vncOpen = true;
       note(m.message, false);
+      /* The full window, not the 316px activity rail. The rail panel is the
+         width of the column it sits in, and noVNC scales a 1440x900 desktop to
+         fit — so Tramada's login form landed in it about 90px wide, letterboxed
+         in black, with the code box too small to read let alone type into. The
+         same screen the "Tramada login screen" nav button opens is the one that
+         is actually usable, so a run that needs a code opens that.
+
+         The rail panel is left in place as the fallback: closing this window
+         mid-run brings it back rather than leaving nothing on screen. */
+      openVncPanel();
+      render();
+    } else if (m.type === 'recon_login_test_done') {
+      endLoginTest();
+      if (m.error) {
+        note(m.error, false);
+        alertBar('err', '<b>Could not sign into Tramada.</b> ' + esc(firstSentence(m.error)));
+      } else {
+        /* Only on success. On a failure the screen stays up, because the form
+           that would not sign in is on it and closing it hides the one thing
+           worth looking at (CLAUDE.md §5 - leave the broken page open). */
+        if (vncPanel) closeVncPanel();
+        alertBar('ok', '<b>Signed into Tramada.</b> The shared browser reached the home page' +
+          (m.signedInAs ? ' as ' + esc(m.signedInAs) : '') + '. Nothing was reconciled.');
+      }
       render();
     } else if (m.type === 'recon_login_ok') {
       /* The sign-in landed, so down it goes — unless it is pinned. This frame
@@ -5727,6 +5843,13 @@ function askMarkStale(){
          later. */
       needLogin = null;
       vncOpen = false;
+      /* Down it goes, unless it is pinned — this is the frame that says the
+         sign-in landed, so it is the moment the window has stopped being
+         something anybody needs. Before the window opened itself on
+         recon_login this only had to hide the rail panel; now it has to close
+         what it opened, or a live view of a browser signed into a finance
+         system stays up over the page for the rest of the run. */
+      if (!vncPin) closeVncPanel();
       note(m.message || 'Signed into Tramada — carrying on.', true);
       render();
     } else if (m.type === 'cheat_sheet') {
@@ -6544,6 +6667,7 @@ function askMarkStale(){
     mountCheatSheetScreen();
     mountNav(); mountSources(); renderOverview(); markSamples(); hideUnwired();
     mountPaymentsChat();
+    mountAccountNav();
     render(); connect(); loadOverview(); loadCheatSheets(); loadIpsiPending();
     /* Open on Sources & upload, not on Run overview.
        The mockup ships with the overview marked `on`, which made sense when it

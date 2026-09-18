@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · RAA Travel Reconciliation</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+<style>
+/* Same tokens as index.html — this is the same app's front door, and a sign-in
+   page that looks like a different product is the one screen where that reads
+   as a phishing page rather than as a design slip. */
+:root{
+  --indigo:#130064; --indigo-700:#1d0f7a; --indigo-050:#eeecf6;
+  --yellow:#ffe600; --ink:#1a1a26; --ink-2:#4d4d5c; --ink-3:#75758a;
+  --line:#e2e2e8; --bg:#f5f5f8; --white:#fff;
+  --err:#9f2241; --err-bg:#fbe9ed; --warn:#a05a00; --warn-bg:#fdf1dd;
+  --r:10px; --shadow:0 1px 2px rgba(19,0,100,.05),0 6px 20px rgba(19,0,100,.055);
+  --font:"Roboto",-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",Arial,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;
+  font-family:var(--font);background:var(--bg);color:var(--ink);font-size:14px;line-height:1.45;
+  -webkit-font-smoothing:antialiased}
+.card{width:100%;max-width:390px;background:var(--white);border:1px solid var(--line);
+  border-radius:var(--r);box-shadow:var(--shadow);overflow:hidden}
+.top{background:var(--indigo);color:#fff;padding:22px 26px 20px}
+.top .mark{display:block;width:34px;height:4px;background:var(--yellow);border-radius:2px;margin-bottom:13px}
+h1{margin:0;font-size:17px;font-weight:500;letter-spacing:-.01em}
+.top p{margin:5px 0 0;font-size:12.5px;opacity:.72;font-weight:300}
+.body{padding:24px 26px 26px}
+.btn{display:flex;align-items:center;justify-content:center;gap:9px;width:100%;
+  background:var(--indigo);color:#fff;border:0;border-radius:8px;padding:12px 16px;
+  font:500 14px/1 var(--font);text-decoration:none;cursor:pointer;transition:background .15s}
+.btn:hover{background:var(--indigo-700)}
+.btn svg{flex:none}
+.note{margin:16px 0 0;font-size:12px;color:var(--ink-3);line-height:1.5}
+.msg{border-radius:8px;padding:11px 13px;font-size:12.5px;margin:0 0 16px;line-height:1.5}
+.msg.err{background:var(--err-bg);color:var(--err)}
+.msg.warn{background:var(--warn-bg);color:var(--warn)}
+.msg b{font-weight:500}
+a.plain{color:var(--indigo);text-decoration:underline}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="top">
+    <span class="mark"></span>
+    <h1>Bank Reconciliation</h1>
+    <p>RAA Travel · Tramada</p>
+  </div>
+  <div class="body">
+    <div id="error" class="msg err" hidden></div>
+
+    <!-- The normal case. Hidden until /api/me says sign-in is actually on, so a
+         deployment with no Entra configured never shows a button that would
+         bounce the user to a 500. -->
+    <div id="entra" hidden>
+      <a class="btn" href="/auth/login">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+          <path fill="#f25022" d="M0 0h7.6v7.6H0z"/><path fill="#7fba00" d="M8.4 0H16v7.6H8.4z"/>
+          <path fill="#00a4ef" d="M0 8.4h7.6V16H0z"/><path fill="#ffb900" d="M8.4 8.4H16V16H8.4z"/>
+        </svg>
+        Sign in with Microsoft
+      </a>
+      <p class="note">
+        You will be taken to Microsoft to sign in. Once you are back, the app signs
+        into Tramada as you — and if Tramada wants anything more than a password,
+        it shows you the Tramada login screen so you can finish.
+      </p>
+    </div>
+
+    <!-- No Entra configured: a local `npm start`, or a half-filled .env. Say
+         which, and do not pretend there is a door to knock on. -->
+    <div id="open" hidden>
+      <div class="msg warn">
+        <b>Sign-in is not configured on this deployment.</b><br>
+        Anyone who can reach this address can use the app. That is expected for a
+        local run; on a shared server, set it up with <code>docs/azure-setup.md</code>.
+      </div>
+      <a class="btn" href="/">Continue</a>
+    </div>
+  </div>
+</main>
+<script>
+/* Ask the server what this deployment is rather than guessing from the URL —
+   the same discovered-not-assumed rule the rest of the app follows (CLAUDE.md
+   §6). It also answers "am I already signed in?", so landing here with a live
+   session goes straight through instead of asking twice. */
+(async () => {
+  const show = (id) => document.getElementById(id).hidden = false;
+  const err = new URLSearchParams(location.search).get("error");
+  if (err) {
+    const box = document.getElementById("error");
+    box.textContent = err;            // textContent, never innerHTML — this came off the URL
+    box.hidden = false;
+  }
+  try {
+    const me = await fetch("/api/me", { credentials: "same-origin" }).then((r) => r.json());
+    if (me.signedIn) return location.replace("/");
+    show(me.entra ? "entra" : "open");
+  } catch {
+    // The server is unreachable or broke. Offer the button anyway — it is the
+    // only useful thing on this page, and hiding it strands the user entirely.
+    show("entra");
+  }
+})();
+</script>
+</body>
+</html>

@@ -23,6 +23,8 @@
  *   page  ◀──recon_login_ok{message}                ...and has now done it
  *   page  ◀──recon_row{n, row}                      one row's verdict
  *   page  ◀──recon_done{pageNumber | error}
+ *   page  ──recon_login_test                    sign in, and nothing else
+ *   page  ◀──recon_login_test_done{signedInAs | error}
  */
 require("dotenv").config();
 
@@ -36,9 +38,11 @@ const reconCore = require("./recon-core");
 const xlsxLite = require("./xlsx-lite");
 const xlsxWrite = require("./xlsx-write");
 const store = require("./run-store");
-const { runReconciliation, runMintReconciliation, runCombinedReconciliation } = require("./recon-run");
+const { runReconciliation, runMintReconciliation, runCombinedReconciliation, runTramadaLogin } = require("./recon-run");
 const { runIpsiReconciliation } = require("./tramada-ipsi");
 const paymentsChat = require("./payments-chat");
+const azureAuth = require("./azure-auth");
+const creds = require("./tramada-creds");
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const PUBLIC = path.join(__dirname, "public");
@@ -56,6 +60,21 @@ const PUBLIC = path.join(__dirname, "public");
 const NOVNC_PORT = parseInt(process.env.NOVNC_PORT || "", 10) || null;
 
 const app = express();
+/* Sign-in goes on BEFORE the static handler, and that order is the whole
+   protection: express.static serves index.html to anyone who asks for it by
+   name, so mounting it first would leave the entire app reachable without a
+   session while the routes below looked guarded. */
+azureAuth.install(app);
+
+// The two things an unauthenticated browser is allowed: the login page itself,
+// and the question "am I signed in?" that the page asks to render itself.
+app.get("/login", (req, res) => res.sendFile(path.join(PUBLIC, "login.html")));
+app.get("/api/me", (req, res) => {
+  const user = azureAuth.userFromSession(req.session);
+  res.json({ entra: azureAuth.enabled(), signedIn: !!user, user, vault: creds.configured() });
+});
+
+app.use(azureAuth.requireAuth);
 app.use(express.static(PUBLIC));
 app.get("/", (req, res) => res.sendFile(path.join(PUBLIC, "index.html")));
 
@@ -349,13 +368,52 @@ app.get("/api/cheat-sheet/:source/export", (req, res) => {
 });
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: "/ws" });
+
+/* `noServer` rather than handing the WebSocketServer the http server, because
+   the upgrade has to be REFUSED before a socket exists. Gating the HTTP routes
+   alone would have protected nothing that matters: `recon_run` arrives down
+   this socket, and that is the frame that files real receipts. */
+const wss = new WebSocketServer({ noServer: true });
+
+server.on("upgrade", async (req, socket, head) => {
+  let pathname;
+  try { pathname = new URL(req.url, "http://localhost").pathname; } catch { pathname = ""; }
+  if (pathname !== "/ws") return socket.destroy();
+
+  let user = null;
+  // Never let a failure here fall through as "allowed". A session store that
+  // throws is a reason to refuse the socket, not to open it to nobody.
+  try { user = await azureAuth.userForUpgrade(req); } catch { user = null; }
+  if (!user) {
+    socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+    return socket.destroy();
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req, user));
+});
 
 /* ── one session per open page ───────────────────────────────────────────── */
 
-wss.on("connection", (ws) => {
-  const session = { ws, active: true, reconRunning: false };
-  console.log("🔌 page connected");
+/* ── one run at a time, across the whole server ──────────────────────────── */
+
+/* This used to be `session.reconRunning`, a flag on ONE open page — which meant
+   it stopped a person double-clicking Run and nothing else. Two people were
+   free to start two runs, and there is only ever one browser: `runTramadaReceipt`
+   closes the shared CDP connection in its finally (recon-run.js §fileReceipts),
+   so the second run would pull the page out from under the first with real
+   receipts already filed. Per-user credentials make it worse still — the second
+   run signs the shared browser in as somebody else mid-flight.
+   So the lock belongs to the server, and it remembers WHO holds it, because
+   "a run is already going" is a much better message with a name on it. */
+const runLock = {
+  _by: null,
+  heldBy() { return this._by; },
+  take(session) { this._by = (session.user && session.user.name) || "someone"; },
+  release() { this._by = null; },
+};
+
+wss.on("connection", (ws, req, user) => {
+  const session = { ws, active: true, user };
+  console.log(`🔌 page connected${user && user.email ? ` — ${user.email}` : ""}`);
 
   /* What this deployment can do, told to the page rather than guessed at by it.
      Only the Docker image has a login screen; a local `npm start` has none, and
@@ -374,6 +432,7 @@ wss.on("connection", (ws) => {
       else if (msg.type === "cheat_sheet") handleCheatSheet(session, msg);
       else if (msg.type === "cheat_sheet_save") handleCheatSheetSave(session, msg);
       else if (msg.type === "recon_run") await handleReconRun(session, msg);
+      else if (msg.type === "recon_login_test") await handleLoginTest(session);
     } catch (err) {
       // A throw here would take the socket down mid-run and the page would show
       // nothing at all. Report it as a finished run that failed.
@@ -556,6 +615,25 @@ function csvOf(rows) {
   ].join("\n");
 }
 
+/**
+ * This person's Tramada credentials, out of the vault.
+ *
+ * THE EMAIL COMES FROM THE SESSION and from nowhere else — it was put there by
+ * azure-auth.js out of an ID token Entra signed. Taking it from `msg` would let
+ * anyone with the socket open name a colleague and be handed their password.
+ *
+ * null means "no vault configured", which is not a failure: the run then waits
+ * for a human on the noVNC screen exactly as it did before any of this existed.
+ * A vault that IS configured and cannot answer throws instead, because silently
+ * falling back would hide a broken vault behind a login prompt for weeks.
+ */
+async function tramadaAuthFor(session) {
+  if (!creds.configured()) return null;
+  const email = session.user && session.user.email;
+  if (!email) return null;
+  return creds.credentialsFor(email);
+}
+
 const callbacks = (session, run) => ({
   // To the page AND to disk. A progress line that lives only in a websocket
   // frame is gone the moment the tab is closed, which is why the overview's
@@ -575,15 +653,29 @@ const callbacks = (session, run) => ({
   // that needs someone to go and DO something, and a run waits five minutes for
   // it — long enough that a line in a scrolling list is missed and the run looks
   // hung. The page shows it as a banner.
-  onNeedLogin: () => send(session, {
+  /* `reason` is "otp" when the app already filled the credentials from the
+     vault and Tramada wanted something more, and "signin" when nobody had
+     credentials stored and the whole login is the human's to do. The words
+     matter: telling somebody to "sign into Tramada" when the form is already
+     sitting on a verification-code prompt sends them looking for a password
+     box that is not there.
+
+     "otp" is deliberately NOT claimed to be a verification code — nobody has
+     captured that screen, so it is equally an expired password or a locked
+     account, and this says what is true for all three (CLAUDE.md §6). */
+  onNeedLogin: (reason) => send(session, {
     type: "recon_login",
     /* Naming port 9222 inside the container sent people looking for a browser
        that was not on their machine: compose deliberately never publishes it,
        and the only Chrome is the one on the virtual screen. Say where the
        browser actually IS for this deployment. */
-    message: NOVNC_PORT
-      ? "Sign into Tramada on the login screen below — I'll wait, and I never type credentials."
-      : `Sign into Tramada in the Chrome on port ${process.env.CDP_PORT || 9222} — I'll wait, and I never type credentials.`,
+    message: reason === "otp"
+      ? (NOVNC_PORT
+        ? "Tramada wants more than a password — finish signing in on the screen below and I'll carry on."
+        : `Tramada wants more than a password — finish signing in in the Chrome on port ${process.env.CDP_PORT || 9222}.`)
+      : (NOVNC_PORT
+        ? "Sign into Tramada on the login screen below — I'll wait."
+        : `Sign into Tramada in the Chrome on port ${process.env.CDP_PORT || 9222} — I'll wait.`),
   }),
   // The other half. To the page so it can take the login screen down, and to
   // disk because "a human signed in at 09:14, mid-run" is exactly the kind of
@@ -616,15 +708,16 @@ async function handleReconRun(session, msg) {
     send(session, { type: "recon_done", error: "nothing in that CSV could be run" });
     return;
   }
-  if (session.reconRunning) {
-    send(session, { type: "recon_progress", message: "A run is already going — waiting for it to finish.", ok: false });
+  if (runLock.heldBy()) {
+    send(session, { type: "recon_progress", message: `${runLock.heldBy()} is running a reconciliation — waiting for it to finish.`, ok: false });
     return;
   }
-  session.reconRunning = true;
+  runLock.take(session);
 
   const run = openRun(session, "bpay", msg, rows);
   try {
     const out = await runReconciliation({
+      auth: await tramadaAuthFor(session),
       rows,
       statementDate: msg.statementDate,
       openingBalance: msg.openingBalance,
@@ -667,7 +760,7 @@ async function handleReconRun(session, msg) {
     closeRun(run, null, why);
     send(session, { type: "recon_done", error: why, runId: run && run.id });
   } finally {
-    session.reconRunning = false;
+    runLock.release();
   }
 }
 
@@ -679,6 +772,45 @@ async function handleReconRun(session, msg) {
  * filed is read by recon-core so there is one authority on what a row means.
  * The Mint half already came from this server's own parser.
  */
+/**
+ * The Browser nav's "Login into Tramada" — a sign-in and nothing else.
+ *
+ * It drives the SAME shared Chromium a run drives, and `ensureLoggedIn` will
+ * sign that browser out if the session is not provably this person's. So it
+ * takes the run lock: without it, pressing this mid-run tears down the session
+ * a reconciliation is filing receipts through (CLAUDE.md §6, "two reports = one
+ * run"). The same reason a run refuses while this is in flight.
+ *
+ * It reuses the run's own recon_login / recon_login_ok frames, so the page puts
+ * the noVNC screen up for a verification code exactly as it does mid-run — the
+ * point is to exercise that path, not a second one that resembles it.
+ */
+async function handleLoginTest(session) {
+  if (runLock.heldBy()) {
+    send(session, { type: "recon_login_test_done", error: `${runLock.heldBy()} is running a reconciliation — the browser is busy.` });
+    return;
+  }
+  runLock.take(session);
+  try {
+    // Same source as a run's: the email off the verified Entra session, never
+    // anything the page sent. See tramadaAuthFor.
+    const auth = await tramadaAuthFor(session);
+    // `run` is null — this files nothing, so there is no run record to write
+    // activity against, and inventing one would put a reconciliation that never
+    // happened on the overview screen (§6b).
+    const out = await runTramadaLogin({ auth, callbacks: callbacks(session, null) });
+    send(session, {
+      type: "recon_login_test_done",
+      signedInAs: out.signedInAs,
+      title: out.title,
+    });
+  } catch (err) {
+    send(session, { type: "recon_login_test_done", error: reconCore.tidyError(err.message) });
+  } finally {
+    runLock.release();
+  }
+}
+
 async function handleCombinedRun(session, msg) {
   const given = msg.byReport || {};
   const { rows: bpayRows, problems } = reconCore.parseReconCsv(csvOf(given.bpay));
@@ -696,11 +828,11 @@ async function handleCombinedRun(session, msg) {
     send(session, { type: "recon_done", error: "none of those reports had anything that could be run" });
     return;
   }
-  if (session.reconRunning) {
-    send(session, { type: "recon_progress", message: "A run is already going — this one was not started.", ok: false });
+  if (runLock.heldBy()) {
+    send(session, { type: "recon_progress", message: `${runLock.heldBy()} is running a reconciliation — this one was not started.`, ok: false });
     return;
   }
-  session.reconRunning = true;
+  runLock.take(session);
 
   // One record, every report. Rows carry their own `src` so the overview can
   // still tell them apart on a screen whose stream cards are per report.
@@ -708,6 +840,7 @@ async function handleCombinedRun(session, msg) {
     Object.keys(byReport).flatMap((k) => byReport[k].map((r) => ({ ...r, src: k }))));
   try {
     const out = await runCombinedReconciliation({
+      auth: await tramadaAuthFor(session),
       byReport,
       statementDate: msg.statementDate,
       openingBalance: msg.openingBalance,
@@ -731,7 +864,7 @@ async function handleCombinedRun(session, msg) {
     closeRun(run, null, why);
     send(session, { type: "recon_done", error: why, runId: run && run.id });
   } finally {
-    session.reconRunning = false;
+    runLock.release();
   }
 }
 
@@ -748,11 +881,11 @@ async function handleIpsiRun(session, msg) {
     send(session, { type: "recon_done", error: "nothing in that IPSI file could be checked" });
     return;
   }
-  if (session.reconRunning) {
-    send(session, { type: "recon_progress", message: "A run is already going — this one was not started.", ok: false });
+  if (runLock.heldBy()) {
+    send(session, { type: "recon_progress", message: `${runLock.heldBy()} is running a reconciliation — this one was not started.`, ok: false });
     return;
   }
-  session.reconRunning = true;
+  runLock.take(session);
 
   /* Guide step 4 — kept to ONE settlement date only now that the human has
      typed it in. IPSI's own export pads a day either side of it, and every row
@@ -763,7 +896,7 @@ async function handleIpsiRun(session, msg) {
   }
   if (!rows.length) {
     send(session, { type: "recon_done", error: `none of the uploaded rows are dated ${msg.statementDate}` });
-    session.reconRunning = false;
+    runLock.release();
     return;
   }
 
@@ -773,13 +906,14 @@ async function handleIpsiRun(session, msg) {
   const fileTotal = reconCore.checkIpsiFileTotal(rows, msg.transactionTotal);
   if (fileTotal.checked && !fileTotal.ok) {
     send(session, { type: "recon_done", error: fileTotal.reason });
-    session.reconRunning = false;
+    runLock.release();
     return;
   }
 
   const run = openRun(session, "ipsi", msg, rows.map((r) => ({ ...r, src: "ipsi" })));
   try {
     const out = await runIpsiReconciliation({
+      auth: await tramadaAuthFor(session),
       rows,
       payerName: msg.payerName || "IPSI",
       toDate: msg.statementDate,
@@ -812,7 +946,7 @@ async function handleIpsiRun(session, msg) {
     closeRun(run, null, why);
     send(session, { type: "recon_done", error: why, runId: run && run.id });
   } finally {
-    session.reconRunning = false;
+    runLock.release();
   }
 }
 
@@ -940,11 +1074,11 @@ async function handleMintRun(session, msg) {
     send(session, { type: "recon_done", error: `nothing in that ${report.title} file could be checked` });
     return;
   }
-  if (session.reconRunning) {
-    send(session, { type: "recon_progress", message: "A run is already going — waiting for it to finish.", ok: false });
+  if (runLock.heldBy()) {
+    send(session, { type: "recon_progress", message: `${runLock.heldBy()} is running a reconciliation — waiting for it to finish.`, ok: false });
     return;
   }
-  session.reconRunning = true;
+  runLock.take(session);
 
   const run = openRun(session, source, msg, rows.map((r) => ({ ...r, src: source })));
 
@@ -975,6 +1109,7 @@ async function handleMintRun(session, msg) {
 
   try {
     const out = await runMintReconciliation({
+      auth: await tramadaAuthFor(session),
       rows,
       // The NORMALISED source, not `msg.source`: line 1 above already falls
       // back to "mint" for anything it does not recognise, and passing the raw
@@ -1012,7 +1147,7 @@ async function handleMintRun(session, msg) {
     closeRun(run, null, why);
     send(session, { type: "recon_done", error: why, runId: run && run.id });
   } finally {
-    session.reconRunning = false;
+    runLock.release();
   }
 }
 
@@ -1037,6 +1172,17 @@ async function handleMintRun(session, msg) {
   // loud, because "1 running" on the dashboard is a figure people wait on.
   const orphans = store.reconcileOrphans();
   if (orphans) console.log(`  ⚠ ${orphans} run(s) were still open from a previous server — marked failed.`);
+
+  /* Said out loud on every boot, because BOTH of these are silent otherwise and
+     both look identical from the outside — an app that opens straight onto the
+     reconciliation screen. One of them is a deliberate local run; the other is a
+     shared server whose front door never got installed. */
+  const authProblem = azureAuth.configProblem();
+  if (authProblem) console.log(`  ⚠ ${authProblem}`);
+  else if (!azureAuth.enabled()) console.log("  ⚠ No Entra sign-in configured — anyone who can reach this port can use the app.");
+  if (azureAuth.enabled() && !creds.configured()) {
+    console.log("  ⚠ Signed-in users have no Tramada credentials in a vault — each run still waits for a human to sign into Tramada.");
+  }
 
   server.listen(PORT, () => {
     console.log(`

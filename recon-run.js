@@ -51,6 +51,7 @@ require("dotenv").config();
 const { chromium } = require("playwright");
 const core = require("./recon-core");
 const { runTramadaReceipt } = require("./tramada-receipt");
+const { ensureLoggedIn, signedInAs } = require("./tramada-auth");
 /* IPSI never touches a bank statement page — it walks Finance Receipts. A
    combined run has to be able to drive it too, or a loaded IPSI file gets
    matched against a page its transactions can never be on. */
@@ -85,78 +86,23 @@ async function openBrowser() {
   }
 }
 
-async function tramadaIsAuthed(page) {
-  await page.goto(`${TRAMADA_BASE_URL}/home/home.htm`, { waitUntil: "domcontentloaded" }).catch(() => {});
-  // The URL alone is not the answer. Measured 25-08-2026: signed OUT, this
-  // instance serves the LOGIN FORM at the protected .../home/home.htm URL — no
-  // redirect to login.htm, the address bar stays put. A url-only check reads
-  // that as signed in, ensureLoggedIn returns, and every row of the run then
-  // fails while nobody is ever asked to sign in. So the presence of a password
-  // field is the answer — the same tightening tramada-receipt.js already made.
-  if (page.url().includes("login.htm")) return false;
-  const showingLogin = await page
-    .evaluate(() => !!document.querySelector("input[type=password], #loginForm_login"))
-    .catch(() => false);
-  return !showingLogin;
-}
+/* Signed-in-ness lives in tramada-auth.js now — ONE copy, because with per-user
+   credentials the identity check there decides whose name goes on a receipt, and
+   this file used to hold one of five copies that had already drifted apart once.
+   See the header of tramada-auth.js. */
 
-/* The same question as tramadaIsAuthed, asked WITHOUT touching the page.
-   tramadaIsAuthed NAVIGATES, and the wait loop below asks every three seconds —
-   on the very tab the human is typing their password into. Every ask reloaded
-   the login form and wiped both fields, so on the noVNC screen the login page
-   appeared to reload forever and there was no way to sign in at all. It went
-   unnoticed while the workflow was "sign in first, then start a run"; it became
-   the only path the moment the app started showing the login screen itself.
-
-   This shares the browser's cookie jar, so it sees the same session no matter
-   which tab the login happened in, and it never navigates anything. */
-async function tramadaIsAuthedQuietly(page) {
-  try {
-    const res = await page.request.get(`${TRAMADA_BASE_URL}/home/home.htm`, { timeout: 15000 });
-    // The URL is not the answer. Measured 25-08-2026: signed out, this GET comes
-    // back 200 with the address still .../home/home.htm and the LOGIN FORM in
-    // the body — it never redirects to login.htm. The old url-only check read
-    // that as "signed in", so ensureLoggedIn's confirm-navigation below fired
-    // every three seconds and reloaded the login form under the human, wiping
-    // the password before it could be typed — the EXACT bug this quiet probe was
-    // added to prevent, quietly reintroduced by trusting the URL. So read the
-    // BODY the way tramadaIsAuthed reads the DOM: a password field or the login
-    // form means NOT signed in, whatever the address bar says.
-    if (res.url().includes("login.htm")) return false;
-    const body = await res.text();
-    const showingLogin =
-      /type=["']?password|name=["']?password|loginForm_login|action=["'][^"']*login\.htm/i.test(body);
-    return !showingLogin;
-  } catch {
-    // A probe that could not run has not proved anything — least of all that
-    // somebody is signed in (CLAUDE.md §6).
-    return false;
-  }
-}
-
-/** The human signs in. We wait, we never type credentials (CLAUDE.md §5). */
-async function ensureLoggedIn(page, onNeedLogin, onLoginOk) {
-  if (await tramadaIsAuthed(page)) return;
-  if (typeof onNeedLogin === "function") onNeedLogin();
-  const deadline = Date.now() + 5 * 60 * 1000;
-  while (Date.now() < deadline) {
-    await sleep(3000);
-    if (!(await tramadaIsAuthedQuietly(page))) continue;
-    /* Signed in. The run's own tab is still sitting on the login form, so put
-       it on a real page before carrying on — and confirm THERE, because the
-       probe proves the session is good, not that this tab is usable. This is
-       the only navigation in the whole wait, and it happens after the human
-       has finished, so it cannot eat anything they were typing. */
-    await page.goto(`${TRAMADA_BASE_URL}/home/home.htm`, { waitUntil: "domcontentloaded" }).catch(() => {});
-    if (page.url().includes("login.htm")) continue;
-    /* Paired with onNeedLogin, never fired alone. An already-authed session
-       returns above without a word, because the page never put a login screen
-       up and has nothing to take down — and an unpaired "logged in" would
-       close a screen somebody had deliberately pinned open to watch a run. */
-    if (typeof onLoginOk === "function") onLoginOk();
-    return;
-  }
-  throw new Error("Timed out waiting for a Tramada login.");
+/**
+ * The TRAMADA_USERNAME/TRAMADA_PASSWORD pair, if somebody set it.
+ *
+ * It predates the vault and is how a developer with a .env signs in. It carries
+ * NO `forEmail`, and that is the point: it is a shared login, not anybody's
+ * identity, so tramada-auth.js treats the session it makes as "owner unknown"
+ * and will not hand it to a per-user run. A vault credential always wins.
+ */
+function envAuth() {
+  const username = process.env.TRAMADA_USERNAME;
+  const password = process.env.TRAMADA_PASSWORD;
+  return username && password ? { username, password } : null;
 }
 
 /* ── the bank statement screens ──────────────────────────────────────────── */
@@ -1381,7 +1327,7 @@ async function fileReceipts(results, { auth, cb, say, row }) {
       // commit. The decision needs the form's own figure, which is only
       // knowable with the form open.
       const probe = await runTramadaReceipt({
-        ...auth,
+        auth,
         bookingNo: r.bookingNo,
         receipt: {
           transactionType: "EFT",
@@ -1524,7 +1470,7 @@ async function fileReceipts(results, { auth, cb, say, row }) {
       say(`Row ${r.n}: ${decision.reason}`);
 
       const filed = await runTramadaReceipt({
-        ...auth,
+        auth,
         bookingNo: r.bookingNo,
         receipt: {
           transactionType: "EFT",
@@ -1615,7 +1561,7 @@ async function runReconciliation(o = {}) {
   if (!rows.length) throw new Error("No rows to run.");
   const results = rows.map((r, i) => ({ ...r, n: i + 1 }));
   await fileReceipts(results, {
-    auth: { username: process.env.TRAMADA_USERNAME, password: process.env.TRAMADA_PASSWORD },
+    auth: o.auth || envAuth(),
     cb, say, row,
   });
 
@@ -1627,7 +1573,7 @@ async function runReconciliation(o = {}) {
   try {
     const ctx = browser.contexts()[0] || (await browser.newContext());
     page = await ctx.newPage();
-    await ensureLoggedIn(page, cb.onNeedLogin, cb.onLoginOk);
+    await ensureLoggedIn(page, { auth: o.auth, onNeedLogin: cb.onNeedLogin, onLoginOk: cb.onLoginOk, onProgress: say });
 
     /* The balances are no longer passed in. Tramada's new-statement form fills
        Opening Balance from the account itself, that figure is carried into
@@ -1786,7 +1732,7 @@ async function runMintReconciliation(o = {}) {
   try {
     const ctx = browser.contexts()[0] || (await browser.newContext());
     page = await ctx.newPage();
-    await ensureLoggedIn(page, cb.onNeedLogin, cb.onLoginOk);
+    await ensureLoggedIn(page, { auth: o.auth, onNeedLogin: cb.onNeedLogin, onLoginOk: cb.onLoginOk, onProgress: say });
 
     /* BR03 — THE STATEMENT IS ALREADY THERE. Both guides say do not create one
        for MINT or TravelPay; reuse the one the BPay process made for the day.
@@ -1954,7 +1900,7 @@ async function runCombinedReconciliation(o = {}) {
 
   for (const k of writes) {
     await fileReceipts(rowsOf(k), {
-      auth: { username: process.env.TRAMADA_USERNAME, password: process.env.TRAMADA_PASSWORD },
+      auth: o.auth || envAuth(),
       cb, say, row,
     });
   }
@@ -2015,7 +1961,7 @@ async function runCombinedReconciliation(o = {}) {
   try {
     const ctx = browser.contexts()[0] || (await browser.newContext());
     page = await ctx.newPage();
-    await ensureLoggedIn(page, cb.onNeedLogin, cb.onLoginOk);
+    await ensureLoggedIn(page, { auth: o.auth, onNeedLogin: cb.onNeedLogin, onLoginOk: cb.onLoginOk, onProgress: say });
 
     /* The balances are no longer passed in. Tramada's new-statement form fills
        Opening Balance from the account itself, that figure is carried into
@@ -2148,8 +2094,81 @@ async function runCombinedReconciliation(o = {}) {
   }
 }
 
+/**
+ * Sign the shared browser into Tramada and stop there. Nothing else.
+ *
+ * A test control, and only that: no report, no statement page, no receipt. It
+ * exists because the login path — vault credentials in, verification code on
+ * the noVNC screen, Tramada's home page out — was only ever reachable as the
+ * first ten seconds of a run that then goes on to file real money. Proving a
+ * misconfigured vault or a changed login form by starting a reconciliation is
+ * the wrong way round.
+ *
+ * It reuses `ensureLoggedIn` rather than repeating it, for the reason in the
+ * header of tramada-auth.js: a second copy of the identity rule is a copy that
+ * drifts, and this one would drift in the direction of "signing in is fine"
+ * while a run says otherwise.
+ *
+ * @param {object} o
+ * @param {{username, password, forEmail}} [o.auth]  From the vault. Absent, a
+ *        human signs in on the noVNC screen — the same fallback a run has.
+ * @param {object} o.callbacks  onProgress, onNeedLogin, onLoginOk — as a run's.
+ * @returns {Promise<{signedInAs: string|null, title: string, url: string}>}
+ */
+async function runTramadaLogin(o = {}) {
+  const cb = o.callbacks || {};
+  const say = cb.onProgress || (() => {});
+
+  const browser = await openBrowser();
+  let page;
+  let ok = false;
+  try {
+    const ctx = browser.contexts()[0] || (await browser.newContext());
+    page = await ctx.newPage();
+    say(o.auth
+      ? `Signing into Tramada with the stored credentials for ${o.auth.forEmail}...`
+      : "No Tramada credentials are stored — sign in on the login screen.");
+
+    await ensureLoggedIn(page, {
+      auth: o.auth,
+      onNeedLogin: cb.onNeedLogin,
+      onLoginOk: cb.onLoginOk,
+      onProgress: say,
+    });
+
+    /* Assert, don't assume (§3). ensureLoggedIn returning is its own reading of
+       the session; this asks the home page directly, because the whole point of
+       the button is to answer "did it actually land on Tramada" and an answer
+       taken on trust would answer nothing. Never by URL (§6) — this instance
+       serves the login form from protected URLs with the address bar unchanged,
+       which is the exact bug tramadaIsAuthed was written for. */
+    await page.goto(`${TRAMADA_BASE_URL}/home/home.htm`, { waitUntil: "domcontentloaded" });
+    const showingLogin = await page
+      .evaluate(() => !!document.querySelector("input[type=password], #loginForm_login"))
+      .catch(() => false);
+    if (showingLogin) {
+      throw new Error("Tramada is still showing its login form — the sign-in did not take.");
+    }
+
+    const title = (await page.title().catch(() => "")) || "";
+    say(`Tramada home page reached${title ? ` — "${title}"` : ""}.`, true);
+    ok = true;
+    return { signedInAs: signedInAs(), title, url: page.url() };
+  } catch (err) {
+    if (cb.onError) cb.onError(err.message);
+    throw err;
+  } finally {
+    // The tab stays open on failure so the form that would not sign in can be
+    // looked at on the noVNC screen (§5).
+    if (ok && page) await page.close().catch(() => {});
+    await browser.close().catch(() => {});
+  }
+}
+
 module.exports = {
   runReconciliation, runMintReconciliation, runCombinedReconciliation,
+  // A login and nothing else — the test button on the Browser nav.
+  runTramadaLogin,
   sortPage, applyFilter, filterFor, readVisibleTransactions, fileReceipts,
   readExistingPages, createStatement, openFreshStatementPage, filterAndRead,
   setStatementBalances, selectMatchedTransactions, finishStatementPage,
