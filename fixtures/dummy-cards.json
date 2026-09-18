@@ -1,5 +1,7 @@
 {
-  "_comment": "RAA dummy cards, one per card type. BR04: a customer's REAL card number must never appear here. The values below are public test cards so the pipeline can be exercised in the sandbox — Heath supplies RAA's real dummy cards, and payments-core warns on every run until they replace these.",
-  "Mastercard": "5555555555554444",
-  "Visa": "4242424242424242"
+  "_comment": "BR08 of 'Payments Guide - IPSI Updated 17Sept.docx'. RAA-specified dummy cards, one per card type. BR04: a customer's REAL card number must never appear here. test/test-ipsi-payment.js fails if any value here is not one of these four.",
+  "Visa Credit": "4242424242424242",
+  "Visa Debit": "4400000000000008",
+  "Mastercard Credit": "5454545454545454",
+  "Mastercard Debit": "5555555555554444"
 }

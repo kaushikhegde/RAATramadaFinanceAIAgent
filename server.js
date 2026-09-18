@@ -38,6 +38,7 @@ const xlsxWrite = require("./xlsx-write");
 const store = require("./run-store");
 const { runReconciliation, runMintReconciliation, runCombinedReconciliation } = require("./recon-run");
 const { runIpsiReconciliation } = require("./tramada-ipsi");
+const paymentsChat = require("./payments-chat");
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const PUBLIC = path.join(__dirname, "public");
@@ -80,6 +81,70 @@ app.post("/api/runs/:id/resolve", (req, res) => {
   const run = store.markResolved(req.params.id);
   if (!run) return res.status(404).json({ error: "no such run" });
   res.json(run);
+});
+
+/* ── IPSI customer payments, as a conversation ───────────────────────────── */
+
+/*
+ * "Payments Guide - IPSI.docx" is a different job from reconciliation: a
+ * consultant has just taken a card payment over the phone and needs the
+ * matching Credit Card Swipe receipt raised in Tramada. The guide asks for it
+ * to run as a conversation — stop when something is missing, confirm with a
+ * human before writing anything, and keep a log of the steps.
+ *
+ * All of that lives in payments-chat.js, which is pure. This holds only the
+ * sessions, in memory: a conversation that is lost on restart costs one
+ * re-paste, whereas persisting a half-finished receipt invites a stale one
+ * being confirmed days later against a booking that has moved on.
+ */
+const paymentSessions = new Map();
+const PAYMENT_SESSION_TTL_MS = 60 * 60 * 1000;
+
+function reapPaymentSessions(now = Date.now()) {
+  for (const [id, entry] of paymentSessions) {
+    if (now - entry.touched > PAYMENT_SESSION_TTL_MS) paymentSessions.delete(id);
+  }
+}
+
+function paymentReply(id, result) {
+  reapPaymentSessions();
+  paymentSessions.set(id, { session: result.session, touched: Date.now() });
+  return {
+    id,
+    step: result.step,
+    awaiting: result.awaiting || null,
+    choices: result.choices || null,
+    suggestion: result.suggestion || null,
+    ready: result.ready === true,
+    message: result.message,
+    decision: result.ready ? result.decision : undefined,
+    log: result.session.log,
+  };
+}
+
+app.post("/api/ipsi-payment/start", express.json({ limit: "256kb" }), (req, res) => {
+  try {
+    const text = String((req.body && req.body.text) || "");
+    const id = "pay_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
+    res.json(paymentReply(id, paymentsChat.startIpsiPayment(text)));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/ipsi-payment/:id/reply", express.json({ limit: "256kb" }), (req, res) => {
+  const entry = paymentSessions.get(req.params.id);
+  if (!entry) {
+    return res.status(404).json({
+      error: "That conversation has expired. Paste the IPSI approval again to start a new one.",
+    });
+  }
+  try {
+    const text = String((req.body && req.body.text) || "");
+    res.json(paymentReply(req.params.id, paymentsChat.replyIpsiPayment(entry.session, text)));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 /* ── the working file ────────────────────────────────────────────────────── */

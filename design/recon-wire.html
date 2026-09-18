@@ -3362,11 +3362,16 @@ header.top { display: none !important }
       box.oninput = () => { search = box.value.trim().toLowerCase(); render(); };
     }
 
-    // "Ask the agent" is the demo's own assistant panel, and its script is off.
-    const fab = document.getElementById('askFab');
-    if (fab) fab.style.display = 'none';
-    const ask = document.getElementById('askPanel');
-    if (ask) ask.style.display = 'none';
+    /* "Ask the agent" is wired — but to IPSI customer payments, not to the
+       mockup's reconciliation Q&A. The scope bar (statement date / streams)
+       belongs to that older idea and would be answering nothing, so it goes;
+       the panel, the composer and the launcher stay. */
+    ['askScope', 'askScopePop', 'askStale', 'askCtx', 'askHistBtn', 'askHist'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    });
+    const scope = document.querySelector('.ask-scope');
+    if (scope) scope.style.display = 'none';
 
     // The header's statement chip, its "Agent running · step 3 of 4" state and
     // its Pause / Re-run buttons all live in .top, which this project hides
@@ -3379,11 +3384,170 @@ header.top { display: none !important }
     });
   }
 
+  /* Bubble styling for the payments conversation. Injected rather than added
+     to the mockup's stylesheet, which is client-supplied and never edited. */
+  (function payChatStyles() {
+    const css = document.createElement('style');
+    css.textContent = [
+      '.paymsg{display:flex;max-width:100%}',
+      '.paymsg.me{justify-content:flex-end}',
+      '.paytext{margin:0;font:inherit;white-space:pre-wrap;word-break:break-word;',
+      '  border-radius:11px;padding:9px 12px;font-size:12.5px;line-height:1.5;max-width:88%}',
+      '.paymsg.me .paytext{background:var(--indigo,#2d1b8e);color:#fff;border-bottom-right-radius:3px}',
+      '.paymsg.agent .paytext{background:#f4f4f8;color:#1a1a2e;border-bottom-left-radius:3px}',
+      'pre.paytext{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}',
+      '.paymsg.ok .paytext{background:#e8f5ec;color:#14532d}',
+      '.paymsg.err .paytext{background:#fdecec;color:#8a1c1c}',
+      '.paychips{display:flex;gap:6px;flex-wrap:wrap;margin-top:-6px}',
+    ].join('\n');
+    document.head.appendChild(css);
+  })();
+
+  /* ═══════════════════ ASK THE AGENT — IPSI customer payments ═══════════════
+     The guide ("Payments Guide - IPSI.docx") asks for this to be a
+     conversation: the consultant pastes the IPSI Approved screen, the agent
+     asks for whatever it could not read, confirms who actually paid, and then
+     stops for a human to approve before anything is written to Tramada.
+
+     None of the decisions are made here. The page posts what was typed and
+     renders what comes back — payments-chat.js on the server holds the rules,
+     so the browser cannot drift from them. */
+  function mountPaymentsChat() {
+    const app = document.querySelector('.app');
+    const fab = document.getElementById('askFab');
+    const panel = document.getElementById('askPanel');
+    const body = document.getElementById('askBody');
+    const input = document.getElementById('askIn');
+    const send = document.getElementById('askSend');
+    if (!app || !fab || !panel || !body || !input || !send) return;
+
+    let sessionId = null;
+    let busy = false;
+
+    const open = (on) => {
+      app.classList.toggle('ask-on', on);
+      if (on) setTimeout(() => input.focus(), 40);
+    };
+
+    fab.onclick = () => open(!app.classList.contains('ask-on'));
+    const close = document.getElementById('askClose');
+    if (close) close.onclick = () => open(false);
+    const wide = document.getElementById('askWide');
+    if (wide) wide.onclick = () => app.classList.toggle('ask-wide');
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && app.classList.contains('ask-on')) open(false);
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); open(true); }
+    });
+
+    const el = (cls, text) => {
+      const d = document.createElement('div');
+      d.className = cls;
+      d.textContent = text;
+      return d;
+    };
+
+    function bubble(who, text) {
+      const row = document.createElement('div');
+      row.className = 'paymsg ' + who;
+      /* The confirmation summary is a column of aligned values, so it is
+         rendered in a monospace block — collapsing its whitespace would turn
+         the one screen a human is meant to CHECK into a paragraph. */
+      const pre = document.createElement(text.indexOf('\n') >= 0 ? 'pre' : 'div');
+      pre.className = 'paytext';
+      pre.textContent = text;
+      row.appendChild(pre);
+      body.appendChild(row);
+      body.scrollTop = body.scrollHeight;
+      return row;
+    }
+
+    function chips(options) {
+      if (!options || !options.length) return;
+      const row = document.createElement('div');
+      row.className = 'paychips';
+      options.forEach((o) => {
+        const b = document.createElement('button');
+        b.className = 'btn sm';
+        b.textContent = o;
+        b.onclick = () => { if (!busy) say(o); };
+        row.appendChild(b);
+      });
+      body.appendChild(row);
+      body.scrollTop = body.scrollHeight;
+    }
+
+    function render(data) {
+      if (data.error) { bubble('agent err', data.error); return; }
+      sessionId = data.id || sessionId;
+      bubble('agent' + (data.ready ? ' ok' : ''), data.message);
+      if (data.awaiting === 'confirm') chips(['Yes, issue it', 'No, cancel']);
+      else if (data.choices) chips(data.choices);
+      else if (data.suggestion) chips(['Yes — ' + data.suggestion]);
+    }
+
+    async function post(url, text) {
+      busy = true;
+      send.disabled = true;
+      try {
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        });
+        const data = await r.json();
+        if (!r.ok && !data.message) throw new Error(data.error || ('HTTP ' + r.status));
+        render(data);
+      } catch (err) {
+        bubble('agent err', 'Could not reach the agent: ' + err.message);
+      } finally {
+        busy = false;
+        send.disabled = false;
+        input.focus();
+      }
+    }
+
+    function say(text) {
+      const t = String(text == null ? '' : text).trim();
+      if (!t || busy) return;
+      bubble('me', t);
+      input.value = '';
+      input.style.height = 'auto';
+      if (sessionId) post('/api/ipsi-payment/' + encodeURIComponent(sessionId) + '/reply', t);
+      else post('/api/ipsi-payment/start', t);
+    }
+
+    send.onclick = () => say(input.value);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey || !e.shiftKey)) { e.preventDefault(); say(input.value); }
+    });
+    input.addEventListener('input', () => {
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+    });
+
+    input.placeholder = 'Paste the IPSI “Approved” screen…';
+    const note = document.querySelector('.ask-note');
+    /* The mockup's note said nothing is written to Tramada from here. Once the
+       confirmation is wired that stops being true, and a stale reassurance on a
+       screen that issues money is worse than none. */
+    if (note) note.textContent = 'IPSI customer payments. Nothing is written to Tramada until you confirm.';
+
+    body.innerHTML = '';
+    const intro = el('ask-empty', '');
+    intro.innerHTML =
+      '<div class="mk">✦</div><h5>Raise an IPSI receipt</h5>' +
+      '<div>Paste the IPSI “Approved” screen and I’ll prepare the Credit Card Swipe ' +
+      'receipt. I’ll ask for anything I can’t read, and show you everything before ' +
+      'it goes to Tramada.</div>';
+    body.appendChild(intro);
+  }
+
   document.addEventListener('DOMContentLoaded', () => {
     // renderOverview first: the overview is wired now, and markSamples is only
     // allowed to be right about screens that still are not.
     mountCheatSheetScreen();
     mountNav(); mountSources(); renderOverview(); markSamples(); hideUnwired();
+    mountPaymentsChat();
     render(); connect(); loadOverview(); loadCheatSheets(); loadIpsiPending();
     /* Open on Sources & upload, not on Run overview.
        The mockup ships with the overview marked `on`, which made sense when it

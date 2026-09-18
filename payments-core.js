@@ -85,6 +85,52 @@ const CARD_LABELS = Object.freeze({
   "Visa Debit": /visa\s*debit/i,
 });
 
+/**
+ * BR08, added 17-Sep-2026. The guide now NAMES the dummy card numbers, and
+ * step 6 says to raise each card through the form's "Add" button rather than
+ * picking one of the cards already sitting in `#receiptcreditCard`.
+ *
+ * Those existing entries are NOT these numbers — measured 16-Sep-2026:
+ *   #receiptcreditCard offered 520000….5957 / 518868….0008 / 411111….1111 /
+ *   404137….6459, none of which is a BR08 value.
+ * So the two are different cards, and the guide's instruction wins. Selecting
+ * a lookalike from the dropdown would file receipts against a card RAA did not
+ * nominate.
+ *
+ * Source of truth is fixtures/dummy-cards.json; this is the allow-list that
+ * says those four numbers are the only ones this repo may ever hold.
+ */
+const BR08_CARDS = Object.freeze({
+  "Visa Credit": "4242424242424242",
+  "Visa Debit": "4400000000000008",
+  "Mastercard Credit": "5454545454545454",
+  "Mastercard Debit": "5555555555554444",
+});
+
+/** "Visa Credit" -> "Credit". The form auto-populates this; we assert it. */
+function subTypeOf(choice) {
+  return /debit/i.test(choice) ? "Debit" : "Credit";
+}
+
+/** "Visa Credit" -> "Visa". */
+function brandOf(choice) {
+  return /^master/i.test(choice) ? "Mastercard" : "Visa";
+}
+
+/**
+ * Step 6: "Expiry Date to be added is always Dec of the current year. E.g.
+ * 12/26 for this year, then when it's Jan 2027, it should be entered as
+ * 12/27."
+ *
+ * So it is not a fixed string and not today+n months — it is December of
+ * whatever year it is when the receipt is raised. Hard-coding "12/26" works
+ * until 1 January and then quietly files expired cards.
+ */
+function expiryForDate(when = new Date()) {
+  const yy = String(when.getFullYear()).slice(-2);
+  return "12/" + yy;
+}
+
 /** "  visa  debit " -> "Visa Debit"; "Mastercard" -> "Mastercard" (brand only). */
 function normaliseCardChoice(t) {
   const s = String(t || "").trim().replace(/\s+/g, " ").toLowerCase();
@@ -101,10 +147,7 @@ function choicesForBrand(brand) {
   return Object.keys(CARD_LABELS).filter((k) => k.startsWith(brand + " "));
 }
 
-/**
- * Pick the dropdown option whose text names this card. `options` is what the
- * page offers, as {value, label} — the caller reads it off #receiptCreditCard.
- */
+/** Find an existing card in `#receiptcreditCard`, for the dropdown path. */
 function matchCardOption(choice, options = []) {
   const re = CARD_LABELS[choice];
   if (!re) return null;
@@ -183,11 +226,12 @@ function loadDummyCards(env = process.env) {
     // against every registry VALUE, so a note with digits could have waved a
     // card through.
     if (type.startsWith("_")) continue;
-    if (number) out[normaliseCardType(type)] = String(number);
+    if (number) out[normaliseCardChoice(type)] = String(number);
   }
-  for (const type of ["Mastercard", "Visa"]) {
-    const v = env["DUMMY_CARD_" + type.toUpperCase()];
-    if (v) out[type] = String(v);
+  // DUMMY_CARD_VISA_CREDIT, DUMMY_CARD_MASTERCARD_DEBIT, …
+  for (const choice of Object.keys(BR08_CARDS)) {
+    const v = env["DUMMY_CARD_" + choice.toUpperCase().replace(/ /g, "_")];
+    if (v) out[choice] = String(v);
   }
   return out;
 }
@@ -238,7 +282,9 @@ function assertNotRealCard(number, dummies) {
  * `payerName` is BR01/BR05: the person actually paying, confirmed by a human.
  * It is NOT taken from the booking and NOT left as the dummy card's own name.
  */
-function decideSwipeReceipt(ipsi = {}, payerName, cardOptions = null) {
+function decideSwipeReceipt(ipsi = {}, payerName, opts = {}) {
+  const { cards = loadDummyCards(), now = new Date() } = opts;
+
   const missing = [];
   if (!ipsi.bookingNo) missing.push("booking number");
   if (!ipsi.txnRef) missing.push("IPSI transaction reference number");
@@ -267,7 +313,7 @@ function decideSwipeReceipt(ipsi = {}, payerName, cardOptions = null) {
     return {
       ok: false,
       reason:
-        `"${choice}" alone does not identify a card — Tramada holds a ${options.join(" and a ")}. ` +
+        `"${choice}" alone does not identify a card — BR08 lists a ${options.join(" and a ")}. ` +
         "BR02 says confirm the card type with the customer before populating it.",
       missing: ["credit or debit"],
       choices: options,
@@ -278,29 +324,37 @@ function decideSwipeReceipt(ipsi = {}, payerName, cardOptions = null) {
     return {
       ok: false,
       reason:
-        `Unrecognised card type "${ipsi.cardType}". Expected one of: ` +
-        Object.keys(CARD_LABELS).join(", ") + ".",
+        `Unrecognised card type "${ipsi.cardType}". BR08 names exactly: ` +
+        Object.keys(BR08_CARDS).join(", ") + ".",
       missing: ["a recognised card type"],
-      choices: Object.keys(CARD_LABELS),
+      choices: Object.keys(BR08_CARDS),
     };
   }
 
-  // If the caller read the dropdown off the page, confirm the card is really
-  // there before committing to a plan that depends on it.
-  let cardOption = null;
-  if (cardOptions) {
-    cardOption = matchCardOption(choice, cardOptions);
-    if (!cardOption) {
-      return {
-        ok: false,
-        reason:
-          `Tramada's card list has no "${choice}". It offered: ` +
-          cardOptions.map((o) => o.label).join(" | ") +
-          ". Not adding a card — RAA's dummies are configured in Tramada, and " +
-          "a missing one means the environment is wrong, not that we should type a number.",
-        missing: [choice + " in #receiptcreditCard"],
-      };
-    }
+  const number = cards[choice];
+  if (!number) {
+    return {
+      ok: false,
+      reason:
+        `No dummy card configured for ${choice}. BR08 names one; ` +
+        "add it to fixtures/dummy-cards.json.",
+      missing: ["dummy card for " + choice],
+    };
+  }
+
+  // BR04, enforced rather than trusted: this must be a nominated dummy.
+  assertNotRealCard(number, cards);
+
+  // And it must be the RIGHT dummy — a registry edited to point "Visa Credit"
+  // at the Mastercard number would otherwise sail through.
+  if (BR08_CARDS[choice] && digitsOf(number) !== BR08_CARDS[choice]) {
+    return {
+      ok: false,
+      reason:
+        `The configured ${choice} number does not match BR08. ` +
+        "fixtures/dummy-cards.json has been edited away from the guide.",
+      missing: ["the BR08 number for " + choice],
+    };
   }
 
   return {
@@ -311,18 +365,23 @@ function decideSwipeReceipt(ipsi = {}, payerName, cardOptions = null) {
       transactionType: SWIPE_FIXED.transactionType,
       bankAccount: SWIPE_FIXED.bankAccount,
       receivedFrom: SWIPE_FIXED.receivedFrom,
-      // BR05: the actual payer, never the card's own holder name.
+      // BR05: the actual payer, never the dummy card's default holder.
       payerName: String(payerName).trim(),
       amount: ipsi.amount,
       // The IPSI reference goes in verbatim. The "RRC - " prefix is a DVC rule
-      // (BR11 of the other guide) — adding it here breaks reconciliation,
-      // which matches on the bare IPSI reference.
+      // (BR11 of the other guide); adding it here breaks reconciliation, which
+      // matches on the bare IPSI reference.
       reference: String(ipsi.txnRef).trim(),
+      // Step 6 — raised through the form's "Add" button, not chosen from the
+      // cards already in #receiptcreditCard. See the note on BR08_CARDS.
       card: {
-        choice,                                   // "Mastercard Credit"
-        match: CARD_LABELS[choice],               // how to find it in the list
-        optionValue: cardOption ? cardOption.value : null,
-        optionLabel: cardOption ? cardOption.label : null,
+        category: SWIPE_FIXED.cardCategory, // "Personal"
+        number,
+        choice,                              // "Visa Credit"
+        type: brandOf(choice),               // auto-populates; asserted
+        subType: subTypeOf(choice),          // auto-populates; asserted
+        holder: String(payerName).trim(),    // BR05
+        expiry: expiryForDate(now),          // always December of this year
       },
     },
   };
@@ -332,6 +391,10 @@ module.exports = {
   SWIPE_FIXED,
   SWIPE_SELECTORS,
   CARD_LABELS,
+  BR08_CARDS,
+  subTypeOf,
+  brandOf,
+  expiryForDate,
   normaliseCardChoice,
   choicesForBrand,
   matchCardOption,

@@ -1324,3 +1324,29 @@ Two consequences, both unresolved:
 Until RAA answers, a run must not silently accept the difference — read
 `#receipttotalAmountToCharge` back before Issue and stop if it is not the
 amount that was asked for.
+
+### BR08 (17-Sep-2026) contradicts the cards already in the dropdown
+
+The updated guide names four dummy cards and tells step 6 to raise each one
+through the form's **Add** button:
+
+```
+Visa Credit        4242 4242 4242 4242
+Visa Debit         4400 0000 0000 0008
+Mastercard Credit  5454 5454 5454 5454
+Mastercard Debit   5555 5555 5555 4444
+```
+
+None of those is what `#receiptcreditCard` already holds (measured 16-Sep-2026:
+`520000….5957`, `518868….0008`, `411111….1111`, `404137….6459`). They are
+**different cards**, not the same ones described differently.
+
+So the dropdown path documented above is NOT the flow. Picking the lookalike —
+`411111….1111` for a Visa Credit, say — would file receipts against a card RAA
+never nominated. `payments-core.js` follows the guide and adds the BR08 card;
+`matchCardOption` is kept only for reading what is already there.
+
+Also from step 6, and easy to get wrong: **Expiry is always December of the
+current year**, `MM/YY`. Not a fixed `12/26` — on 1 January 2027 it becomes
+`12/27`. `expiryForDate()` derives it from the run's own clock, and the tests
+pin the rollover at both 31-Dec and 1-Jan.

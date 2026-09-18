@@ -93,67 +93,93 @@ check("BR04 refuses an empty number rather than passing it on", () => {
 
 /* -------------------------------------------------- the decision */
 
-// What #receiptcreditCard really offered on 16-Sep-2026, booking 13061.
-const CARD_OPTIONS = [
-  { value: "749", label: "0000 GC - C - Givex Gift Card" },
-  { value: "383", label: "520000....5957 CA - C - Mastercard Credit" },
-  { value: "382", label: "518868....0008 CA - C - Mastercard Debit" },
-  { value: "472", label: "0000 RV - C - Redemption Voucher" },
-  { value: "380", label: "411111....1111 VI - C - Visa Credit" },
-  { value: "381", label: "404137....6459 VI - C - Visa Debit" },
-];
+const CARDS = require("../fixtures/dummy-cards.json");
+const dec = (patch, payer = "Megan Gray", opts) =>
+  pc.decideSwipeReceipt({ ...IPSI, ...patch }, payer, opts);
+
+check("BR08 — the four numbers are exactly the guide's", () => {
+  assert.deepStrictEqual(pc.BR08_CARDS, {
+    "Visa Credit": "4242424242424242",
+    "Visa Debit": "4400000000000008",
+    "Mastercard Credit": "5454545454545454",
+    "Mastercard Debit": "5555555555554444",
+  });
+});
+
+check("fixtures/dummy-cards.json agrees with BR08", () => {
+  for (const [choice, number] of Object.entries(pc.BR08_CARDS)) {
+    assert.strictEqual(String(CARDS[choice] || "").replace(/\D/g, ""), number, choice);
+  }
+});
+
+check("each card type yields its own BR08 number", () => {
+  for (const [choice, number] of Object.entries(pc.BR08_CARDS)) {
+    const d = dec({ cardType: choice });
+    assert.ok(d.ok, d.reason);
+    assert.strictEqual(d.receipt.card.number, number, choice);
+  }
+});
+
+check("a registry pointing a type at the wrong BR08 number is refused", () => {
+  // Swapping two valid dummies keeps every number legitimate, so the PAN guard
+  // is happy — only the per-type check catches it.
+  const swapped = { ...CARDS, "Visa Credit": pc.BR08_CARDS["Mastercard Credit"] };
+  const d = dec({ cardType: "Visa Credit" }, "Megan Gray", { cards: swapped });
+  assert.ok(!d.ok, "a Mastercard number was accepted as the Visa Credit dummy");
+  assert.ok(/BR08/.test(d.reason), d.reason);
+});
 
 check("a complete IPSI approval produces the whole receipt", () => {
-  const d = pc.decideSwipeReceipt({ ...IPSI, cardType: "Mastercard Credit" }, "Megan Gray", CARD_OPTIONS);
+  const d = dec({ cardType: "Mastercard Credit" });
   assert.ok(d.ok, d.reason);
   assert.strictEqual(d.bookingNo, "13061");
   assert.strictEqual(d.receipt.transactionType, "Credit Card Swipe");
   assert.strictEqual(d.receipt.bankAccount, "[TRUST] Trust Account");
   assert.strictEqual(d.receipt.receivedFrom, "RAA of SA Limited (Retail)");
   assert.strictEqual(d.receipt.amount, "1289.00");
+  assert.strictEqual(d.receipt.card.category, "Personal");
 });
 
-check("the decision carries NO card number, only a selection", () => {
-  // The whole §4 argument rests on this: nothing downstream can type a PAN
-  // because nothing upstream ever produced one.
-  const d = pc.decideSwipeReceipt({ ...IPSI, cardType: "Visa Debit" }, "Megan Gray", CARD_OPTIONS);
-  assert.ok(d.ok);
-  assert.strictEqual(d.receipt.card.number, undefined);
-  assert.strictEqual(d.receipt.card.optionValue, "381");
-  assert.strictEqual(d.receipt.card.choice, "Visa Debit");
-  const flat = JSON.stringify(d);
-  assert.ok(!/\b\d{13,19}\b/.test(flat), "a long digit run reached the decision: " + flat);
+check("brand and sub-type are derived, not left to the form", () => {
+  assert.strictEqual(dec({ cardType: "Visa Debit" }).receipt.card.type, "Visa");
+  assert.strictEqual(dec({ cardType: "Visa Debit" }).receipt.card.subType, "Debit");
+  assert.strictEqual(dec({ cardType: "Mastercard Credit" }).receipt.card.type, "Mastercard");
+  assert.strictEqual(dec({ cardType: "Mastercard Credit" }).receipt.card.subType, "Credit");
 });
 
-check("each card type picks its own row, not merely a matching brand", () => {
-  const pick = (t) => pc.decideSwipeReceipt({ ...IPSI, cardType: t }, "Megan Gray", CARD_OPTIONS).receipt.card.optionValue;
-  assert.strictEqual(pick("Mastercard Credit"), "383");
-  assert.strictEqual(pick("Mastercard Debit"), "382");
-  assert.strictEqual(pick("Visa Credit"), "380");
-  assert.strictEqual(pick("Visa Debit"), "381");
+/* ------------------------------------------------- step 6, the expiry */
+
+check("expiry is December of the current year, in MM/YY", () => {
+  assert.strictEqual(pc.expiryForDate(new Date("2026-09-17")), "12/26");
 });
+
+check("expiry rolls over on 1 January, not on a fixed string", () => {
+  // The guide's own example: "when it's Jan 2027, it should be entered as 12/27".
+  assert.strictEqual(pc.expiryForDate(new Date("2026-12-31")), "12/26");
+  assert.strictEqual(pc.expiryForDate(new Date("2027-01-01")), "12/27");
+  assert.strictEqual(pc.expiryForDate(new Date("2030-06-15")), "12/30");
+});
+
+check("the decision uses the run's date for the expiry", () => {
+  const d = dec({ cardType: "Visa Credit" }, "Megan Gray", { now: new Date("2028-03-02") });
+  assert.strictEqual(d.receipt.card.expiry, "12/28");
+});
+
+/* ------------------------------------------------------------- BR02 */
 
 check("BR02 — a bare brand stops and offers the two choices", () => {
   for (const brand of ["Mastercard", "Visa"]) {
-    const d = pc.decideSwipeReceipt({ ...IPSI, cardType: brand }, "Megan Gray", CARD_OPTIONS);
+    const d = dec({ cardType: brand });
     assert.ok(!d.ok, brand + " alone was accepted");
     assert.ok(/BR02/.test(d.reason), d.reason);
     assert.deepStrictEqual(d.choices, [brand + " Credit", brand + " Debit"]);
   }
 });
 
-check("a card type Tramada does not offer stops rather than adding one", () => {
-  const thin = CARD_OPTIONS.filter((o) => !/Debit/.test(o.label));
-  const d = pc.decideSwipeReceipt({ ...IPSI, cardType: "Visa Debit" }, "Megan Gray", thin);
+check("an unrecognised card type is refused with the BR08 set", () => {
+  const d = dec({ cardType: "Amex" });
   assert.ok(!d.ok);
-  assert.ok(/no "Visa Debit"/.test(d.reason), d.reason);
-  assert.ok(/not.*typ/i.test(d.reason), "it did not rule out typing a number: " + d.reason);
-});
-
-check("an unrecognised card type is refused with the valid set", () => {
-  const d = pc.decideSwipeReceipt({ ...IPSI, cardType: "Amex" }, "Megan Gray", CARD_OPTIONS);
-  assert.ok(!d.ok);
-  assert.deepStrictEqual(d.choices, ["Mastercard Credit", "Mastercard Debit", "Visa Credit", "Visa Debit"]);
+  assert.deepStrictEqual(d.choices, Object.keys(pc.BR08_CARDS));
 });
 
 check("card choice is normalised from loose input", () => {
@@ -161,24 +187,18 @@ check("card choice is normalised from loose input", () => {
   assert.strictEqual(p("  visa   DEBIT "), "Visa Debit");
   assert.strictEqual(p("mastercard credit"), "Mastercard Credit");
   assert.strictEqual(p("MasterCard"), "Mastercard");
-  assert.strictEqual(p("Visa"), "Visa");
 });
 
-check("the gift card and voucher rows are never matched", () => {
-  // They are in the same dropdown and must not be reachable by a card type.
-  for (const t of Object.keys(pc.CARD_LABELS)) {
-    const o = pc.matchCardOption(t, CARD_OPTIONS);
-    assert.ok(o && !/Givex|Voucher/i.test(o.label), t + " matched " + (o && o.label));
-  }
-});
+/* ------------------------------------------------------------- BR05 */
 
-check("BR05 — the payer name overrides, it is not the card's holder", () => {
-  const d = pc.decideSwipeReceipt({ ...IPSI, cardType: "Visa Credit" }, "Someone Else", CARD_OPTIONS);
+check("BR05 — the payer name overrides both payer and card holder", () => {
+  const d = dec({ cardType: "Visa Credit" }, "Someone Else");
   assert.strictEqual(d.receipt.payerName, "Someone Else");
+  assert.strictEqual(d.receipt.card.holder, "Someone Else");
 });
 
 check("the IPSI reference goes in verbatim, with no RRC prefix", () => {
-  const d = pc.decideSwipeReceipt({ ...IPSI, cardType: "Visa Credit" }, "Megan Gray", CARD_OPTIONS);
+  const d = dec({ cardType: "Visa Credit" });
   assert.strictEqual(d.receipt.reference, "1792412290cXt4Z");
   assert.ok(!/^RRC/.test(d.receipt.reference));
 });
@@ -201,16 +221,22 @@ for (const [field, patch] of [
   ["card type", { cardType: "" }],
 ]) {
   check("stops when the " + field + " is missing", () => {
-    const d = pc.decideSwipeReceipt({ ...IPSI, cardType: "Visa Credit", ...patch }, "Megan Gray", CARD_OPTIONS);
+    const d = dec({ cardType: "Visa Credit", ...patch });
     assert.ok(!d.ok, "it went ahead without the " + field);
     assert.ok(d.reason.includes(field.split(" ")[0]), d.reason);
   });
 }
 
 check("BR01 — stops when nobody confirmed the payer", () => {
-  const d = pc.decideSwipeReceipt({ ...IPSI, cardType: "Visa Credit" }, "   ", CARD_OPTIONS);
+  const d = dec({ cardType: "Visa Credit" }, "   ");
   assert.ok(!d.ok);
   assert.ok(/BR01/.test(d.reason), d.reason);
+});
+
+check("an empty registry stops rather than inventing a number", () => {
+  const d = dec({ cardType: "Visa Credit" }, "Megan Gray", { cards: {} });
+  assert.ok(!d.ok);
+  assert.ok(/BR08/.test(d.reason), d.reason);
 });
 
 /* ------------------------------------------- public test cards (BR04 edge) */
@@ -229,9 +255,12 @@ check("a public test card is still refused unless it is in the registry", () => 
 
 /* ------------------------------------------------------- the registry */
 
-check("env overrides the file", () => {
-  const d = pc.loadDummyCards({ DUMMY_CARD_VISA: "4000000000000010" });
-  assert.strictEqual(d.Visa, "4000000000000010");
+check("env overrides the file, per card type", () => {
+  // BR08 names four cards, so the env vars are per type too — DUMMY_CARD_VISA
+  // alone is now meaningless and must not silently set anything.
+  const d = pc.loadDummyCards({ DUMMY_CARD_VISA_CREDIT: "4000000000000010" });
+  assert.strictEqual(d["Visa Credit"], "4000000000000010");
+  assert.strictEqual(d["Visa Debit"], pc.BR08_CARDS["Visa Debit"], "it clobbered the others");
 });
 
 check("with no env set, the registry is exactly the shipped file", () => {
@@ -243,7 +272,7 @@ check("with no env set, the registry is exactly the shipped file", () => {
   const d = pc.loadDummyCards({});
   for (const [k, v] of Object.entries(file)) {
     if (k.startsWith("_") || !v) continue;
-    assert.strictEqual(d[pc.normaliseCardType(k)], v, "registry lost " + k);
+    assert.strictEqual(d[pc.normaliseCardChoice(k)], v, "registry lost " + k);
   }
 });
 
@@ -255,17 +284,17 @@ check("the file's _comment never becomes a card", () => {
   }
 });
 
-check("every shipped card is either blank or a known public test card", () => {
+check("every shipped card is one of BR08's four", () => {
   // A REAL card number must never be committed to this repo. If one ever is,
   // this fails on the next run rather than on the next audit.
   const file = require("../fixtures/dummy-cards.json");
   for (const [k, v] of Object.entries(file)) {
     if (k.startsWith("_") || !v) continue;
     assert.ok(
-      pc.publicTestCardName(v),
-      k + " in fixtures/dummy-cards.json is not a recognised public test card. " +
-        "If it is RAA's real dummy from Heath, add it to PUBLIC_TEST_CARDS' " +
-        "allowed list deliberately. If it is a customer's card, remove it now."
+      Object.values(pc.BR08_CARDS).includes(String(v).replace(/\D/g, "")),
+      k + " in fixtures/dummy-cards.json is not one of BR08's four numbers. " +
+        "If the guide changed, update BR08_CARDS deliberately. If it is a " +
+        "customer's card, remove it now."
     );
   }
 });
