@@ -718,6 +718,115 @@ header.top { display: none !important }
     return esc((run.statementDate || 'no settlement date') + ' · uploaded ' + when + nuvei + ' · ' + tally);
   }
 
+  /* ── IPSI: raise the receipts, before reconciling them ──────────────────
+     "Payments Guide - IPSI.docx" is the other half of this card's file. The
+     same settlement CSV that gets reconciled also carries everything needed to
+     raise the Credit Card Swipe receipts: booking number, transaction
+     reference, amount and cardholder.
+
+     So it lives here rather than on a card of its own — one file, one screen,
+     and the order reads correctly: raise the receipts, then reconcile them.
+
+     ONE thing the file cannot say is whether the customer paid by credit or
+     debit. BR02 says that is confirmed with the customer, so it is asked once
+     for the run and never inferred from the "VISA" the file records. */
+  const ipsiPay = { cardType: '', plan: null, error: '', busy: false };
+
+  function ipsiPayBlock() {
+    const s = source.ipsi;
+    if (!s || !s.rows || !s.rows.length) return '';
+
+    const choices = ['Visa Credit', 'Visa Debit', 'Mastercard Credit', 'Mastercard Debit'];
+    const opts = ['<option value="">Credit or debit?\u2026</option>']
+      .concat(choices.map((c) =>
+        '<option value="' + c + '"' + (ipsiPay.cardType === c ? ' selected' : '') + '>' + c + '</option>'))
+      .join('');
+
+    const plan = ipsiPay.plan;
+    const summary = !plan ? '' :
+      '<div class="muted" style="font-size:12px;margin-top:8px">' +
+        '<b>' + plan.ready + '</b> receipt' + (plan.ready === 1 ? '' : 's') + ' ready' +
+        (plan.skipped ? ', <b>' + plan.skipped + '</b> skipped' : '') +
+        ' \u00b7 all as ' + esc(plan.cardType) +
+      '</div>' +
+      '<div style="margin-top:6px;max-height:150px;overflow:auto">' +
+        plan.plan.map((p) =>
+          '<div style="font-size:11.5px;padding:2px 0;color:' + (p.skip ? 'var(--ink-3,#7a7a90)' : 'inherit') + '">' +
+            (p.skip ? '\u2014 ' : '\u2713 ') + esc(String(p.bookingNo || '?')) + ' \u00b7 ' +
+            esc(String(p.txnRef || '')) + ' \u00b7 $' + esc(String(p.amount || '')) +
+            (p.skip ? ' \u2014 ' + esc(p.skip) : ' \u2192 ' + esc(p.payerName || '')) +
+          '</div>').join('') +
+      '</div>';
+
+    return '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line-2,#ececf4)">' +
+      '<div style="font-size:12px;font-weight:600;margin-bottom:5px">Raise the receipts first</div>' +
+      '<div class="muted" style="font-size:11.5px;line-height:1.5;margin-bottom:7px">' +
+        'Files one Credit Card Swipe receipt per booking, using RAA\u2019s dummy card (BR04). ' +
+        'The charge itself was taken by a person in IPSI \u2014 nothing here touches it (BR07).' +
+      '</div>' +
+      '<div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">' +
+        '<select class="btn" id="ipsiPayCard" style="max-width:190px">' + opts + '</select>' +
+        '<button class="btn sm indigo" id="ipsiPayPlan"' + (ipsiPay.cardType ? '' : ' disabled') + '>' +
+          (ipsiPay.busy ? 'Checking\u2026' : 'Check receipts') + '</button>' +
+      '</div>' +
+      (ipsiPay.error ? '<div style="color:var(--err,#b3261e);font-size:11.5px;margin-top:7px">' + esc(ipsiPay.error) + '</div>' : '') +
+      summary +
+      (plan && plan.ready
+        ? '<div class="muted" style="font-size:11px;margin-top:8px">To file them, run ' +
+          '<code>npm run ipsi -- --card "' + esc(plan.cardType) + '" --issue</code> ' +
+          '\u2014 it drives the Chrome you are signed into Tramada on.</div>'
+        : '') +
+      '</div>';
+  }
+
+  function wireIpsiPay() {
+    const sel = document.getElementById('ipsiPayCard');
+    if (sel) sel.onchange = () => { ipsiPay.cardType = sel.value; ipsiPay.plan = null; ipsiPay.error = ''; render(); };
+    const btn = document.getElementById('ipsiPayPlan');
+    if (btn) btn.onclick = () => planIpsiPayments();
+  }
+
+  /* The page sends the rows it already parsed and renders the answer. Every
+     rule — BR02, BR04, BR05, BR08 — is applied on the server, so what the card
+     shows and what the run files cannot drift apart. */
+  async function planIpsiPayments() {
+    const s = source.ipsi;
+    if (!s || !ipsiPay.cardType) return;
+    ipsiPay.busy = true; ipsiPay.error = ''; render();
+    try {
+      const r = await fetch('/api/ipsi-payment/plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cardType: ipsiPay.cardType, rows: s.rows.map(ipsiPayRow) }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+      ipsiPay.plan = data;
+    } catch (err) {
+      ipsiPay.plan = null;
+      ipsiPay.error = err.message;
+    } finally {
+      ipsiPay.busy = false;
+      render();
+    }
+  }
+
+  /* The card's parsed rows use this project's own names; the payments side
+     wants the guide's. Mapped in one place so a rename in either breaks here
+     and not silently three screens away. */
+  function ipsiPayRow(r) {
+    return {
+      bookingNo: r.bookingNo || r.booking || '',
+      txnRef: r.reference || r.txnRef || '',
+      amount: r.amount != null ? r.amount : r.transactionAmount,
+      /* parseIpsiRows calls it `cardHolder`. Getting this name wrong made every
+         row skip with "missing payer name (BR01)" — a rule refusing a value the
+         file was carrying all along. */
+      cardholderName: r.cardHolder || r.cardHolderName || r.cardholderName || r.payerName || '',
+      brand: r.cardType || r.brand || '',
+    };
+  }
+
   function ipsiPendingBlock() {
     const rows = ipsiPending.map((r) =>
       '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;' +
@@ -1043,7 +1152,7 @@ header.top { display: none !important }
           '<div class="muted rc-hint" data-hint="' + kind + '" style="margin-top:8px">' + hintSeed + '</div>' +
           '<div class="card-slot" data-slot="' + kind + '"></div>' +
           '<div class="actions"><button class="btn sm indigo" data-choose="' + kind + '">Choose file</button></div>' +
-          (kind === 'ipsi' ? ipsiPendingBlock() : '') +
+          (kind === 'ipsi' ? ipsiPendingBlock() + ipsiPayBlock() : '') +
           '</div></div>';
       }
 
@@ -1084,7 +1193,7 @@ header.top { display: none !important }
         '<button class="btn sm ghost" data-clear="' + kind + '">Remove</button>' +
         '</div>' +
         (s.previewOpen ? previewTable(kind) : '') +
-        (kind === 'ipsi' ? ipsiPendingBlock() : '') +
+        (kind === 'ipsi' ? ipsiPendingBlock() + ipsiPayBlock() : '') +
         '</div></div>';
     }).join('');
 
@@ -1160,6 +1269,17 @@ header.top { display: none !important }
     // next time anything else (a tick, a preview toggle) triggers a re-render.
     const nuveiField = grid.querySelector('#ipsiNuvei');
     if (nuveiField) nuveiField.oninput = () => { ipsiNuvei = nuveiField.value; syncIpsiTotal(); };
+
+    /* The IPSI "raise the receipts" controls live inside #tileGrid too, so they
+       are thrown away and rebuilt with every render and must be re-attached
+       HERE, alongside the others.
+       
+       This was wired from syncIpsiTotal() only, which runs on a NUVEI
+       keystroke — so on a fresh load the dropdown did nothing and the button
+       stayed disabled. "Check receipts" looked broken until you happened to
+       retype the NUVEI amount, which is exactly what made it seem to work
+       once and then not. */
+    wireIpsiPay();
 
     /* The hints are rebuilt empty above (`hintSeed`), so anything a card was
        saying has just been thrown away — including "still reading the
@@ -1480,6 +1600,7 @@ header.top { display: none !important }
     if (run) run.disabled = !on.length || running || invalidCombo || ipsiBad || totalBad || busy;
     paintFigures();
     if (!invalidCombo) on.forEach(paintHint);
+
   }
 
   /* Re-checks BR01 on every keystroke in the NUVEI field WITHOUT a full
@@ -1492,6 +1613,7 @@ header.top { display: none !important }
     // Through paintHint, not a direct hint('ipsi', …) — that would replace the
     // whole line, including the "N rows skipped" note sitting above it.
     paintHint('ipsi');
+    wireIpsiPay();
   }
 
   /* Every loaded report's rows, in the order the run will do them: BPay first,
@@ -3485,16 +3607,15 @@ header.top { display: none !important }
       box.oninput = () => { search = box.value.trim().toLowerCase(); render(); };
     }
 
-    /* "Ask the agent" is wired — but to IPSI customer payments, not to the
-       mockup's reconciliation Q&A. The scope bar (statement date / streams)
-       belongs to that older idea and would be answering nothing, so it goes;
-       the panel, the composer and the launcher stay. */
-    ['askScope', 'askScopePop', 'askStale', 'askCtx', 'askHistBtn', 'askHist'].forEach((id) => {
-      const el = document.getElementById(id);
-      if (el) el.style.display = 'none';
-    });
-    const scope = document.querySelector('.ask-scope');
-    if (scope) scope.style.display = 'none';
+    /* "Ask the agent" is off again. It was briefly wired to IPSI customer
+       payments; that job now lives on the IPSI card itself, where the file it
+       needs is already uploaded, so a floating chat window asking for the same
+       four values was a second way to do one thing. The server endpoints it
+       used (/api/ipsi-payment/*) are still there and still tested. */
+    const fab = document.getElementById('askFab');
+    if (fab) fab.style.display = 'none';
+    const ask = document.getElementById('askPanel');
+    if (ask) ask.style.display = 'none';
 
     // The header's statement chip, its "Agent running · step 3 of 4" state and
     // its Pause / Re-run buttons all live in .top, which this project hides
@@ -3507,170 +3628,177 @@ header.top { display: none !important }
     });
   }
 
-  /* Bubble styling for the payments conversation. Injected rather than added
-     to the mockup's stylesheet, which is client-supplied and never edited. */
-  (function payChatStyles() {
+  /* ═════════════════ TOKIO MARINE — the monthly reconciliation ═════════════
+     Four spreadsheets, uploaded together, for one reporting month (BR01).
+
+     It is NOT a fifth entry in SOURCES. Those are the daily cards: one file
+     each, a Transaction Total, and a run order that BPay has to lead. Tokio is
+     monthly, takes four files at once, and the guide is explicit that NO total
+     is entered — the figure to balance to is not known until Retail has been
+     excluded and the exceptions resolved. Putting it in SOURCES would drag it
+     into RUN_ORDER and the BPay-first rule, neither of which applies.
+
+     The reporting month is not asked for either: the files carry no month, so
+     it is derived from the B2B report's own dates, shown, and left editable. */
+  const TOKIO_FILES = [
+    { kind: 'b2b', title: 'Tokio Marine B2B report',
+      note: 'The source of truth. Passenger name columns must already be removed.' },
+    { kind: 'payment', title: 'Tramada Payment Report',
+      note: 'What is sitting in Tramada to be paid — policy number and amount.' },
+    { kind: 'costing', title: 'Tramada Costing Report',
+      note: 'Whether a costing exists against the policy, and whether it is invoiced.' },
+    { kind: 'rcc', title: 'RCC report (Finance One)',
+      note: 'Policies receipted through Retail. Anything here is not Travel\u2019s to reconcile.' },
+  ];
+  const TOKIO_ACCEPT =
+    '.csv,text/csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+  const tokio = { files: {}, month: null, result: null, busy: false, error: '' };
+
+  function mountTokio() {
+    const grid = document.getElementById('tileGrid');
+    if (!grid || document.getElementById('tokioCard')) return;
+
     const css = document.createElement('style');
     css.textContent = [
-      '.paymsg{display:flex;max-width:100%}',
-      '.paymsg.me{justify-content:flex-end}',
-      '.paytext{margin:0;font:inherit;white-space:pre-wrap;word-break:break-word;',
-      '  border-radius:11px;padding:9px 12px;font-size:12.5px;line-height:1.5;max-width:88%}',
-      '.paymsg.me .paytext{background:var(--indigo,#2d1b8e);color:#fff;border-bottom-right-radius:3px}',
-      '.paymsg.agent .paytext{background:#f4f4f8;color:#1a1a2e;border-bottom-left-radius:3px}',
-      'pre.paytext{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}',
-      '.paymsg.ok .paytext{background:#e8f5ec;color:#14532d}',
-      '.paymsg.err .paytext{background:#fdecec;color:#8a1c1c}',
-      '.paychips{display:flex;gap:6px;flex-wrap:wrap;margin-top:-6px}',
+      '#tokioCard{grid-column:1/-1;background:#fff;border:1px solid var(--line,#e3e3ee);',
+      '  border-radius:12px;padding:18px 20px;margin-top:4px}',
+      '#tokioCard h3{margin:0 0 4px;font-size:15px;display:flex;align-items:center;gap:8px}',
+      '#tokioCard .tk-sub{color:var(--ink-2,#5a5a72);font-size:12.5px;margin:0 0 14px}',
+      '#tokioCard .tk-slots{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}',
+      '.tk-slot{border:1px solid var(--line-2,#ececf4);border-radius:9px;padding:11px 12px}',
+      '.tk-slot b{display:block;font-size:12.5px;margin-bottom:3px}',
+      '.tk-slot .tk-note{font-size:11px;color:var(--ink-3,#7a7a90);line-height:1.45}',
+      '.tk-slot .tk-have{font-size:11.5px;color:#14532d;margin-top:7px;word-break:break-all}',
+      '.tk-slot .tk-btn{margin-top:8px}',
+      '#tokioCard .tk-month{margin-top:16px;padding-top:14px;border-top:1px solid var(--line-2,#ececf4)}',
+      '#tokioCard .tk-month label{font-size:11px;font-weight:600;display:block;margin-bottom:3px}',
+      '#tokioCard .tk-warn{color:#8a5a00;font-size:11.5px;margin-top:6px;line-height:1.5}',
+      '#tokioCard .tk-err{color:var(--err,#b3261e);font-size:12px;margin-top:10px}',
+      '#tokioCard .tk-counts{display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:12.5px}',
+      '#tokioCard .tk-counts b{font-size:17px;display:block}',
     ].join('\n');
     document.head.appendChild(css);
-  })();
 
-  /* ═══════════════════ ASK THE AGENT — IPSI customer payments ═══════════════
-     The guide ("Payments Guide - IPSI.docx") asks for this to be a
-     conversation: the consultant pastes the IPSI Approved screen, the agent
-     asks for whatever it could not read, confirms who actually paid, and then
-     stops for a human to approve before anything is written to Tramada.
-
-     None of the decisions are made here. The page posts what was typed and
-     renders what comes back — payments-chat.js on the server holds the rules,
-     so the browser cannot drift from them. */
-  function mountPaymentsChat() {
-    const app = document.querySelector('.app');
-    const fab = document.getElementById('askFab');
-    const panel = document.getElementById('askPanel');
-    const body = document.getElementById('askBody');
-    const input = document.getElementById('askIn');
-    const send = document.getElementById('askSend');
-    if (!app || !fab || !panel || !body || !input || !send) return;
-
-    let sessionId = null;
-    let busy = false;
-
-    const open = (on) => {
-      app.classList.toggle('ask-on', on);
-      if (on) setTimeout(() => input.focus(), 40);
-    };
-
-    fab.onclick = () => open(!app.classList.contains('ask-on'));
-    const close = document.getElementById('askClose');
-    if (close) close.onclick = () => open(false);
-    const wide = document.getElementById('askWide');
-    if (wide) wide.onclick = () => app.classList.toggle('ask-wide');
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && app.classList.contains('ask-on')) open(false);
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); open(true); }
-    });
-
-    const el = (cls, text) => {
-      const d = document.createElement('div');
-      d.className = cls;
-      d.textContent = text;
-      return d;
-    };
-
-    function bubble(who, text) {
-      const row = document.createElement('div');
-      row.className = 'paymsg ' + who;
-      /* The confirmation summary is a column of aligned values, so it is
-         rendered in a monospace block — collapsing its whitespace would turn
-         the one screen a human is meant to CHECK into a paragraph. */
-      const pre = document.createElement(text.indexOf('\n') >= 0 ? 'pre' : 'div');
-      pre.className = 'paytext';
-      pre.textContent = text;
-      row.appendChild(pre);
-      body.appendChild(row);
-      body.scrollTop = body.scrollHeight;
-      return row;
-    }
-
-    function chips(options) {
-      if (!options || !options.length) return;
-      const row = document.createElement('div');
-      row.className = 'paychips';
-      options.forEach((o) => {
-        const b = document.createElement('button');
-        b.className = 'btn sm';
-        b.textContent = o;
-        b.onclick = () => { if (!busy) say(o); };
-        row.appendChild(b);
-      });
-      body.appendChild(row);
-      body.scrollTop = body.scrollHeight;
-    }
-
-    function render(data) {
-      if (data.error) { bubble('agent err', data.error); return; }
-      sessionId = data.id || sessionId;
-      bubble('agent' + (data.ready ? ' ok' : ''), data.message);
-      if (data.awaiting === 'confirm') chips(['Yes, issue it', 'No, cancel']);
-      else if (data.choices) chips(data.choices);
-      else if (data.suggestion) chips(['Yes — ' + data.suggestion]);
-    }
-
-    async function post(url, text) {
-      busy = true;
-      send.disabled = true;
-      try {
-        const r = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text }),
-        });
-        const data = await r.json();
-        if (!r.ok && !data.message) throw new Error(data.error || ('HTTP ' + r.status));
-        render(data);
-      } catch (err) {
-        bubble('agent err', 'Could not reach the agent: ' + err.message);
-      } finally {
-        busy = false;
-        send.disabled = false;
-        input.focus();
-      }
-    }
-
-    function say(text) {
-      const t = String(text == null ? '' : text).trim();
-      if (!t || busy) return;
-      bubble('me', t);
-      input.value = '';
-      input.style.height = 'auto';
-      if (sessionId) post('/api/ipsi-payment/' + encodeURIComponent(sessionId) + '/reply', t);
-      else post('/api/ipsi-payment/start', t);
-    }
-
-    send.onclick = () => say(input.value);
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey || !e.shiftKey)) { e.preventDefault(); say(input.value); }
-    });
-    input.addEventListener('input', () => {
-      input.style.height = 'auto';
-      input.style.height = Math.min(input.scrollHeight, 160) + 'px';
-    });
-
-    input.placeholder = 'Paste the IPSI “Approved” screen…';
-    const note = document.querySelector('.ask-note');
-    /* The mockup's note said nothing is written to Tramada from here. Once the
-       confirmation is wired that stops being true, and a stale reassurance on a
-       screen that issues money is worse than none. */
-    if (note) note.textContent = 'IPSI customer payments. Nothing is written to Tramada until you confirm.';
-
-    body.innerHTML = '';
-    const intro = el('ask-empty', '');
-    intro.innerHTML =
-      '<div class="mk">✦</div><h5>Raise an IPSI receipt</h5>' +
-      '<div>Paste the IPSI “Approved” screen and I’ll prepare the Credit Card Swipe ' +
-      'receipt. I’ll ask for anything I can’t read, and show you everything before ' +
-      'it goes to Tramada.</div>';
-    body.appendChild(intro);
+    const card = document.createElement('div');
+    card.id = 'tokioCard';
+    grid.parentNode.insertBefore(card, grid.nextSibling);
+    renderTokio();
   }
+
+  function renderTokio() {
+    const card = document.getElementById('tokioCard');
+    if (!card) return;
+    const have = TOKIO_FILES.filter((f) => tokio.files[f.kind]).length;
+
+    const slots = TOKIO_FILES.map((f) => {
+      const got = tokio.files[f.kind];
+      return '<div class="tk-slot"><b>' + esc(f.title) + '</b>' +
+        '<div class="tk-note">' + esc(f.note) + '</div>' +
+        (got ? '<div class="tk-have">\u2713 ' + esc(got.name) + '</div>' : '') +
+        '<div class="tk-btn"><button class="btn sm" data-tokio-pick="' + f.kind + '">' +
+        (got ? 'Replace' : 'Choose file') + '</button></div></div>';
+    }).join('');
+
+    const m = tokio.result && tokio.result.month;
+    const monthBlock = !m ? '' :
+      '<div class="tk-month">' +
+        '<label for="tokioMonth">Reporting month' +
+          (m.overridden ? ' \u2014 set by you' : ' \u2014 read from the B2B report') + '</label>' +
+        '<input type="month" id="tokioMonth" value="' + esc(m.key) + '" style="padding:6px 8px">' +
+        ' <span class="muted" style="font-size:12px">' + esc(m.label || '') +
+          (m.counted ? ' \u00b7 ' + m.counted + ' of ' + tokio.result.counts.total + ' rows' : '') + '</span>' +
+        (m.warnings || []).map((w) => '<div class="tk-warn">\u26a0 ' + esc(w) + '</div>').join('') +
+        '<div class="muted" style="font-size:11.5px;margin-top:8px">Payment reference <b>' +
+          esc(tokio.result.labels.paymentReference) + '</b> \u00b7 session <b>' +
+          esc(tokio.result.labels.sessionLabel) + '</b></div>' +
+      '</div>';
+
+    const c = tokio.result && tokio.result.counts;
+    const counts = !c ? '' :
+      '<div class="tk-counts">' +
+        '<div><b>' + c.travel + '</b>Travel \u2014 to reconcile</div>' +
+        '<div><b>' + c.retail + '</b>Retail \u2014 removed</div>' +
+        '<div><b>' + c.exceptions + '</b>Exceptions \u2014 for a human</div>' +
+        (c.undocumented ? '<div><b>' + c.undocumented + '</b>Not covered by the guide</div>' : '') +
+      '</div>';
+
+    card.innerHTML =
+      '<h3>Tokio Marine <span class="badge ' + (have === 4 ? 'b-ok' : 'b-mute') + '">' +
+        (have === 4 ? (tokio.result ? 'consolidated' : 'ready') : have + ' of 4 uploaded') + '</span></h3>' +
+      '<p class="tk-sub">Monthly. All four files must be for the same reporting month. ' +
+        'No transaction total is entered \u2014 the figure to balance to is not known until ' +
+        'Retail is excluded and the exceptions are resolved.</p>' +
+      '<div class="tk-slots">' + slots + '</div>' +
+      (tokio.busy ? '<div class="muted" style="margin-top:12px">Reading the four files\u2026</div>' : '') +
+      (tokio.error ? '<div class="tk-err">' + esc(tokio.error) + '</div>' : '') +
+      monthBlock + counts;
+
+    card.querySelectorAll('[data-tokio-pick]').forEach((b) => {
+      b.onclick = () => pickTokioFile(b.getAttribute('data-tokio-pick'));
+    });
+    const mi = document.getElementById('tokioMonth');
+    if (mi) mi.onchange = () => { tokio.month = mi.value; sendTokio(); };
+  }
+
+  function pickTokioFile(kind) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = TOKIO_ACCEPT;
+    input.onchange = () => {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const fr = new FileReader();
+      fr.onload = () => {
+        let bin = '';
+        const bytes = new Uint8Array(fr.result);
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        tokio.files[kind] = { name: file.name, base64: btoa(bin) };
+        tokio.error = '';
+        renderTokio();
+        if (TOKIO_FILES.every((f) => tokio.files[f.kind])) sendTokio();
+      };
+      fr.readAsArrayBuffer(file);
+    };
+    input.click();
+  }
+
+  /* The server holds every rule. The page posts the four files and renders
+     what comes back — it never classifies a row itself, so the dashboard and
+     the export can never drift from each other. */
+  async function sendTokio() {
+    if (!TOKIO_FILES.every((f) => tokio.files[f.kind])) return;
+    tokio.busy = true;
+    tokio.error = '';
+    renderTokio();
+    try {
+      const body = { files: tokio.files };
+      if (tokio.month) body.month = tokio.month;
+      const r = await fetch('/api/tokio/parse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+      tokio.result = data;
+      tokio.month = data.month.key;
+    } catch (err) {
+      tokio.result = null;
+      tokio.error = err.message;
+    } finally {
+      tokio.busy = false;
+      renderTokio();
+    }
+  }
+
 
   document.addEventListener('DOMContentLoaded', () => {
     // renderOverview first: the overview is wired now, and markSamples is only
     // allowed to be right about screens that still are not.
     mountCheatSheetScreen();
     mountNav(); mountSources(); renderOverview(); markSamples(); hideUnwired();
-    mountPaymentsChat();
+    mountTokio();
     mountAccountNav();
     render(); connect(); loadOverview(); loadCheatSheets(); loadIpsiPending();
     /* Open on Sources & upload, not on Run overview.

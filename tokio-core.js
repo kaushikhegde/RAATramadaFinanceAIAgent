@@ -145,6 +145,104 @@ function classify({ branch, inRcc, inPayment, inCosting }) {
   };
 }
 
+/* ------------------------------------------ the reporting month, derived */
+
+const MONTH_NAMES = ["January","February","March","April","May","June",
+  "July","August","September","October","November","December"];
+
+/** Excel serial, ISO string, Date, "01/07/2026" — whatever the upload carried. */
+function asDate(v) {
+  if (v == null || v === "") return null;
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v;
+
+  if (typeof v === "number" && Number.isFinite(v)) {
+    // Excel serial: days since 1899-12-30. Anything below 20000 (1954) is far
+    // more likely to be a stray figure than a date, so it is refused.
+    if (v < 20000 || v > 80000) return null;
+    return new Date(Date.UTC(1899, 11, 30) + v * 86400000);
+  }
+
+  const s = String(v).trim();
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+
+  // dd/mm/yyyy — Australian order. NEVER mm/dd: 07/08/2026 is 7 August here,
+  // and reading it as 8 July puts the whole report in the wrong month.
+  m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  if (m) return new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Which month is this B2B report for?
+ *
+ * The guide says the report "always covers the 1st to the last day of the
+ * reporting month", and the file itself carries no month anywhere — so it is
+ * derived from the transaction dates and shown for confirmation rather than
+ * assumed.
+ *
+ * The MOST COMMON month wins, and every row outside it is counted and
+ * reported. A handful of stragglers is normal; a even split means the upload
+ * is two months in one file, and that is a question for a human, not something
+ * to average away.
+ */
+function deriveReportingMonth(rows = [], opts = {}) {
+  const pick = opts.dateOf || ((r) => r.xTRVIssuedDate || r.xUWETransDate);
+
+  const tally = new Map();
+  let unreadable = 0;
+  for (const r of rows) {
+    const d = asDate(pick(r));
+    if (!d) { unreadable++; continue; }
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    tally.set(key, (tally.get(key) || 0) + 1);
+  }
+
+  if (!tally.size) {
+    return { ok: false, reason: "No readable transaction dates, so the reporting month cannot be worked out." };
+  }
+
+  const ranked = [...tally.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+  const [key, count] = ranked[0];
+  const [y, m] = key.split("-").map(Number);
+  const outside = rows.length - count - unreadable;
+
+  const warnings = [];
+  if (unreadable) warnings.push(`${unreadable} row(s) had no readable date.`);
+  if (outside > 0) {
+    const others = ranked.slice(1).map(([k, n]) => `${k} (${n})`).join(", ");
+    warnings.push(`${outside} row(s) fall outside ${MONTH_NAMES[m - 1]} ${y}: ${others}.`);
+  }
+  if (ranked.length > 1 && ranked[1][1] >= count * 0.5) {
+    warnings.push(
+      "This looks like more than one month in a single file — check before running."
+    );
+  }
+
+  return {
+    ok: true,
+    month: m,          // 1-12
+    year: y,
+    key,               // "2026-07"
+    label: `${MONTH_NAMES[m - 1]} ${y}`,
+    counted: count,
+    outside: Math.max(0, outside),
+    unreadable,
+    warnings,
+  };
+}
+
+/** "2026-07" -> a Date on the 1st, for the labels and the search dates. */
+function monthKeyToDate(key) {
+  const m = String(key || "").match(/^(\d{4})-(\d{2})$/);
+  if (!m) throw new Error(`Reporting month must look like "2026-07", got "${key}"`);
+  const month = Number(m[2]);
+  if (month < 1 || month > 12) throw new Error(`"${key}" is not a month`);
+  return new Date(Number(m[1]), month - 1, 1);
+}
+
 /* ------------------------------------------------- step 4-6, the sheet */
 
 const NOT_FOUND = "N/A";
@@ -312,6 +410,10 @@ module.exports = {
   calcCommission,
   OUTCOME,
   classify,
+  asDate,
+  deriveReportingMonth,
+  monthKeyToDate,
+  MONTH_NAMES,
   NOT_FOUND,
   APPENDED_COLUMNS,
   indexByPolicy,

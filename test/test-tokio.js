@@ -285,4 +285,100 @@ check("a bad date throws rather than labelling a session NaN", () => {
   assert.throws(() => t.sessionLabel("not a date"));
 });
 
-console.log("\n" + n + " assertions passed.");
+
+
+/* ------------------------------------------ the reporting month, derived */
+
+const mrows = (...dates) => dates.map((d) => ({ xTRVIssuedDate: d }));
+
+check("dates are read in Australian order, never mm/dd", () => {
+  // 07/08/2026 is 7 August here. Reading it as 8 July puts the whole report in
+  // the wrong month, and the report IS the month.
+  const d = t.asDate("07/08/2026");
+  assert.strictEqual(d.getMonth(), 7, "month was " + (d.getMonth() + 1));
+  assert.strictEqual(d.getDate(), 7);
+});
+
+check("ISO, Date objects and Excel serials all read", () => {
+  assert.strictEqual(t.asDate("2026-07-01 09:40:50").getMonth(), 6);
+  assert.strictEqual(t.asDate(new Date(2026, 6, 1)).getMonth(), 6);
+  // 46204 = 1 July 2026 as an Excel serial.
+  const x = t.asDate(46204);
+  assert.strictEqual(x.getUTCFullYear(), 2026);
+  assert.strictEqual(x.getUTCMonth(), 6);
+});
+
+check("a small number is not mistaken for a date", () => {
+  assert.strictEqual(t.asDate(218.93), null);
+  assert.strictEqual(t.asDate(0), null);
+});
+
+check("the month comes from the transactions, not from a guess", () => {
+  const r = t.deriveReportingMonth(mrows("2026-07-01", "2026-07-15", "2026-07-31"));
+  assert.ok(r.ok, r.reason);
+  assert.strictEqual(r.key, "2026-07");
+  assert.strictEqual(r.label, "July 2026");
+  assert.strictEqual(r.counted, 3);
+  assert.deepStrictEqual(r.warnings, []);
+});
+
+check("the COMMONEST month wins, even when a straggler comes first", () => {
+  // Order matters here: a straggler is deliberately the first row. Without a
+  // sort, "the month" becomes whichever month happened to appear first in the
+  // file — and a single early August row would move the whole reconciliation.
+  const r = t.deriveReportingMonth(mrows("2026-08-02", "2026-07-01", "2026-07-15", "2026-07-20"));
+  assert.strictEqual(r.key, "2026-07", "it took the first month seen rather than the commonest");
+  assert.strictEqual(r.counted, 3);
+});
+
+check("a few stragglers are counted and named, not silently dropped", () => {
+  const r = t.deriveReportingMonth(mrows("2026-07-01", "2026-07-15", "2026-07-20", "2026-08-02"));
+  assert.strictEqual(r.key, "2026-07");
+  assert.strictEqual(r.outside, 1);
+  assert.ok(/1 row\(s\) fall outside July 2026/.test(r.warnings.join(" ")), r.warnings.join(" "));
+});
+
+check("two months in one file is flagged, not averaged away", () => {
+  const r = t.deriveReportingMonth(mrows("2026-07-01", "2026-07-02", "2026-08-01", "2026-08-02"));
+  assert.ok(r.ok);
+  assert.ok(/more than one month/i.test(r.warnings.join(" ")), r.warnings.join(" "));
+});
+
+check("unreadable dates are reported, not counted as the month", () => {
+  const r = t.deriveReportingMonth(mrows("2026-07-01", "", null, "not a date"));
+  assert.strictEqual(r.unreadable, 3);
+  assert.ok(/no readable date/.test(r.warnings.join(" ")));
+});
+
+check("a file with no dates at all refuses rather than picking one", () => {
+  const r = t.deriveReportingMonth(mrows("", null));
+  assert.ok(!r.ok);
+  assert.ok(/cannot be worked out/i.test(r.reason), r.reason);
+});
+
+check("it falls back to xUWETransDate when the issued date is blank", () => {
+  const r = t.deriveReportingMonth([{ xTRVIssuedDate: "", xUWETransDate: "2026-09-04" }]);
+  assert.strictEqual(r.key, "2026-09");
+});
+
+check("a month key converts back to a date on the 1st", () => {
+  const d = t.monthKeyToDate("2026-07");
+  assert.strictEqual(d.getFullYear(), 2026);
+  assert.strictEqual(d.getMonth(), 6);
+  assert.strictEqual(d.getDate(), 1);
+});
+
+check("a bad month key throws rather than defaulting to today", () => {
+  for (const bad of ["", "2026", "2026-13", "July 2026", null]) {
+    assert.throws(() => t.monthKeyToDate(bad), JSON.stringify(bad) + " was accepted");
+  }
+});
+
+check("the derived month feeds the labels the guide asks for", () => {
+  const r = t.deriveReportingMonth(mrows("2026-07-01", "2026-07-20"));
+  const d = t.monthKeyToDate(r.key);
+  assert.strictEqual(t.paymentReference(d), "TOKIO_JUL 2026");
+  assert.strictEqual(t.sessionLabel(d), "TOKIO_JUL 26");
+});
+
+console.log("\n" + n + " assertions passed (including the reporting month).");

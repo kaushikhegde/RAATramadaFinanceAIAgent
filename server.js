@@ -41,6 +41,8 @@ const store = require("./run-store");
 const { runReconciliation, runMintReconciliation, runCombinedReconciliation, runTramadaLogin } = require("./recon-run");
 const { runIpsiReconciliation } = require("./tramada-ipsi");
 const paymentsChat = require("./payments-chat");
+const tokioCore = require("./tokio-core");
+const paymentsCore = require("./payments-core");
 const azureAuth = require("./azure-auth");
 const creds = require("./tramada-creds");
 
@@ -161,6 +163,217 @@ app.post("/api/ipsi-payment/:id/reply", express.json({ limit: "256kb" }), (req, 
   try {
     const text = String((req.body && req.body.text) || "");
     res.json(paymentReply(req.params.id, paymentsChat.replyIpsiPayment(entry.session, text)));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── IPSI customer payments, raised from the settlement file ─────────────── */
+
+/*
+ * "Payments Guide - IPSI.docx" steps 2-9, for a whole settlement file.
+ *
+ * The same file the IPSI card already holds for reconciliation carries
+ * everything step 1 asks a consultant to read off the Approved screen: booking
+ * number, transaction reference, amount, cardholder. The guide's own note —
+ * "issue receipt at end of day" — is that file.
+ *
+ * ONE thing is not in it: whether the customer paid by credit or debit. BR02
+ * says that is confirmed with the customer, so the caller states it for the
+ * run and a row whose brand disagrees is refused rather than coerced.
+ *
+ * BR07 still holds: nothing here touches IPSI. The charge was taken by a human
+ * in real time; this only raises the matching receipt in Tramada.
+ */
+
+app.post("/api/ipsi-payment/plan", express.json({ limit: "12mb" }), (req, res) => {
+  try {
+    const rows = Array.isArray(req.body && req.body.rows) ? req.body.rows : [];
+    const cardType = String((req.body && req.body.cardType) || "");
+    if (!rows.length) return res.status(400).json({ error: "No settlement rows to receipt." });
+
+    const choice = paymentsCore.normaliseCardChoice(cardType);
+    if (!paymentsCore.BR08_CARDS[choice]) {
+      return res.status(400).json({
+        error:
+          'The settlement file records the brand ("VISA"), never credit or debit, and ' +
+          "BR02 says that is confirmed with the customer. Choose one.",
+        choices: Object.keys(paymentsCore.BR08_CARDS),
+      });
+    }
+
+    const plan = rows.map((row) => {
+      const brand = paymentsCore.normaliseCardType(row.brand || row.cardType || "");
+      if (brand && !choice.startsWith(brand)) {
+        return { row, skip: `The file says ${brand}, this run is ${choice}.` };
+      }
+      const d = paymentsCore.decideSwipeReceipt(
+        { ...row, cardType: choice },
+        row.cardholderName || row.payerName,
+        {}
+      );
+      return d.ok ? { row, decision: d } : { row, skip: d.reason };
+    });
+
+    res.json({
+      cardType: choice,
+      ready: plan.filter((p) => p.decision).length,
+      skipped: plan.filter((p) => p.skip).length,
+      plan: plan.map((p) => ({
+        bookingNo: p.row.bookingNo,
+        txnRef: p.row.txnRef,
+        amount: p.row.amount,
+        payerName: p.decision ? p.decision.receipt.payerName : p.row.cardholderName || "",
+        card: p.decision ? p.decision.receipt.card.choice : null,
+        reference: p.decision ? p.decision.receipt.reference : null,
+        skip: p.skip || null,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── Tokio Marine, the monthly reconciliation ────────────────────────────── */
+
+/*
+ * Four spreadsheets, uploaded together, for one reporting month (BR01). Unlike
+ * the daily cards there is no Transaction Total to enter — the guide is
+ * explicit that the figure to balance to is not known until Retail is excluded
+ * and exceptions are resolved.
+ *
+ * The month is not asked for either. The files carry no month anywhere, so it
+ * is derived from the B2B report's own transaction dates and handed back for a
+ * human to confirm or correct.
+ *
+ * Everything decided here lives in tokio-core.js, which is pure and tested.
+ * This endpoint only turns bytes into rows.
+ */
+
+/** A zip starts "PK" — the container saying what it is, not its file name. */
+function sheetFromBase64(base64) {
+  const buf = Buffer.from(String(base64 || ""), "base64");
+  if (!buf.length) return { headers: [], rows: [] };
+  const isZip = buf.length > 1 && buf[0] === 0x50 && buf[1] === 0x4b;
+  return isZip ? xlsxLite.readSheet(buf) : reconCore.csvGrid(buf.toString("utf8"));
+}
+
+/** headers + row arrays -> row objects, keyed by the file's own headings. */
+function asObjects(sheet) {
+  const headers = (sheet.headers || []).map((h) => String(h == null ? "" : h).trim());
+  return (sheet.rows || []).map((r) => {
+    const o = {};
+    headers.forEach((h, i) => {
+      if (h) o[h] = Array.isArray(r) ? r[i] : r[h];
+    });
+    return o;
+  });
+}
+
+const TOKIO_FILES = ["b2b", "payment", "costing", "rcc"];
+const TOKIO_TITLES = {
+  b2b: "Tokio Marine B2B report",
+  payment: "Tramada Payment Report",
+  costing: "Tramada Costing Report",
+  rcc: "RCC report (Finance One)",
+};
+
+app.post("/api/tokio/parse", express.json({ limit: "48mb" }), (req, res) => {
+  try {
+    const body = req.body || {};
+    const files = body.files || {};
+
+    const missing = TOKIO_FILES.filter((k) => !files[k] || !files[k].base64);
+    if (missing.length) {
+      return res.status(400).json({
+        error:
+          "All four files are needed for the same reporting month (BR01): missing " +
+          missing.map((k) => TOKIO_TITLES[k]).join(", ") + ".",
+        missing,
+      });
+    }
+
+    const sheets = {};
+    for (const k of TOKIO_FILES) {
+      try {
+        sheets[k] = asObjects(sheetFromBase64(files[k].base64));
+      } catch (err) {
+        return res.status(400).json({
+          error: `Could not read ${TOKIO_TITLES[k]} (${(files[k].name || "")}): ${err.message}`,
+        });
+      }
+      if (!sheets[k].length) {
+        return res.status(400).json({
+          error: `${TOKIO_TITLES[k]} (${files[k].name || ""}) has no rows.`,
+        });
+      }
+    }
+
+    /* The month. Derived, never assumed — and the caller may override it,
+       which is why it comes back with its own warnings attached rather than
+       being applied silently. */
+    const month = body.month
+      ? { ok: true, key: body.month, label: null, warnings: [], overridden: true }
+      : tokioCore.deriveReportingMonth(sheets.b2b);
+    if (!month.ok) return res.status(400).json({ error: month.reason });
+    if (month.overridden) {
+      try {
+        const d = tokioCore.monthKeyToDate(month.key);
+        month.label = `${tokioCore.MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
+      } catch (err) {
+        return res.status(400).json({ error: err.message });
+      }
+    }
+
+    const sources = {
+      payment: tokioCore.indexByPolicy(sheets.payment, (r) => r["Reference"]),
+      costing: tokioCore.indexByPolicy(sheets.costing, (r) => r["Segment Reference"]),
+      rcc: tokioCore.indexByPolicy(sheets.rcc, (r) => r["Ticket/Booking No."]),
+    };
+
+    const consolidated = tokioCore.buildConsolidated(sheets.b2b, sources);
+    const monthDate = tokioCore.monthKeyToDate(month.key);
+
+    res.json({
+      month: {
+        key: month.key,
+        label: month.label,
+        counted: month.counted,
+        outside: month.outside,
+        unreadable: month.unreadable,
+        warnings: month.warnings || [],
+        overridden: !!month.overridden,
+      },
+      labels: {
+        paymentReference: tokioCore.paymentReference(monthDate), // step 11
+        sessionLabel: tokioCore.sessionLabel(monthDate),         // step 14
+      },
+      files: TOKIO_FILES.map((k) => ({
+        kind: k,
+        title: TOKIO_TITLES[k],
+        name: files[k].name || "",
+        rows: sheets[k].length,
+        unreadableKeys: k === "b2b" ? undefined : (sources[k] ? sources[k].unreadable.length : undefined),
+      })),
+      counts: {
+        total: consolidated.rows.length,
+        travel: consolidated.travel.length,
+        retail: consolidated.retail.length,
+        exceptions: consolidated.exceptions.length,
+        undocumented: consolidated.rows.filter((r) => r.undocumented).length,
+      },
+      /* The whole sheet goes back: the dashboard shows it, and the export hands
+         back the B2B report's own columns with ours appended (BR02). */
+      appendedColumns: tokioCore.APPENDED_COLUMNS,
+      rows: consolidated.rows.map((r) => ({
+        line: r.line,
+        policy: r.policy,
+        outcome: r.outcome,
+        undocumented: r.undocumented,
+        source: r.row,
+        appended: r.appended,
+      })),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

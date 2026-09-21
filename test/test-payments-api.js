@@ -154,6 +154,107 @@ const APPROVED =
       assert.strictEqual(blank.body.awaiting, "bookingNo");
     });
 
+    /* ---------------- the IPSI card's "raise the receipts" plan ---------- */
+
+    const ROWS = [
+      { bookingNo: "14504", txnRef: "IP-1", amount: "145.54", cardholderName: "Spider Gray", brand: "VISA" },
+      { bookingNo: "14510", txnRef: "IP-2", amount: "790.00", cardholderName: "Spider Gray", brand: "MASTERCARD" },
+      { bookingNo: "", txnRef: "IP-3", amount: "10.00", cardholderName: "Spider Gray", brand: "VISA" },
+    ];
+
+    const noCard = await post("/api/ipsi-payment/plan", { rows: ROWS });
+    check("the plan needs a card type, citing BR02", () => {
+      assert.strictEqual(noCard.status, 400);
+      assert.ok(/BR02/.test(noCard.body.error), noCard.body.error);
+      assert.deepStrictEqual(noCard.body.choices, [
+        "Visa Credit", "Visa Debit", "Mastercard Credit", "Mastercard Debit",
+      ]);
+    });
+
+    const bareBrand = await post("/api/ipsi-payment/plan", { rows: ROWS, cardType: "Visa" });
+    check("a bare brand is not a card type here either", () => {
+      assert.strictEqual(bareBrand.status, 400);
+    });
+
+    const plan = await post("/api/ipsi-payment/plan", { rows: ROWS, cardType: "Visa Credit" });
+    check("the plan says which rows are ready and which are not", () => {
+      assert.strictEqual(plan.status, 200);
+      assert.strictEqual(plan.body.cardType, "Visa Credit");
+      assert.strictEqual(plan.body.ready, 1);
+      assert.strictEqual(plan.body.skipped, 2);
+    });
+
+    check("a Mastercard row is skipped on a Visa run, not coerced", () => {
+      const mc = plan.body.plan.find((p) => p.txnRef === "IP-2");
+      assert.ok(mc.skip && /MASTERCARD/i.test(mc.skip), JSON.stringify(mc));
+    });
+
+    check("a row with no booking number is skipped with its reason", () => {
+      const bad = plan.body.plan.find((p) => p.txnRef === "IP-3");
+      assert.ok(bad.skip && /booking number/i.test(bad.skip), JSON.stringify(bad));
+    });
+
+    check("the plan carries NO card number anywhere", () => {
+      // The whole §4 argument: the card is selected in Tramada, never typed,
+      // so nothing that reaches the browser can contain a PAN.
+      const flat = JSON.stringify(plan.body);
+      assert.ok(!/\b\d{13,19}\b/.test(flat), "a long digit run reached the page: " + flat);
+    });
+
+    const none = await post("/api/ipsi-payment/plan", { rows: [], cardType: "Visa Credit" });
+    check("an empty file is refused rather than planning nothing", () => {
+      assert.strictEqual(none.status, 400);
+      assert.ok(/no settlement rows/i.test(none.body.error), none.body.error);
+    });
+
+    /* ------- the shape the IPSI card really sends, end to end ----------- */
+
+    // parseIpsiRows calls the cardholder `cardHolder`. The page mapped
+    // `cardHolderName`, so every row skipped with "missing payer name (BR01)"
+    // — a rule refusing a value the file was carrying all along.
+    const reconCore = require("../recon-core");
+    const fs = require("fs");
+    const csvPath = path.join(ROOT, "csv_uploads", "ipsi-payments.csv");
+    if (fs.existsSync(csvPath)) {
+      const grid = reconCore.csvGrid(fs.readFileSync(csvPath, "utf8"));
+      const parsed = reconCore.parseIpsiRows(grid.headers, grid.rows).rows;
+
+      check("parseIpsiRows really carries the cardholder", () => {
+        assert.ok(parsed.length, "the sample settlement file parsed to nothing");
+        assert.ok(parsed[0].cardHolder, "no cardHolder on a parsed row — the field was renamed");
+      });
+
+      const asPageSends = parsed.map((r) => ({
+        bookingNo: r.bookingNo || "",
+        txnRef: r.reference || "",
+        amount: r.amount,
+        cardholderName: r.cardHolder || "",
+        brand: r.cardType || r.brand || "",
+      }));
+
+      const live = await post("/api/ipsi-payment/plan", {
+        rows: asPageSends,
+        cardType: "Visa Credit",
+      });
+
+      check("the real settlement file plans receipts, not five skips", () => {
+        assert.strictEqual(live.status, 200);
+        assert.ok(live.body.ready > 0,
+          "every row skipped: " + live.body.plan.map((p) => p.skip).join(" | "));
+      });
+
+      check("only the row with no booking number is skipped", () => {
+        const skipped = live.body.plan.filter((p) => p.skip);
+        assert.strictEqual(skipped.length, 1, JSON.stringify(skipped));
+        assert.ok(/booking number/i.test(skipped[0].skip), skipped[0].skip);
+      });
+
+      check("the payer comes from the file, not from a prompt", () => {
+        const ok = live.body.plan.find((p) => !p.skip);
+        assert.strictEqual(ok.payerName, "Spider Gray");
+      });
+    }
+
     console.log("\n" + n + " assertions passed.");
   } catch (err) {
     console.error("\nFAILED: " + (err && err.message ? err.message : err));
