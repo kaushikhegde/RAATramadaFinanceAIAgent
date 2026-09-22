@@ -106,7 +106,7 @@ const fs = require("fs");
 const path = require("path");
 const core = require("../recon-core");
 const xlsxLite = require("../xlsx-lite");
-const { runFullBooking } = require("../tramada-segments");
+const { runFullBooking, runAddCostingLines } = require("../tramada-segments");
 const { runTramadaReceipt } = require("../tramada-receipt");
 const { runCreditorPayment } = require("../tramada-payment");
 const ipsi = require("../tramada-ipsi");
@@ -185,7 +185,7 @@ const CSV_DIR = path.resolve(valueOf("--out-dir", path.join(__dirname, "..", "cs
  *
  * `--client X` overrides it for whatever is being generated.
  */
-const CLIENT_FOR = {
+const CLIENT_FOR = { tokio: "GRAY/SPIDER",
   /* "GRAY/MEGAN DR" — THE " DR" IS THE WHOLE POINT AND IT WAS MISSING.
      `GRAY/MEGAN` and `GRAY/MEGAN DR` are two different clients in the sandbox.
      The first is a retail account; only the second is a debtor account, and the
@@ -213,7 +213,7 @@ const CLIENT_OVERRIDE = valueOf("--client", null);
  * looks like it worked. test-fixtures.js asserts this table against
  * `core.REPORTS`, which is what the run filters by.
  */
-const CATEGORY_FOR = {
+const CATEGORY_FOR = { tokio: null,
   bpay: core.BPAY_RECEIPT.value,           // DEBTOR_PAYMENT_RECEIPT
   travelpay: "CLIENT_PAYMENT_RECEIPT",
   mint: "CLIENT_PAYMENT_RECEIPT",
@@ -250,7 +250,7 @@ const CATEGORY_FOR = {
  * These travel as the booking's `tramadaOverrides` (see loadBookings), the one
  * channel `mapBookingToTramada` honours.
  */
-const ACCOUNT_FOR = {
+const ACCOUNT_FOR = { tokio: null,
   /* CORPORATE renders `#debtor` — a text box the client-pick has usually
      already resolved — and hides `#retailDebtor`. `retailDebtor: ""` is not
      tidiness: setFields() chooses its widget by whichever one Tramada rendered,
@@ -463,8 +463,14 @@ function chooseSupplier() {
 }
 
 const SUPPLIER = chooseSupplier();
-const CREDITOR = SUPPLIER.tramada;        // who Tramada pays
-const FILE_COMPANY = SUPPLIER.file;       // what the uploaded spreadsheet calls them
+/* TOKIO IS NOT A RANDOM SUPPLIER.
+   The other fixtures pick a supplier at random on purpose — mismatched names
+   are the thing their cheat sheet exists to reconcile. Tokio Marine is the
+   opposite: the guide names one creditor, the B2B report is Tokio's own, and a
+   random pick would create insurance costings against somebody else entirely.
+   So it is pinned, and --creditor still overrides it. */
+const CREDITOR = WHAT === "tokio" ? (CREDITOR_ARG || "Tokio Marine") : SUPPLIER.tramada;
+const FILE_COMPANY = WHAT === "tokio" ? CREDITOR : SUPPLIER.file;
 
 {
   if (SUPPLIER.noSheet) {
@@ -1733,8 +1739,239 @@ async function makeIpsi() {
  * One fixture failing does not stop the next: they are independent, and two out
  * of three files is better than none.
  */
+/* ── Tokio Marine, the monthly reconciliation ────────────────────────────── */
+
+/**
+ * Bookings with Tokio Marine INSURANCE costings, plus the four spreadsheets
+ * the guide's step 3 asks to upload.
+ *
+ * Why this exists: on 22-Sep-2026 the Issue Payments screen returned nothing
+ * for Tokio Marine — nor for Journey Beyond, Great Southern or RAA- Fees —
+ * across 2020-2027. The sandbox has no outstanding creditor payments at all,
+ * so steps 12-14 (match, tick, save the session) cannot be measured against
+ * real rows. This makes the rows.
+ *
+ * Three things make a Tokio booking different from the other fixtures:
+ *
+ *   1. The costing is an INSURANCE line, not a ticket. addInsuranceCosting()
+ *      writes the policy number into #confirmationOrReferenceNumber, which is
+ *      what becomes the segment's Reference — and BR11 matches on exactly
+ *      that. A flight costing's reference is "QF 400", which no policy number
+ *      will ever equal.
+ *
+ *   2. Nothing is paid afterwards. makeMint() issues the creditor payment it
+ *      creates, which is why those segments are gone from Issue Payments; the
+ *      whole point here is to leave them outstanding.
+ *
+ *   3. The four spreadsheets have to AGREE with what was created. A B2B report
+ *      naming policies Tramada has never heard of exercises nothing but the
+ *      "not found" path.
+ *
+ * Policy numbers are 21 + six digits — the shape of every policy in RAA's own
+ * data, and what tokio-core's policyKey accepts. The guide writes the series
+ * as "210XXXXXX" but real data disagrees, and policyKey refuses nine digits on
+ * purpose.
+ */
+
+/** A deterministic 21nnnnnn policy number, so a re-run finds the same rows. */
+function tokioPolicy(index) {
+  // Derived from the run tag so two runs cannot collide, and stable within one.
+  let h = 0;
+  for (const ch of String(RUN)) h = (h * 31 + ch.charCodeAt(0)) % 900000;
+  return "21" + String(((h + index * 137) % 900000) + 100000).padStart(6, "0");
+}
+
+/* The B2B report's own columns, in the order Tokio Marine sends them. Step 4
+   says they are the source of truth and are not reordered or altered; the
+   consolidated sheet appends to the RIGHT of them. The two passenger-name
+   columns the guide has a human delete before upload are deliberately absent. */
+const TOKIO_B2B_COLS = [
+  "xPolicyNumber", "xTransactionDate", "xBranchName", "xOriginatingAgent",
+  "xSalesAgent", "xProductName", "xSellPriceIncGST", "xNetPriceIncGST",
+  "xCommissionIncGST", "xStartDate", "xEndDate", "xStatus",
+];
+
+async function makeTokio() {
+  const list = loadBookings();
+  say(
+    `${list.length} booking${list.length === 1 ? "" : "s"} → insurance costings to ${CREDITOR}, ` +
+      `left UNPAID so they show on Issue Payments, then the four spreadsheets.\n`
+  );
+  sayPlan("tokio");
+  if (DRY) return say("Dry run — Tramada was never opened.\n");
+
+  const today = new Date();
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const dmy = (d) => {
+    const p = (n) => String(n).padStart(2, "0");
+    return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()}`;
+  };
+
+  // The reporting month is the one the B2B report covers: the 1st to the last
+  // day of LAST month, which is what the guide's step 1 says it always is.
+  const monthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+  const monthEnd = new Date(today.getFullYear(), today.getMonth(), 0);
+  say(`     reporting month ${dmy(monthStart)} → ${dmy(monthEnd)}`);
+
+  /* FOUR FILES, AND THEY HAVE TO AGREE.
+     Each row is written the moment its booking exists, not collected at the
+     end — the same reason makeMint() does it that way. A booking Tramada has
+     and no file names is a booking nobody can reconcile. */
+  const b2b = csvWriter("tokio-b2b-report.csv", TOKIO_B2B_COLS);
+  const payment = csvWriter("tokio-tramada-payment-report.csv",
+    ["Booking No.", "Reference", "Creditor", "Amount", "Segment Created Date"]);
+  const costing = csvWriter("tokio-tramada-costing-report.csv",
+    ["Booking No.", "Segment Reference", "Creditor", "Cost", "Invoiced"]);
+  const rcc = csvWriter("tokio-rcc-report.csv",
+    ["Ticket/Booking No.", "Policy Number", "Receipted By", "Amount"]);
+
+  /* WHICH ROWS ARE WHAT.
+     A fixture that only produces the happy path proves only the happy path, so
+     the plan below puts one of each classification in. Steps 7-8 and BR05-BR08
+     all have a row to bite on:
+
+       travel     branch has "Travel", not in RCC, in Tramada   -> reconciled
+       retail     branch has NO "Travel", in RCC, not in Tramada -> excluded
+       br07       branch has "Travel", IS in RCC                 -> exception
+       br08       branch has "Travel", in neither report         -> exception  */
+  const PLAN = ["travel", "travel", "retail", "br07", "br08", "travel"];
+  const planFor = (i) => PLAN[i % PLAN.length];
+
+  /* THE INSURANCE LINE GOES ON AFTER THE BOOKING.
+     runFullBooking() takes `segments` and `costings` and has no insurance
+     parameter — insurance is a standalone COSTING line, added on the Costing
+     page rather than the itinerary, which is what runAddCostingLines() is for.
+     So: booking first, insurance line second, and the booking is only counted
+     as a Tokio fixture once the line is actually on it. */
+  const withPolicy = list.map((b, i) => {
+    const policy = tokioPolicy(i);
+    const kind = planFor(i);
+    const branch = kind === "retail" ? "RAA Elizabeth" : "RAA Elizabeth Travel";
+    // Tokio's own sell price. The consolidated sheet recomputes 30/70 from it
+    // (BR03) and ignores Tokio's net and commission columns entirely.
+    const sell = 100 + i * 37.5;
+    return {
+      ...b,
+      label: `${b.label || b.clientCode} — Tokio ${policy} (${kind})`,
+      // Replace the ticket costing with an insurance line to Tokio Marine.
+      // Its reference IS the policy number, which is what BR11 matches on.
+      costings: [],
+      insurance: [{
+        creditor: CREDITOR,
+        supplierName: CREDITOR,
+        reference: policy,
+        amount: (sell * 0.7).toFixed(2), // RAA Total Nett — BR04's reconciled value
+        startDate: iso(monthStart),
+        endDate: iso(new Date(today.getFullYear(), today.getMonth() + 11, 1)),
+        issueDate: iso(monthStart),
+        status: "Confirmed",
+      }],
+      _tokio: { policy, kind, branch, sell },
+    };
+  });
+
+  const made = await createBookings(withPolicy, () => {});
+
+  for (const [i, rec] of made.entries()) {
+    const src = withPolicy[i];
+    const t = src._tokio;
+    const nett = (t.sell * 0.7).toFixed(2);
+
+    try {
+      await runAddCostingLines({
+        username: process.env.TRAMADA_USERNAME,
+        password: process.env.TRAMADA_PASSWORD,
+        bookingNo: rec.bookingNo,
+        lines: src.insurance.map((ins) => ({ kind: "insurance", ...ins })),
+        callbacks: {
+          onProgress: (p, m) => console.log(`       [${String(p).padStart(3)}%] ${m}`),
+          onNeedLogin: () =>
+            say("     Sign into Tramada in the Chrome on port 9222 — I'll wait, and I never type credentials."),
+        },
+      });
+    } catch (err) {
+      // Said out loud and skipped, not fatal: a booking without its insurance
+      // line owes Tokio nothing, so putting it in the B2B report would only
+      // exercise the "not found in Tramada" path under a different name.
+      console.error(`     ! booking ${rec.bookingNo}: insurance line failed — ${core.tidyError(err.message)}`);
+      say(`     – ${t.policy} skipped; no row written for it.`);
+      continue;
+    }
+
+    b2b.add({
+      xPolicyNumber: t.policy,
+      xTransactionDate: dmy(monthStart),
+      xBranchName: t.branch,
+      xOriginatingAgent: "BC",
+      // ~5-10% of policies have a sales agent that differs from the
+      // originating one. The guide's notes say that is normal and NOT an
+      // exception, so one row carries it to prove nothing trips over it.
+      xSalesAgent: t.kind === "travel" ? "BC" : "KH",
+      xProductName: "Travel Insurance",
+      xSellPriceIncGST: t.sell.toFixed(2),
+      // Tokio's own net and commission. BR03 says these are IGNORED — they are
+      // deliberately WRONG here so a run that reads them instead of computing
+      // 30/70 fails visibly rather than agreeing by accident.
+      xNetPriceIncGST: (t.sell * 0.65).toFixed(2),
+      xCommissionIncGST: (t.sell * 0.35).toFixed(2),
+      xStartDate: dmy(monthStart),
+      xEndDate: dmy(monthEnd),
+      xStatus: "Issued",
+    });
+
+    // In Tramada's Payment and Costing reports unless the plan says otherwise.
+    if (t.kind !== "retail" && t.kind !== "br08") {
+      payment.add({
+        "Booking No.": rec.bookingNo,
+        Reference: t.policy,
+        Creditor: CREDITOR,
+        Amount: nett,
+        "Segment Created Date": dmy(monthStart),
+      });
+      costing.add({
+        "Booking No.": rec.bookingNo,
+        "Segment Reference": t.policy,
+        Creditor: CREDITOR,
+        Cost: nett,
+        // Step 2: a costing must be INVOICED before reconciliation picks it up.
+        Invoiced: "Yes",
+      });
+    }
+
+    // On the RCC report — receipted through Retail — for the retail row and
+    // the BR07 exception.
+    if (t.kind === "retail" || t.kind === "br07") {
+      rcc.add({
+        "Ticket/Booking No.": t.policy,
+        "Policy Number": t.policy,
+        "Receipted By": "Retail",
+        Amount: nett,
+      });
+    }
+
+    say(`     → ${t.policy} (${t.kind}) on booking ${rec.bookingNo}`);
+  }
+
+  say("");
+  for (const c of [b2b, payment, costing, rcc]) {
+    say(`     ${shortPath(c.path)} — ${c.rows.length} row(s)`);
+  }
+
+  const counts = PLAN.slice(0, made.length).reduce((m, k) => ((m[k] = (m[k] || 0) + 1), m), {});
+  say(
+    `\n     expect from steps 7-8: ${counts.travel || 0} Travel, ${counts.retail || 0} Retail excluded, ` +
+      `${(counts.br07 || 0) + (counts.br08 || 0)} exception(s).`
+  );
+  say(
+    `     Nothing was paid, so these segments should now appear on Issue Payments\n` +
+      `     for ${CREDITOR}. Check with:  npm run probe:tokio\n`
+  );
+
+  return made;
+}
+
 async function makeAll() {
-  const order = ["bpay", "travelpay", "mint", "ipsi"];
+  const order = ["bpay", "travelpay", "mint", "ipsi", "tokio"];
   const outcome = [];
   for (const what of order) {
     console.log(`\n  ── ${what} ${"─".repeat(Math.max(0, 60 - what.length))}\n`);
@@ -1753,11 +1990,11 @@ async function makeAll() {
   if (outcome.some(([, how]) => how !== "done")) process.exitCode = 1;
 }
 
-const JOBS = { bpay: makeBpay, travelpay: makeTravelPay, mint: makeMint, ipsi: makeIpsi, all: makeAll };
+const JOBS = { bpay: makeBpay, travelpay: makeTravelPay, mint: makeMint, ipsi: makeIpsi, tokio: makeTokio, all: makeAll };
 
 /* Exported so the reference scheme can be tested without opening Tramada. The
    run below is behind `require.main`, so requiring this file creates nothing. */
-module.exports = { RUN, ref, costedCents, bpayCents, csvWriter, csvField, csvOut, CLIENT_FOR, CATEGORY_FOR, ACCOUNT_FOR, ipsiRow, IPSI_COLS, IPSI_BLANK_COLUMNS, OUTCOME_PLAN, outcomeFor, seedOutcome,
+module.exports = { RUN, ref, tokioPolicy, TOKIO_B2B_COLS, costedCents, bpayCents, csvWriter, csvField, csvOut, CLIENT_FOR, CATEGORY_FOR, ACCOUNT_FOR, ipsiRow, IPSI_COLS, IPSI_BLANK_COLUMNS, OUTCOME_PLAN, outcomeFor, seedOutcome,
   IPSI_EXCLUDED, ipsiExcludedRows, IPSI_TOTAL_ROWS, IPSI_VIABLE_ROWS };
 
 if (require.main === module) (async () => {
@@ -1768,7 +2005,9 @@ if (require.main === module) (async () => {
       "    node make-fixtures.js travelpay   bookings + costings + receipts, then the TravelPay CSV\n" +
       "    node make-fixtures.js mint        bookings + costings + creditor payments, then the Mint CSV\n" +
       "    node make-fixtures.js ipsi        bookings, then waits for your swipe receipts, then the IPSI CSV\n" +
-      "    node make-fixtures.js all         all four, one after the other\n\n" +
+      "    node make-fixtures.js tokio       bookings + Tokio Marine INSURANCE costings, left\n" +
+      "                                      unpaid, then the four reconciliation spreadsheets\n" +
+      "    node make-fixtures.js all         all five, one after the other\n\n" +
       "  ipsi also takes two other modes, in place of the fixture-creation above:\n" +
       "    node make-fixtures.js ipsi --search [--reference X] [--booking Y] [--from D] [--to D]\n" +
       "        READ-ONLY — what's on the Finance Merchant Payment Receipt screen right now\n" +
