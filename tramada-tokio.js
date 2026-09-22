@@ -157,6 +157,16 @@ async function searchCreditorPayments(page, opts = {}, onProgress = () => {}) {
     creditor = "Tokio",
     fromCreated = firstOfPreviousMonth(),
     toCreated = fourWeeksOut(),
+    // Which creditor the resolved code must actually BE. Defaults to Tokio,
+    // because reconciling the wrong creditor returns a full and entirely
+    // plausible list of somebody else's payments.
+    //
+    // Parameterised for one reason: the results grid's shape is not
+    // Tokio-specific, and readTransactionPage() has to be measured against a
+    // creditor that has costed segments. With the check hardcoded, the probe
+    // resolved "[GSR] Journey Beyond" correctly and was then refused for not
+    // being Tokio — a guard stopping a read-only measurement.
+    expect = /tokio/i,
   } = opts;
 
   onProgress(25, "Filling the Issue Payments search...");
@@ -191,7 +201,7 @@ async function searchCreditorPayments(page, opts = {}, onProgress = () => {}) {
     .$$eval(SUGGESTIONS, (ns) => ns.map((n) => n.textContent.replace(/\s+/g, " ").trim()))
     .catch(() => []);
 
-  const tokioOptions = offered.filter((o) => /tokio/i.test(o));
+  const tokioOptions = offered.filter((o) => expect.test(o));
   if (!tokioOptions.length) {
     throw new Error(
       `Typing "${creditor}" into Creditor Code offered ` +
@@ -207,7 +217,7 @@ async function searchCreditorPayments(page, opts = {}, onProgress = () => {}) {
     );
   }
 
-  await page.locator(SUGGESTIONS).filter({ hasText: /tokio/i }).first().click();
+  await page.locator(SUGGESTIONS).filter({ hasText: expect }).first().click();
   await sleep(600);
 
   /* The field must now hold a RESOLVED code, "[SOMETHING] Name". Checking only
@@ -221,9 +231,9 @@ async function searchCreditorPayments(page, opts = {}, onProgress = () => {}) {
         `unresolved code with "Creditor Code is invalid" after the search is submitted.`
     );
   }
-  if (!/tokio/i.test(creditorNow)) {
+  if (!expect.test(creditorNow)) {
     throw new Error(
-      `Creditor Code resolved to "${creditorNow}", which is not Tokio Marine. ` +
+      `Creditor Code resolved to "${creditorNow}", which does not match ${expect}. ` +
         "Refusing to search: the wrong creditor returns a full, plausible list " +
         "of somebody else's payments."
     );

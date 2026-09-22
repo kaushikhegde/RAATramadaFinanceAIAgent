@@ -342,6 +342,24 @@ const travel = (policy, nett) => ({
     assert.strictEqual(page.calls.length, 0);
   });
 
+  console.log("\nthe creditor guard");
+
+  // The guard exists because the wrong creditor returns a full and entirely
+  // plausible list of somebody else's payments. It is parameterised, not
+  // removed: the results grid's shape is not Tokio-specific, so measuring
+  // readTransactionPage() needs a creditor that actually has segments — and
+  // with /tokio/i hardcoded the probe resolved "[GSR] Journey Beyond"
+  // correctly and was then refused for not being Tokio.
+  await check("the guard defaults to Tokio and is a real regex, not a string", () => {
+    const src = require("fs").readFileSync(require("path").join(__dirname, "..", "tramada-tokio.js"), "utf8");
+    assert.match(src, /expect = \/tokio\/i/, "the default must still be Tokio");
+    // Nothing may re-hardcode it further down.
+    const afterDefault = src.slice(src.indexOf("expect = /tokio/i"));
+    const hardcoded = afterDefault.match(/\/tokio\/i/g) || [];
+    assert.strictEqual(hardcoded.length, 1,
+      `/tokio/i appears ${hardcoded.length} times after the default — the guard is hardcoded again somewhere`);
+  });
+
   console.log("\nsteps 9-14 in one run");
 
   await check("nothing to reconcile is refused before a browser is opened", async () => {

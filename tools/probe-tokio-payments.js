@@ -99,6 +99,138 @@ const line = (m) => console.log(m);
     line("\n=== buttons on this page ===");
     shape.buttons.forEach((b) => line("  " + b));
 
+    /* WHY ARE THERE NO ROWS?
+     *
+     * A search that lands on the right page and returns nothing looks
+     * identical to a search that failed, and the difference decides whether
+     * there is a bug to fix or simply no Tokio data in the window. So ask the
+     * page: does it SAY there are no records, and what does it say about the
+     * total? Then, if the window was the problem, widen it and count again. */
+    if (!shape.checkboxNames.length) {
+      line("\n=== why no rows? ===");
+
+      const said = await page.evaluate(() => {
+        const norm = (t) => (t || "").replace(/\s+/g, " ").trim();
+        const out = [];
+        document.querySelectorAll("td, div, span, font, p, li, b").forEach((n) => {
+          if (n.children.length) return;
+          const t = norm(n.textContent);
+          if (!t || t.length > 160) return;
+          if (/no\s+(records?|results?|transactions?|data|rows?)|not\s+found|nothing\s+to\s+display|0\s+records?|no\s+match/i.test(t)) {
+            out.push(t);
+          }
+        });
+        return [...new Set(out)].slice(0, 6);
+      });
+      if (said.length) said.forEach((t) => line(`  page says: "${t}"`));
+      else line("  the page says nothing about an empty result — it simply has no grid");
+
+      // Is the search form still sitting there unsubmitted, or did it run?
+      const stillForm = await page.evaluate(() => !!document.querySelector("#goButton"));
+      line(`  the search form is ${stillForm ? "still on the page (results render below it)" : "gone"}`);
+
+      // Widen to two years and count again. If rows appear, it is a date
+      // window question; if not, this creditor has nothing costed at all.
+      line("\n  widening to 01-01-2025 → 31-12-2027 and counting again...");
+      const wideFrom = new Date(2025, 0, 1);
+      const wideTo = new Date(2027, 11, 31);
+      await tk.openIssuePayments(page, () => {});
+      await tk.searchCreditorPayments(page, {
+        creditor: val("--creditor", "Tokio"),
+        fromCreated: wideFrom,
+        toCreated: wideTo,
+      }, () => {});
+
+      const wide = await page.evaluate(() => ({
+        checkboxes: document.querySelectorAll('input[type="checkbox"]').length,
+        allocationInputs: document.querySelectorAll('input[id^="allocationAmount_"]').length,
+        tables: document.querySelectorAll("table").length,
+      }));
+      line(`  over two years: ${wide.checkboxes} checkbox(es), ${wide.allocationInputs} allocation input(s)`);
+      line(
+        wide.checkboxes
+          ? "  => the DATE WINDOW was the problem. Re-run with --from/--to around the real data."
+          : "  => this creditor has no costed, invoiced segments in the sandbox at all.\n" +
+            "     Steps 12-14 cannot be reconciled until Tokio Marine transactions exist —\n" +
+            "     the guide's step 2 note applies: a costing must be INVOICED before it is\n" +
+            "     picked up in reconciliation."
+      );
+
+      /* THE GRID'S SHAPE IS NOT TOKIO-SPECIFIC.
+       *
+       * readTransactionPage() finds its columns by heading and its checkbox by
+       * row, so the shape can be measured from ANY creditor that has costed
+       * segments. That is worth doing even when Tokio has none: it turns the
+       * step 12-13 column names from a guess into a measurement, which is the
+       * one thing still missing.
+       *
+       * Read-only, and it reconciles nothing — it only prints headings. */
+      if (!wide.checkboxes) {
+        line("\n=== measuring the grid shape from a creditor that HAS data ===");
+        line("  (shape only — nothing is matched, ticked or saved)");
+
+        // Creditors seen carrying segments on booking 13061's receipt form.
+        // Typed text, and what the resolved code must match. Both are needed:
+        // "Journey Beyond" resolves to "[GSR] Journey Beyond (JBRE) / Great
+        // Southern Rail", so the check cannot be the typed word either.
+        const others = val("--shape-from")
+          ? [{ type: val("--shape-from"), expect: new RegExp(val("--shape-from").split(/\s+/)[0], "i") }]
+          : [
+              { type: "Journey Beyond", expect: /journey beyond/i },
+              { type: "Great Southern", expect: /great southern/i },
+              { type: "RAA- Fees", expect: /raa-\s*fees/i },
+            ];
+        let measured = false;
+
+        for (const who of others) {
+          let searched;
+          try {
+            await tk.openIssuePayments(page, () => {});
+            searched = await tk.searchCreditorPayments(page, {
+              creditor: who.type,
+              expect: who.expect,
+              fromCreated: wideFrom,
+              toCreated: wideTo,
+            }, () => {});
+          } catch (err) {
+            line(`  "${who.type}": ${err.message.split("\n")[0]}`);
+            continue;
+          }
+
+          const grid = await tk.readTransactionPage(page);
+          if (!grid.found || !grid.rows.length) {
+            line(`  "${who.type}" (${searched.creditor}): no rows either`);
+            continue;
+          }
+
+          line(`\n  ${searched.creditor} — ${grid.rows.length} row(s)`);
+          line(`  HEADINGS: ${grid.headers.filter(Boolean).join(" | ")}`);
+          line("  as readTransactionPage() sees the first three rows:");
+          grid.rows.slice(0, 3).forEach((r) => {
+            line(`    reference="${r.reference}" amount=${r.amount} booking="${r.bookingNo}" handle=${r.handle}`);
+          });
+
+          const boxes = await page.evaluate(() =>
+            Array.from(document.querySelectorAll('input[type="checkbox"]'))
+              .slice(0, 4)
+              .map((b) => `${b.id ? "#" + b.id : "(no id)"}${b.name ? " name=" + b.name : ""}`)
+          );
+          line(`  checkbox ids: ${boxes.join(", ")}`);
+          line(
+            grid.rows.every((r) => r.amount != null)
+              ? "  every row carried a readable amount — the amount column was found"
+              : "  SOME ROWS HAD NO AMOUNT — the amount column heading needs adding to readTransactionPage()"
+          );
+          measured = true;
+          break;
+        }
+
+        if (!measured) {
+          line("  no creditor tried had rows either. Pass --shape-from \"<creditor>\" with one you know has data.");
+        }
+      }
+    }
+
     line("\nRead-only probe finished. Nothing ticked, nothing saved, nothing issued.");
   } catch (err) {
     console.error("\nProbe failed: " + (err && err.message ? err.message : err));
