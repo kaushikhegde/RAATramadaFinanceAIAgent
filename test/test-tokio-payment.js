@@ -150,6 +150,64 @@ const travel = (policy, nett) => ({
       "two rows sharing a reference must still be separately addressable");
   });
 
+  console.log("\nstep 11 — the payment header");
+
+  /* The live failure this pair exists for: the dashboard reported "Could not
+     find the Transaction Type select … Run probe-tokio-payments.js and update
+     PAYMENT" against [TOKIOMARINE] Tokio Marine over 01-08-2026 → 20-10-2026.
+     Nothing was wrong with PAYMENT. The search had returned nothing, so the
+     page was still the search form and the header had never been drawn. */
+  const SEARCH_FORM_ONLY = `
+    <table>
+      <tr><td>Creditor Code</td><td><input id="creditor"></td></tr>
+      <tr><td>Level 1 Branch</td><td><select id="level1Branch"></select></td></tr>
+    </table>
+    <input type="button" id="goButton" value="Go">
+    <input type="button" id="form_clearButton" value="Clear">`;
+
+  await check("an empty search is reported as empty, not as a missing selector", async () => {
+    await assert.rejects(
+      () => tk.fillPaymentHeader(fakePage(SEARCH_FORM_ONLY), { reference: "TOKIO_Aug 2026" }),
+      (err) => {
+        assert.ok(
+          /returned no segments/i.test(err.message),
+          `wanted an empty-result message, got: ${err.message}`
+        );
+        assert.ok(
+          !/update PAYMENT/i.test(err.message),
+          "an empty search must not send anyone off to re-probe the selectors"
+        );
+        return true;
+      }
+    );
+  });
+
+  await check("a genuinely missing selector still says so, with the grid present", async () => {
+    // Grid drawn (so the search DID find something) but no Transaction Type
+    // anywhere: that is a real selector problem and must read like one.
+    const page = fakePage(grid([{ reference: "21087245", amount: "700.00" }]) +
+      `<input type="button" id="goButton" value="Go">`);
+    await assert.rejects(
+      () => tk.fillPaymentHeader(page, { reference: "TOKIO_Aug 2026" }),
+      (err) => {
+        assert.ok(/update PAYMENT/i.test(err.message), `wanted the probe hint, got: ${err.message}`);
+        return true;
+      }
+    );
+  });
+
+  await check("step 11 is never attempted before the grid is known to exist", () => {
+    // Ordering is the actual fix; a source check is the only seam for it
+    // short of a live Tramada, and it bites if anyone moves the call back.
+    const src = require("fs").readFileSync(require("path").join(__dirname, "..", "tramada-tokio.js"), "utf8");
+    const body = src.slice(src.indexOf("async function runTokioReconciliation"));
+    const guard = body.indexOf("firstPage.found");
+    const header = body.indexOf("await fillPaymentHeader");
+    assert.ok(guard > -1, "runTokioReconciliation no longer checks for a grid first");
+    assert.ok(header > -1 && guard < header,
+      "fillPaymentHeader must come AFTER the empty-grid guard");
+  });
+
   console.log("\nsteps 12-13 — matching and ticking");
 
   await check("a policy that matches on reference and amount is ticked", async () => {

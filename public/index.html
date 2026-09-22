@@ -6860,8 +6860,8 @@ function askMarkStale(){
     /* A run that ticked NOTHING is the normal answer when the creditor has
        nothing outstanding, so it is headlined as a finding rather than left
        to read like a failure. */
-    const nothingFound = !r.ticked.length && r.mismatched.length &&
-      r.mismatched.every((m) => /not found in Tramada/i.test(m.remark || ''));
+    const nothingFound = r.empty === true || (!r.ticked.length && r.mismatched.length &&
+      r.mismatched.every((m) => /not found in Tramada/i.test(m.remark || '')));
 
     return '<div class="tk-sheet">' +
       '<div style="font-size:12px;font-weight:600;margin-bottom:6px">' +

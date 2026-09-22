@@ -396,6 +396,31 @@ async function fillPaymentHeader(page, { reference, payeeName = "Tokio" }, onPro
   if (!reference) throw new Error("A payment reference is required — step 11 / BR16.");
   onProgress(45, "Setting Transaction Type, Payee Name and Reference...");
 
+  /* THE HEADER DOES NOT EXIST UNTIL THE SEARCH FOUND SOMETHING.
+     Payment Overview sits BELOW the transaction grid, so on a search that
+     came back empty the page is still nothing but the search form and
+     hunting for #transactionTypeCode reports a selector problem that is not
+     one. runTokioReconciliation checks for the grid before calling this, but
+     the check belongs here too — this is exported and the CLI calls it. */
+  const stillSearching = await page
+    .evaluate(() => {
+      const grid = Array.from(document.querySelectorAll("table")).some(
+        (t) =>
+          Array.from(t.querySelectorAll("th, thead td")).some((h) =>
+            /^\s*reference\s*$/i.test((h.textContent || "").replace(/\s+/g, " ").trim())
+          ) && t.querySelector('input[type="checkbox"]')
+      );
+      return !grid && !!document.querySelector("#goButton, #form_clearButton");
+    })
+    .catch(() => false);
+  if (stillSearching) {
+    throw new Error(
+      "The search returned no segments, so Tramada never drew the Payment Overview header — " +
+        "there is nothing to pay. This is an empty result, not a selector problem: check the " +
+        "creditor, the Segment Created Date range, and whether those costings are already Paid."
+    );
+  }
+
   const txnSel = await firstPresent(page, PAYMENT.transactionType, { what: "Transaction Type select" });
   const txn = await page.evaluate((sel) => {
     const el = document.querySelector(sel);
@@ -807,6 +832,44 @@ async function runTokioReconciliation({
     step("Steps 9-10 — Issue Payments", "Creditor Payment, Trust account, sorted by reference (BR10)");
     const search = await searchCreditorPayments(page, { creditor, fromCreated, toCreated }, onProgress);
     step("Step 10 — searched", `${search.creditor} · ${search.from} → ${search.to}`);
+
+    /* STEP 11 ONLY EXISTS ONCE THE SEARCH RETURNED SEGMENTS.
+       Tramada renders Payment Overview / Payment Details — Transaction Type,
+       Payee Name, Reference — underneath the transaction grid, and the grid
+       is only drawn when the search found something. Filling the header
+       first therefore hunts for #transactionTypeCode on a page that is still
+       the search form, and reports "Could not find the Transaction Type
+       select" when the truth is simply that this creditor has nothing
+       outstanding. Measured 22-Sep-2026 against [TOKIOMARINE] Tokio Marine
+       over 01-08-2026 → 20-10-2026.
+
+       So: look for the grid first. No grid is an ANSWER, not a fault — the
+       same distinction tickMatchingRows now draws. */
+    const firstPage = await readTransactionPage(page);
+    if (!firstPage.found) {
+      step(
+        "No rows",
+        `${search.creditor} has no outstanding segments between ${search.from} and ${search.to}. ` +
+          "Nothing to tick, so no payment header and no session."
+      );
+      onProgress(100, "Nothing outstanding for this creditor — nothing ticked.");
+      keepTabOpen = true;
+      try { await page.bringToFront(); } catch { /* not fatal */ }
+      return {
+        reference,
+        label,
+        search,
+        header: null,
+        ticked: [],
+        mismatched: travelRows
+          .map((t) => core.policyKey(t.policy != null ? t.policy : t.reference))
+          .filter(Boolean)
+          .map((policy) => ({ policy, ticked: false, remark: "Policy number not found in Tramada" })),
+        steps,
+        savedSession: false,
+        empty: true,
+      };
+    }
 
     // Step 11.
     const header = await fillPaymentHeader(page, { reference }, onProgress);
