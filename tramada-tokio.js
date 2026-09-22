@@ -264,6 +264,401 @@ async function searchCreditorPayments(page, opts = {}, onProgress = () => {}) {
   return settled;
 }
 
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Steps 11 to 14 — Issue Creditor Payment
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * NOTHING BELOW HAS BEEN MEASURED AGAINST A LIVE TRAMADA YET.
+ *
+ * Every selector here is a candidate list, every column is found by its
+ * heading, and every failure prints what the page actually contains. That is
+ * not defensive habit — it is what the IPSI flow cost to learn. There, an id
+ * borrowed from a neighbouring form (#cardNumberDisplay, which does not exist
+ * on the receipt popup) produced a 15-second timeout naming a field that was
+ * simply absent, and finding the real one took a separate probe run.
+ *
+ * So: run `node tools/probe-tokio-payments.js` once, paste its output, and
+ * replace the candidate lists below with what it reports. Until then this code
+ * will either work or tell you exactly why it did not.
+ */
+
+/** Wait for whichever of several selectors this page actually renders. */
+async function firstPresent(page, selectors, { timeout = 10000, what = "field" } = {}) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const hit = await page
+      .evaluate((sels) => {
+        for (const sel of sels) {
+          const el = document.querySelector(sel);
+          if (!el || el.disabled) continue;
+          const st = window.getComputedStyle(el);
+          if (st.display === "none" || st.visibility === "hidden") continue;
+          return sel;
+        }
+        return null;
+      }, selectors)
+      .catch(() => null);
+    if (hit) return hit;
+    await sleep(250);
+  }
+
+  const present = await page
+    .evaluate(() => {
+      const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+      return Array.from(document.querySelectorAll("input, select, textarea, button"))
+        .filter((el) => el.type !== "hidden")
+        .map((el) => {
+          const td = el.closest("td");
+          const prev = td && td.previousElementSibling;
+          const name = el.id ? "#" + el.id : el.name ? `[name=${el.name}]` : el.tagName.toLowerCase();
+          return `${name}${prev ? ` ("${norm(prev.textContent).slice(0, 24)}")` : ""}`;
+        })
+        .slice(0, 30);
+    })
+    .catch(() => []);
+
+  throw new Error(
+    `Could not find the ${what}. Looked for ${selectors.join(", ")}. ` +
+      (present.length
+        ? `The page has: ${present.join(", ")}. Run \`node tools/probe-tokio-payments.js\` and update PAYMENT.`
+        : "The page appears empty or still loading.")
+  );
+}
+
+/* Candidates, most-likely first. Replace with the probe's output. */
+const PAYMENT = Object.freeze({
+  transactionType: ["#transactionTypeCode", "#paymenttransactionTypeCode", "#transactionType"],
+  payeeName: ["#payeeName", "#paymentpayeeName", "#payee"],
+  reference: ["#referenceNumber", "#paymentreferenceNumber", "#reference"],
+  sessionLabel: ["#sessionLabel", "#paymentsessionLabel", "#sessionName", "#label"],
+  saveSession: ["#saveSession", "#saveSessionButton", 'input[value="Save Session"]', 'input[value="Save"]'],
+  nextPage: ["#nextPage", 'a[title="Next"]', 'input[value="Next"]', "a.next"],
+});
+
+/**
+ * Step 11 — Payment Overview and Payment Details.
+ *
+ * Transaction Type "EFT", Payee Name "Tokio", Reference "TOKIO_MMM YYYY".
+ * Each one is read back: a select that silently refused its value is the
+ * difference between a session Travel Accounts can issue and one they cannot.
+ */
+async function fillPaymentHeader(page, { reference, payeeName = "Tokio" }, onProgress = () => {}) {
+  if (!reference) throw new Error("A payment reference is required — step 11 / BR16.");
+  onProgress(45, "Setting Transaction Type, Payee Name and Reference...");
+
+  const txnSel = await firstPresent(page, PAYMENT.transactionType, { what: "Transaction Type select" });
+  const txn = await page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (!el || !el.options) return null;
+    const opt = Array.from(el.options).find((o) => /^\s*eft\s*$/i.test(o.text) || o.value === "ET");
+    if (!opt) return { failed: Array.from(el.options).map((o) => o.text.trim()) };
+    el.value = opt.value;
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return { text: opt.text.trim() };
+  }, txnSel);
+  if (!txn || txn.failed) {
+    throw new Error(
+      `Transaction Type has no "EFT" option — it offers ${(txn && txn.failed || []).join(" | ") || "nothing"}.`
+    );
+  }
+  await sleep(500);
+
+  const payeeSel = await firstPresent(page, PAYMENT.payeeName, { what: "Payee Name field" });
+  await page.fill(payeeSel, String(payeeName));
+
+  const refSel = await firstPresent(page, PAYMENT.reference, { what: "Reference field" });
+  await page.fill(refSel, String(reference));
+  await sleep(300);
+
+  const settled = {
+    transactionType: txn.text,
+    payeeName: await page.inputValue(payeeSel).catch(() => null),
+    reference: await page.inputValue(refSel).catch(() => null),
+  };
+  if (settled.payeeName !== String(payeeName) || settled.reference !== String(reference)) {
+    throw new Error(
+      `The payment header did not keep its values: Payee Name reads "${settled.payeeName}" ` +
+        `(wanted "${payeeName}"), Reference reads "${settled.reference}" (wanted "${reference}").`
+    );
+  }
+  return settled;
+}
+
+/**
+ * The transaction rows on the page currently shown.
+ *
+ * Columns are found by HEADING, never by index — the same bug that made the
+ * IPSI allocation grid report "nothing outstanding" against a booking plainly
+ * showing money due was a hard-coded cells[6].
+ */
+async function readTransactionPage(page) {
+  return await page.evaluate(() => {
+    const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+    const money = (s) => {
+      const t = norm(s);
+      if (!t || !/\d/.test(t)) return null;
+      const neg = /^\(.*\)$/.test(t);
+      const n = Number(t.replace(/[^0-9.]/g, ""));
+      if (!Number.isFinite(n)) return null;
+      return neg ? -n : n;
+    };
+
+    // The grid is the table whose headings carry a Reference column and whose
+    // rows carry checkboxes — the shape of every allocation grid in Tramada.
+    let table = null;
+    for (const t of document.querySelectorAll("table")) {
+      const heads = Array.from(t.querySelectorAll("th, thead td")).map((h) => norm(h.textContent));
+      if (heads.some((h) => /^reference$/i.test(h)) && t.querySelector('input[type="checkbox"]')) {
+        table = t;
+        break;
+      }
+    }
+    if (!table) return { found: false, headers: [], rows: [] };
+
+    const headers = Array.from(table.querySelectorAll("th, thead td")).map((h) => norm(h.textContent));
+    const col = (re) => headers.findIndex((h) => re.test(h));
+    const iRef = col(/^reference$/i);
+    const iAmount = col(/creditor\s*payable|amount|payable/i);
+    const iBooking = col(/booking/i);
+
+    const rows = [];
+    Array.from(table.querySelectorAll("tr")).forEach((tr, index) => {
+      const box = tr.querySelector('input[type="checkbox"]');
+      if (!box) return;
+      const cells = Array.from(tr.querySelectorAll("td")).map((td) => norm(td.textContent));
+      if (cells.length <= iRef) return;
+      const reference = iRef >= 0 ? cells[iRef] : null;
+      if (!reference) return;
+
+      // Tag the row so it can be addressed later without ambiguity.
+      //
+      // BR12 exists because one policy can appear MORE THAN ONCE with
+      // different amounts. Finding the row again by its reference text
+      // therefore returns the first line carrying that policy — the very one
+      // BR12 says not to pick. A per-row handle is the only way to tick the
+      // line the amount actually chose.
+      const handle = "tokio-row-" + index;
+      tr.setAttribute("data-tokio-row", handle);
+
+      rows.push({
+        index,
+        handle,
+        reference,
+        amount: iAmount >= 0 ? money(cells[iAmount]) : null,
+        bookingNo: iBooking >= 0 ? cells[iBooking] : null,
+        ticked: !!box.checked,
+        checkboxId: box.id || null,
+      });
+    });
+    return { found: true, headers, rows };
+  });
+}
+
+/**
+ * Steps 12-13 — match, then tick.
+ *
+ * Matching is tokio-core's job (BR11 reference + amount, BR13 ±1%, BR12 the
+ * closest amount when a policy repeats). This only drives the page, and only
+ * ticks a row core has already said matches.
+ *
+ * The tick is a REAL click. Setting .checked and dispatching a synthetic event
+ * leaves Tramada's own onclick unrun — which on the IPSI receipt form meant a
+ * row that looked ticked and was never allocated.
+ */
+async function tickMatchingRows(page, travelRows, { onStep = () => {} } = {}) {
+  const grid = await readTransactionPage(page);
+  if (!grid.found) {
+    throw new Error(
+      "No transaction grid on this page — expected a table with a Reference column and checkboxes. " +
+        "Run `node tools/probe-tokio-payments.js` to see what is actually there."
+    );
+  }
+
+  // BR11: match on the Reference field (the 210 policy number) and the amount.
+  // The booking number is not used, so it is not indexed.
+  //
+  // Tramada lines are grouped by policy FIRST, because BR12 is about choosing
+  // between several lines carrying the same policy: "select the line that
+  // matches the amount, not simply the first line with that policy number."
+  // Walking the grid row by row asking "does this one match?" cannot make that
+  // choice — it has to see the whole group.
+  const byPolicy = new Map();
+  for (const row of grid.rows) {
+    const key = core.policyKey(row.reference);
+    if (!key) continue;
+    if (!byPolicy.has(key)) byPolicy.set(key, []);
+    byPolicy.get(key).push(row);
+  }
+
+  // buildConsolidated() rows are { line, row, policy, appended, outcome }.
+  // A plain { policy, totalNett } is accepted too, so this can be driven from
+  // a test or a resumed run without rebuilding the whole sheet.
+  const netOf = (t) =>
+    t.totalNett != null ? t.totalNett : t.appended ? t.appended["RAA Total Nett"] : null;
+
+  const results = [];
+  for (const travel of travelRows) {
+    // Step 8 and BR18: "Do not reconcile any transactions that has an
+    // exception flagged." Retail rows are gone by now; an exception row is not.
+    if (travel.outcome && travel.outcome !== core.OUTCOME.TRAVEL) continue;
+
+    const key = core.policyKey(travel.policy != null ? travel.policy : travel.reference);
+    if (!key) continue;
+
+    const candidates = byPolicy.get(key);
+    // Not on THIS page. Fifty pages means saying "not found" fifty times over
+    // if that is reported here, so the absent ones are settled once at the end.
+    if (!candidates || !candidates.length) continue;
+
+    const verdict = core.matchTramadaLine(candidates, netOf(travel));
+    if (!verdict.ok) {
+      results.push({
+        policy: key,
+        reference: (verdict.closest && verdict.closest.reference) || key,
+        ticked: false,
+        remark: verdict.remark, // BR15's wording, straight from tokio-core
+        expected: netOf(travel),
+        closest: verdict.closest ? verdict.closest.amount : null,
+      });
+      onStep({ step: "not ticked", detail: `${key} — ${verdict.remark}` });
+      continue;
+    }
+
+    const line = verdict.line;
+    const box = page.locator(`[data-tokio-row="${line.handle}"] input[type="checkbox"]`).first();
+    if (!(await box.count())) {
+      results.push({ policy: key, reference: line.reference, ticked: false, remark: "checkbox not found on the row" });
+      continue;
+    }
+
+    // A REAL click. Setting .checked and dispatching a synthetic event leaves
+    // Tramada's own onclick unrun — on the IPSI receipt form that meant a row
+    // that looked ticked and was never allocated.
+    await box.check().catch(async () => {
+      await box.click({ force: true }).catch(() => {});
+    });
+    await sleep(120);
+
+    results.push({
+      policy: key,
+      reference: line.reference,
+      handle: line.handle,
+      ticked: true,
+      amount: line.amount,
+      expected: netOf(travel),
+      differenceCents: verdict.differenceCents,
+    });
+    onStep({ step: "ticked", detail: `${line.reference} @ ${line.amount} (wanted ${netOf(travel)})` });
+  }
+
+  // Read the page back: a tick that did not stay is not a tick. By HANDLE, for
+  // the same reason the tick was — two lines can share a reference, and
+  // checking the wrong one would report success either way.
+  const after = await readTransactionPage(page);
+  for (const r of results.filter((x) => x.ticked)) {
+    const now = after.rows.find((x) => x.handle === r.handle);
+    if (!now || !now.ticked) {
+      throw new Error(
+        `The A column did not stay ticked for reference ${r.reference}. Tramada will not include an ` +
+          `unticked row in the session — nothing was saved.`
+      );
+    }
+  }
+
+  return { headers: grid.headers, rows: grid.rows, results };
+}
+
+/**
+ * Step 13's note: "The list paginates at 20 items per page and runs to roughly
+ * 50 pages at typical monthly volume. The AI agent must work through all pages."
+ *
+ * Bounded, and the bound is explained: 200 pages at 20 a page is 4,000
+ * transactions, several times a heavy month. A loop with no bound against a
+ * pager that stops advancing is a run that never ends.
+ */
+const MAX_PAGES = Number(process.env.TOKIO_MAX_PAGES || 200);
+
+async function walkAllPages(page, travelRows, { onProgress = () => {}, onStep = () => {} } = {}) {
+  const all = [];
+  const seen = new Set();
+
+  for (let pageNo = 1; pageNo <= MAX_PAGES; pageNo++) {
+    onProgress(50 + Math.min(35, pageNo), `Matching page ${pageNo}...`);
+    const { results } = await tickMatchingRows(page, travelRows, { onStep });
+    all.push(...results.map((r) => ({ ...r, page: pageNo })));
+
+    // A page whose references are all ones already seen means the pager did
+    // not actually advance — stop rather than tick the same rows again.
+    const refs = results.map((r) => r.reference).join("|");
+    if (refs && seen.has(refs)) {
+      onStep({ step: "pagination", detail: `page ${pageNo} repeated page ${pageNo - 1} — stopping` });
+      break;
+    }
+    seen.add(refs);
+
+    let next = null;
+    try {
+      next = await firstPresent(page, PAYMENT.nextPage, { timeout: 1500, what: "Next page control" });
+    } catch {
+      next = null; // no pager, or the last page
+    }
+    if (!next) break;
+
+    const disabled = await page.evaluate((sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return true;
+      return el.disabled || /disabled/i.test(el.className || "") || el.getAttribute("aria-disabled") === "true";
+    }, next);
+    if (disabled) break;
+
+    await Promise.all([page.waitForLoadState("domcontentloaded").catch(() => {}), page.click(next)]);
+    await sleep(1200);
+  }
+
+  return all;
+}
+
+/**
+ * Step 14 — save the session. NOT Issue.
+ *
+ * BR16: "The AI Agent saves the reconciliation as a session in Tramada. It does
+ * NOT click Issue." The Issue control is deliberately never located here — a
+ * selector that is not in this file cannot be clicked by accident, and BR18
+ * puts issuing, rounding and the payment total in a human's hands.
+ */
+async function saveSession(page, label, onProgress = () => {}) {
+  if (!label) throw new Error("A session label is required — step 14.");
+  onProgress(90, `Saving the session as ${label}...`);
+
+  const labelSel = await firstPresent(page, PAYMENT.sessionLabel, { what: "Session Label field" });
+  await page.fill(labelSel, String(label));
+  await sleep(200);
+
+  const readBack = await page.inputValue(labelSel).catch(() => null);
+  if (readBack !== String(label)) {
+    throw new Error(`Session Label reads "${readBack}", expected "${label}".`);
+  }
+
+  const saveSel = await firstPresent(page, PAYMENT.saveSession, { what: "Save Session button" });
+  await Promise.all([page.waitForLoadState("domcontentloaded").catch(() => {}), page.click(saveSel)]);
+  await sleep(1500);
+
+  const errors = await page.evaluate(() => {
+    const out = [];
+    document.querySelectorAll("span, div, li, font").forEach((n) => {
+      if (n.children.length) return;
+      const t = (n.textContent || "").trim();
+      if (t && t.length < 200 && /must be|is required|is invalid|cannot be/i.test(t)) out.push(t);
+    });
+    return [...new Set(out)].slice(0, 6);
+  });
+  if (errors.length) throw new Error(`Tramada refused the session: ${errors.join("; ")}`);
+
+  onProgress(100, `Session ${label} saved.`);
+  return { label };
+}
+
 module.exports = {
   TRAMADA_BASE_URL,
   SEARCH,
@@ -275,5 +670,14 @@ module.exports = {
   assertSignedIn,
   openIssuePayments,
   searchCreditorPayments,
+  // Steps 11-14
+  PAYMENT,
+  MAX_PAGES,
+  firstPresent,
+  fillPaymentHeader,
+  readTransactionPage,
+  tickMatchingRows,
+  walkAllPages,
+  saveSession,
   core,
 };

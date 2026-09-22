@@ -133,14 +133,26 @@ check("the branch test is case-insensitive and matches inside the name", () => {
   assert.strictEqual(cls("travel adelaide", false, true, false).outcome, t.OUTCOME.TRAVEL);
 });
 
-check("the two combinations the guide does not cover are flagged, not guessed", () => {
-  const a = cls("Elizabeth Travel", true, false, false);   // Travel, RCC, not in Tramada
-  const b = cls("Elizabeth", false, true, false);          // not Travel, not RCC
-  for (const r of [a, b]) {
-    assert.strictEqual(r.outcome, t.OUTCOME.EXCEPTION);
-    assert.strictEqual(r.undocumented, true, "not marked as undocumented: " + r.remark);
-    assert.ok(/does not cover/i.test(r.remark), r.remark);
+// The 17-Sep revision's BR07 has no condition on Tramada: a Travel branch
+// found in RCC is an exception whether or not Tramada also has it. That closed
+// one of the two combinations this module used to flag as uncovered.
+check("BR07 — a Travel branch found in RCC is an exception either way", () => {
+  for (const inTramada of [true, false]) {
+    const r = cls("Elizabeth Travel", true, inTramada, false);
+    assert.strictEqual(r.outcome, t.OUTCOME.EXCEPTION, `inTramada=${inTramada}`);
+    assert.ok(/BR07/.test(r.remark), r.remark);
+    assert.ok(/also found in RCC/i.test(r.remark), r.remark);
+    assert.ok(!r.undocumented, "BR07 now covers this — it must not be flagged as uncovered");
   }
+});
+
+check("the one combination the guide still does not cover is flagged, not guessed", () => {
+  // Branch is not Travel and the policy is in neither RCC nor Tramada. The
+  // guide says nothing about it, so neither does this.
+  const r = cls("Elizabeth", false, true, false);
+  assert.strictEqual(r.outcome, t.OUTCOME.EXCEPTION);
+  assert.strictEqual(r.undocumented, true, "not marked as undocumented: " + r.remark);
+  assert.ok(/does not cover/i.test(r.remark), r.remark);
 });
 
 check("every exception carries the words the guide asks for", () => {

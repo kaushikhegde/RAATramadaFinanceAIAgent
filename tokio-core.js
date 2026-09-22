@@ -121,7 +121,7 @@ function classify({ branch, inRcc, inPayment, inCosting }) {
     return { outcome: OUTCOME.EXCEPTION, remark: PLEASE_CHECK + " — in RCC and in Tramada, but the branch is not Travel" };
   }
   if (isTravel && inRcc && inTramada) {
-    return { outcome: OUTCOME.EXCEPTION, remark: PLEASE_CHECK + " — Travel branch but also found in RCC" };
+    return { outcome: OUTCOME.EXCEPTION, remark: PLEASE_CHECK + " — Travel branch but also found in RCC (BR07)" };
   }
   if (isTravel && !inRcc && inTramada) {
     return { outcome: OUTCOME.TRAVEL, remark: "" };
@@ -130,12 +130,15 @@ function classify({ branch, inRcc, inPayment, inCosting }) {
     return { outcome: OUTCOME.EXCEPTION, remark: PLEASE_CHECK + " — Travel branch but not found in Tramada Payment or Costing" };
   }
 
-  // Undocumented. Say so rather than picking one.
+  // BR07, in the 17-Sep revision: "If branch name contains 'Travel' AND a
+  // policy number IS found in the RCC column. Flag for human review. Do not
+  // exclude and do not reconcile." No condition on Tramada either way — so
+  // this combination, which the earlier revision left open and this module
+  // flagged as undocumented, is now a plain exception like the one above it.
   if (isTravel && inRcc && !inTramada) {
     return {
       outcome: OUTCOME.EXCEPTION,
-      remark: PLEASE_CHECK + " — Travel branch, found in RCC, not in Tramada. The guide does not cover this combination.",
-      undocumented: true,
+      remark: PLEASE_CHECK + " — Travel branch but also found in RCC (BR07)",
     };
   }
   return {
