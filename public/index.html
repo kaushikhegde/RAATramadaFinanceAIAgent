@@ -6649,7 +6649,9 @@ function askMarkStale(){
   const TOKIO_ACCEPT =
     '.csv,text/csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
-  const tokio = { files: {}, month: null, result: null, busy: false, error: '' };
+  const tokio = { files: {}, month: null, result: null, busy: false, error: '',
+    // steps 9-14: the Tramada half, run from this card
+    run: null, running: false, runError: '' };
 
   function mountTokio() {
     const grid = document.getElementById('tileGrid');
@@ -6750,6 +6752,12 @@ function askMarkStale(){
 
     const exp = card.querySelector('#tokioExport');
     if (exp) exp.onclick = tokioExportCsv;
+    const run = card.querySelector('#tokioRun');
+    if (run) run.onclick = () => tokioReconcile(null);
+    const sv = card.querySelector('#tokioSave');
+    // The literal the server insists on. Typed here in full rather than
+    // assembled, so grepping for it finds every place it is spoken.
+    if (sv) sv.onclick = () => tokioReconcile('SAVE SESSION');
     card.querySelectorAll('[data-tokio-pick]').forEach((b) => {
       b.onclick = () => pickTokioFile(b.getAttribute('data-tokio-pick'));
     });
@@ -6823,9 +6831,92 @@ function askMarkStale(){
       '</tr></thead><tbody>' + body + '</tbody></table></div>' +
       '<div class="tk-acts">' +
         '<button class="btn sm" id="tokioExport">Export CSV</button>' +
+        /* Steps 9-14 without a terminal. Two buttons, not one: the first ticks
+           and stops, the second saves the session. Issue is never offered —
+           BR16 puts it in a human's hands and BR18 leaves them the total. */
+        '<button class="btn sm indigo" id="tokioRun"' + (tokio.running ? ' disabled' : '') + '>' +
+          (tokio.running ? 'Running in Tramada\u2026' : 'Reconcile in Tramada') + '</button>' +
+        (tokio.run && !tokio.run.savedSession
+          ? '<button class="btn sm" id="tokioSave"' + (tokio.running ? ' disabled' : '') + '>' +
+              'Save session ' + esc(tokio.run.label) + '</button>'
+          : '') +
         '<span style="font-size:11.5px;color:var(--ink-2,#5a5a72)">' +
           res.rows.length + ' row(s) \u00b7 this is the sheet that goes to Travel Accounts</span>' +
-      '</div></div>';
+      '</div>' + tokioRunBlock() + '</div>';
+  }
+
+  /* WHAT THE TRAMADA RUN DID.
+     The step log is the point, not the verdict: the guide's "Other features"
+     asks to show the steps the agent took, and a run that found nothing is
+     worth reading line by line. Mismatches come back with tokio-core's own
+     wording so the card and the Remarks column say the same thing. */
+  function tokioRunBlock() {
+    if (tokio.runError) {
+      return '<div class="tk-err">' + esc(tokio.runError) + '</div>' + tokioSteps(tokio.run);
+    }
+    const r = tokio.run;
+    if (!r) return '';
+    return '<div class="tk-sheet">' +
+      '<div style="font-size:12px;font-weight:600;margin-bottom:6px">' +
+        (r.savedSession
+          ? 'Session ' + esc(r.label) + ' saved — Issue was NOT clicked'
+          : 'Ticked in Tramada, nothing saved yet') +
+      '</div>' +
+      '<div class="tk-counts">' +
+        '<div><b>' + r.ticked.length + '</b>ticked</div>' +
+        '<div><b>' + r.mismatched.length + '</b>not ticked</div>' +
+        '<div><b>' + esc(r.reference) + '</b>reference</div>' +
+      '</div>' +
+      (r.mismatched.length
+        ? '<div class="tk-scroll" style="margin-top:10px"><table class="tk-tbl"><thead><tr>' +
+            '<th>Policy</th><th>Remark</th></tr></thead><tbody>' +
+            r.mismatched.map((m) =>
+              '<tr class="is-exception"><td>' + esc(m.policy || '') + '</td>' +
+              '<td class="rk">' + esc(m.remark || '') + '</td></tr>').join('') +
+          '</tbody></table></div>'
+        : '') +
+      tokioSteps(r) +
+      '</div>';
+  }
+
+  function tokioSteps(r) {
+    const steps = (r && r.steps) || [];
+    if (!steps.length) return '';
+    return '<details style="margin-top:10px"><summary style="font-size:11.5px;cursor:pointer">' +
+      'Steps taken (' + steps.length + ') — logged for auditing</summary>' +
+      '<div class="tk-scroll" style="margin-top:7px"><table class="tk-tbl"><tbody>' +
+      steps.map((st) =>
+        '<tr><td>' + esc(st.step || '') + '</td><td class="rk">' + esc(st.detail || '') + '</td></tr>'
+      ).join('') + '</tbody></table></div></details>';
+  }
+
+  /* `confirm` is what separates ticking from saving. Sent only by the Save
+     button, and the server checks the literal again — the page asking nicely
+     is not what makes a write happen. */
+  async function tokioReconcile(confirm) {
+    const res = tokio.result;
+    if (!res || !res.rows || !res.rows.length || tokio.running) return;
+    tokio.running = true;
+    tokio.runError = '';
+    renderTokio();
+    try {
+      const body = { rows: res.rows, month: res.month && res.month.key };
+      if (confirm) body.confirm = confirm;
+      const reply = await fetch('/api/tokio/reconcile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await reply.json();
+      if (!reply.ok) throw Object.assign(new Error(data.error || 'Reconcile failed'), { steps: data.steps });
+      tokio.run = data;
+    } catch (err) {
+      tokio.runError = err.message;
+      if (err.steps) tokio.run = { steps: err.steps, ticked: [], mismatched: [], reference: '', label: '' };
+    } finally {
+      tokio.running = false;
+      renderTokio();
+    }
   }
 
   /* Built from the SAME rows the table shows, in the same order, so the file

@@ -42,6 +42,7 @@ const { runReconciliation, runMintReconciliation, runCombinedReconciliation, run
 const { runIpsiReconciliation } = require("./tramada-ipsi");
 const paymentsChat = require("./payments-chat");
 const tokioCore = require("./tokio-core");
+const tramadaTokio = require("./tramada-tokio");
 const paymentsCore = require("./payments-core");
 const azureAuth = require("./azure-auth");
 const creds = require("./tramada-creds");
@@ -378,6 +379,72 @@ app.post("/api/tokio/parse", express.json({ limit: "48mb" }), (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+/**
+ * Steps 9-14 against the live Tramada, driven from the dashboard.
+ *
+ * The page already holds the consolidated rows it is showing, so it posts
+ * those back rather than a file path — the run then reconciles exactly what
+ * the consultant was looking at, which a path on disk cannot promise.
+ *
+ * Two gates, both deliberate:
+ *
+ *   dryRun is the DEFAULT. Without `confirm` it ticks the matching lines and
+ *   stops, leaving the filled page open in Tramada for a human to check.
+ *
+ *   BR16 — Issue is never clicked, here or anywhere. Saving the session takes
+ *   the exact literal, and even then the payment total is left for Travel
+ *   Accounts (BR18).
+ *
+ * This is a long call: a browser, a search, and up to fifty pages of matching.
+ * It answers once, when it is done, and the steps come back with it — so the
+ * card can show what happened rather than only whether it worked.
+ */
+app.post("/api/tokio/reconcile", express.json({ limit: "24mb" }), async (req, res) => {
+  const body = req.body || {};
+  const rows = Array.isArray(body.rows) ? body.rows : null;
+  if (!rows || !rows.length) {
+    return res.status(400).json({ error: "No consolidated rows to reconcile — upload the four files first." });
+  }
+
+  // Only what steps 7-8 classified as Travel is reconciled. The whole sheet is
+  // sent and filtered HERE, so the page cannot widen it by accident.
+  const travel = rows.filter((r) => r.outcome === tokioCore.OUTCOME.TRAVEL);
+  if (!travel.length) {
+    return res.status(400).json({
+      error:
+        "No Travel transactions in this sheet. Steps 7-8 excluded every row as Retail or flagged it as an " +
+        "exception, so there is nothing to tick.",
+    });
+  }
+
+  const steps = [];
+  try {
+    const out = await tramadaTokio.runTokioReconciliation({
+      consolidated: { rows, travel },
+      month: body.month || null,
+      dryRun: body.confirm !== tramadaTokio.SAVE_LITERAL,
+      confirm: body.confirm || null,
+      callbacks: {
+        onProgress: (percent, status) => steps.push({ step: percent + "%", detail: status }),
+        onStep: (s) => steps.push(s),
+      },
+    });
+    res.json({
+      reference: out.reference,
+      label: out.label,
+      savedSession: out.savedSession,
+      ticked: out.ticked,
+      mismatched: out.mismatched,
+      steps: out.steps,
+      confirmLiteral: tramadaTokio.SAVE_LITERAL,
+    });
+  } catch (err) {
+    // The steps matter most when it failed — they say how far it got.
+    res.status(500).json({ error: err.message, steps: err.steps || steps });
+  }
+});
+
 
 /* ── the working file ────────────────────────────────────────────────────── */
 
