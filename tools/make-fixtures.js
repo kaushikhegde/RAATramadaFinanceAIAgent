@@ -213,7 +213,7 @@ const CLIENT_OVERRIDE = valueOf("--client", null);
  * looks like it worked. test-fixtures.js asserts this table against
  * `core.REPORTS`, which is what the run filters by.
  */
-const CATEGORY_FOR = { tokio: null,
+const CATEGORY_FOR = {
   bpay: core.BPAY_RECEIPT.value,           // DEBTOR_PAYMENT_RECEIPT
   travelpay: "CLIENT_PAYMENT_RECEIPT",
   mint: "CLIENT_PAYMENT_RECEIPT",
@@ -250,7 +250,7 @@ const CATEGORY_FOR = { tokio: null,
  * These travel as the booking's `tramadaOverrides` (see loadBookings), the one
  * channel `mapBookingToTramada` honours.
  */
-const ACCOUNT_FOR = { tokio: null,
+const ACCOUNT_FOR = {
   /* CORPORATE renders `#debtor` — a text box the client-pick has usually
      already resolved — and hides `#retailDebtor`. `retailDebtor: ""` is not
      tidiness: setFields() chooses its widget by whichever one Tramada rendered,
@@ -550,6 +550,11 @@ const say = (m) => console.log(`  ${m}`);
  * Both are invisible until a whole run comes back reconciling nothing.
  */
 function sayPlan(what) {
+  /* A fixture with no entry in CATEGORY_FOR / ACCOUNT_FOR raises no receipts,
+     and the lines below already read a missing key as "by hand". Tokio is
+     deliberately absent from both: it creates unpaid creditor segments and
+     never receipts anything, and test-fixtures.js walks CATEGORY_FOR's keys
+     expecting each to name a report in recon-core's REPORTS. */
   const client = CLIENT_OVERRIDE || CLIENT_FOR[what];
   const cat = CATEGORY_FOR[what];
   const acct = ACCOUNT_FOR[what];
