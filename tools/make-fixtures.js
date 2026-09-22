@@ -1849,6 +1849,10 @@ async function makeTokio() {
      page rather than the itinerary, which is what runAddCostingLines() is for.
      So: booking first, insurance line second, and the booking is only counted
      as a Tokio fixture once the line is actually on it. */
+  // Overridable: --payment-type PRE_PAID tries a different costing payment
+  // type, which is the one lever that might make these payable (see below).
+  const ins_paymentType = valueOf("--payment-type", "");
+
   const withPolicy = list.map((b, i) => {
     const policy = tokioPolicy(i);
     const kind = planFor(i);
@@ -1880,6 +1884,20 @@ async function makeTokio() {
         endDate: iso(new Date(today.getFullYear(), today.getMonth() + 11, 1)),
         issueDate: iso(monthStart),
         status: "Confirmed",
+        /* PAY STATUS IS WHY THESE NEVER REACHED ISSUE PAYMENTS.
+           Measured on booking 15875: the costing came out with Pay Status
+           "Paid" and Creditor Payments 0.00, and Issue Payments only lists
+           UNPAID creditor segments. The insurance form's
+           #costingpaymentTypeCode defaults to PRE_PAID_CCCF — pre-paid, i.e.
+           the creditor is already settled — and every option it offers in
+           this sandbox is a PRE_PAID variant:
+             PRE_PAID        Chargeable
+             PRE_PAID_CCCF   Chargeable CCCF   (the default)
+             PRE_PAID_GROSS  Chargeable Gross
+           So an insurance costing here can never become creditor-payable, and
+           no amount of invoicing or receipting changes that. Passed through so
+           it can be tried once RAA says which type they use live. */
+        paymentType: ins_paymentType,
       }],
       _tokio: { policy, kind, branch, sell },
     };
@@ -1912,6 +1930,44 @@ async function makeTokio() {
       say(`     – ${t.policy} skipped; no row written for it.`);
       continue;
     }
+
+    /* THE MONEY IN, OR NOTHING IS PAYABLE.
+       Measured 22-Sep-2026 the long way round: booking 15842 had its
+       insurance costing AND a client invoice (I.0000010834, $70.00) issued,
+       and Issue Payments still returned nothing for Tokio Marine over
+       2025-2027. makeMint() has said why all along, in its own comment:
+       "The money in. Without this the payment form has nothing payable."
+       A creditor segment only becomes payable once the client has been
+       receipted for it. So the receipt is raised here too — it exists to make
+       the segment payable and nothing else reads it. */
+    const amountIn = (t.sell).toFixed(2);
+    try {
+      const receipted = await runTramadaReceipt({
+        username: process.env.TRAMADA_USERNAME,
+        password: process.env.TRAMADA_PASSWORD,
+        bookingNo: rec.bookingNo,
+        receipt: {
+          transactionType: "EFT",
+          amount: amountIn,
+          reference: ref("TK", rec.bookingNo),
+          dateReceived: new Date().toISOString().slice(0, 10),
+          allocation: "ALL",
+        },
+        receiptCategory: "CLIENT_PAYMENT_RECEIPT",
+        dryRun: false,
+        callbacks: { onNeedLogin: () => say("     Sign into Tramada in the Chrome on port 9222.") },
+      });
+      const receiptNo = (receipted && receipted.receipt && receipted.receipt.receiptNo) || "";
+      if (!receiptNo) throw new Error("no receipt number came back");
+      say(`     ✓ receipted ${receiptNo} for $${amountIn} — ${CREDITOR} is now payable`);
+    } catch (err) {
+      // Said out loud and skipped: an unreceipted booking owes the creditor
+      // nothing, so its row would only exercise "not found in Tramada".
+      console.error(`     ! booking ${rec.bookingNo}: receipt failed — ${core.tidyError(err.message)}`);
+      say(`     – ${t.policy} skipped; no row written for it.`);
+      continue;
+    }
+
 
     b2b.add({
       xPolicyNumber: t.policy,
@@ -1962,43 +2018,6 @@ async function makeTokio() {
         "Receipted By": "Retail",
         Amount: nett,
       });
-    }
-
-    /* THE MONEY IN, OR NOTHING IS PAYABLE.
-       Measured 22-Sep-2026 the long way round: booking 15842 had its
-       insurance costing AND a client invoice (I.0000010834, $70.00) issued,
-       and Issue Payments still returned nothing for Tokio Marine over
-       2025-2027. makeMint() has said why all along, in its own comment:
-       "The money in. Without this the payment form has nothing payable."
-       A creditor segment only becomes payable once the client has been
-       receipted for it. So the receipt is raised here too — it exists to make
-       the segment payable and nothing else reads it. */
-    const amountIn = (t.sell).toFixed(2);
-    try {
-      const receipted = await runTramadaReceipt({
-        username: process.env.TRAMADA_USERNAME,
-        password: process.env.TRAMADA_PASSWORD,
-        bookingNo: rec.bookingNo,
-        receipt: {
-          transactionType: "EFT",
-          amount: amountIn,
-          reference: ref("TK", rec.bookingNo),
-          dateReceived: new Date().toISOString().slice(0, 10),
-          allocation: "ALL",
-        },
-        receiptCategory: "CLIENT_PAYMENT_RECEIPT",
-        dryRun: false,
-        callbacks: { onNeedLogin: () => say("     Sign into Tramada in the Chrome on port 9222.") },
-      });
-      const receiptNo = (receipted && receipted.receipt && receipted.receipt.receiptNo) || "";
-      if (!receiptNo) throw new Error("no receipt number came back");
-      say(`     ✓ receipted ${receiptNo} for $${amountIn} — ${CREDITOR} is now payable`);
-    } catch (err) {
-      // Said out loud and skipped: an unreceipted booking owes the creditor
-      // nothing, so its row would only exercise "not found in Tramada".
-      console.error(`     ! booking ${rec.bookingNo}: receipt failed — ${core.tidyError(err.message)}`);
-      say(`     – ${t.policy} skipped; no row written for it.`);
-      continue;
     }
 
     say(`     → ${t.policy} (${t.kind}) on booking ${rec.bookingNo}`);

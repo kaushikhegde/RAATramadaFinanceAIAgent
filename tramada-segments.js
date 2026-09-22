@@ -999,6 +999,12 @@ async function addInsuranceCosting(page, bookingNo, ins) {
   await setDateField(page, "#startDate", toTramadaDate(ins.startDate));
   await setDateField(page, "#endDate", toTramadaDate(ins.endDate));
   await selectIf(page, "#statusTypeCode", ins.status || "Confirmed");
+  /* The costing's payment type decides whether the creditor ends up PAYABLE.
+     Left alone it is whatever Tramada defaults to — PRE_PAID_CCCF in the
+     raatravelsandbox, which marks the segment Paid and keeps it off Issue
+     Payments entirely. Only set when a caller names one, so nothing that
+     works today changes shape. */
+  if (ins.paymentType) await selectIf(page, "#costingpaymentTypeCode", ins.paymentType);
   await setDateField(page, "#confirmationOrIssueDate", toTramadaDate(ins.issueDate));
   await fillIf(page, "#confirmationOrReferenceNumber", ins.reference); // policy no (if any)
   await fillIf(page, "#costingcreditorInvoiceNumber", ins.reference);
