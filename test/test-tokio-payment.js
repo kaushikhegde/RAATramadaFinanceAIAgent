@@ -342,6 +342,49 @@ const travel = (policy, nett) => ({
     assert.strictEqual(page.calls.length, 0);
   });
 
+  console.log("\nsteps 9-14 in one run");
+
+  await check("nothing to reconcile is refused before a browser is opened", async () => {
+    await assert.rejects(
+      () => tk.runTokioReconciliation({ consolidated: { rows: [], travel: [] } }),
+      /No Travel transactions to reconcile/
+    );
+  });
+
+  await check("saving takes the exact literal, and dry-run is the default", async () => {
+    const sheet = { rows: [travel("21087245", 700)], travel: [travel("21087245", 700)] };
+    // Wrong literal: refused before anything opens.
+    await assert.rejects(
+      () => tk.runTokioReconciliation({ consolidated: sheet, dryRun: false, confirm: "yes" }),
+      /exact confirmation "SAVE SESSION"/
+    );
+    // Default: reaches the browser, which is not here — proof it did not
+    // demand a literal the consultant has not given yet.
+    await assert.rejects(
+      () => tk.runTokioReconciliation({ consolidated: sheet }),
+      (err) => !/exact confirmation/.test(err.message)
+    );
+  });
+
+  await check("a bare row array is accepted as well as buildConsolidated()'s result", async () => {
+    // Refused for having no Travel rows, not for the wrong shape.
+    await assert.rejects(
+      () => tk.runTokioReconciliation({ consolidated: [] }),
+      /No Travel transactions/
+    );
+    const only = [{ policy: "21087245", outcome: core.OUTCOME.EXCEPTION, appended: { "RAA Total Nett": 700 } }];
+    await assert.rejects(
+      () => tk.runTokioReconciliation({ consolidated: only }),
+      /No Travel transactions/
+    );
+  });
+
+  await check("BR16 — the runner has no way to Issue", () => {
+    const src = require("fs").readFileSync(require("path").join(__dirname, "..", "tools", "tokio-recon.js"), "utf8");
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    assert.ok(!/click\(.{0,20}issue/i.test(code), "the CLI can click Issue");
+  });
+
   console.log(`\n${failures.length ? "NOT OK" : "ok"} — ${n} assertions passed, ${failures.length} failed\n`);
   process.exit(failures.length ? 1 : 0);
 })();

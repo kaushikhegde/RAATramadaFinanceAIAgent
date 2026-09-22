@@ -55,7 +55,9 @@
     "probe:tokio": "node tools/probe-tokio-payments.js",
     "test:tokio:dates": "node test/test-tokio-dates.js",
     "test:tokio:api": "node test/test-tokio-api.js",
-    "test:cardwiring": "node test/test-ipsi-card-wiring.js"
+    "test:cardwiring": "node test/test-ipsi-card-wiring.js",
+    "tokio": "node tools/tokio-recon.js",
+    "tokio:save": "node tools/tokio-recon.js --save"
   },
   "dependencies": {
     "@azure/identity": "^4.13.2",

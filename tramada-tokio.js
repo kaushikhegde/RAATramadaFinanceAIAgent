@@ -659,6 +659,151 @@ async function saveSession(page, label, onProgress = () => {}) {
   return { label };
 }
 
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Steps 9 to 14, in one run
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * The whole Tramada half of the reconciliation.
+ *
+ * Takes the consolidated sheet steps 4-8 produced — buildConsolidated()'s
+ * output, or just its Travel rows — and drives Tramada from the Issue Payments
+ * chooser to a saved session.
+ *
+ * Two things it will not do, both by the guide:
+ *
+ *   BR16/BR18 — it never clicks Issue. The session is saved and left for
+ *   Travel Accounts, who resolve the exceptions, apply rounding up to $50
+ *   (BR14) and enter the payment total.
+ *
+ *   BR15 — it never invents a remark. Anything unmatched comes back with
+ *   tokio-core's own wording, for the Remarks column and the dashboard.
+ *
+ * `dryRun` is the default. Saving a session is a write, so it takes the exact
+ * literal "SAVE SESSION" — the same shape as the IPSI receipt flow's
+ * "ISSUE RECEIPT" and dvc-card-issuer's "CREATE CARD".
+ */
+const SAVE_LITERAL = "SAVE SESSION";
+
+async function runTokioReconciliation({
+  consolidated,
+  month,
+  confirm,
+  dryRun = true,
+  creditor = "Tokio",
+  fromCreated,
+  toCreated,
+  callbacks = {},
+} = {}) {
+  const onProgress = callbacks.onProgress || (() => {});
+  const steps = [];
+  const step = (name, detail) => {
+    steps.push({ at: new Date().toISOString(), step: name, detail: detail == null ? null : String(detail) });
+    if (callbacks.onStep) callbacks.onStep(steps[steps.length - 1]);
+  };
+
+  // Accept either buildConsolidated()'s whole result or a bare row array.
+  const rows = Array.isArray(consolidated) ? consolidated : (consolidated && consolidated.rows) || [];
+  const travelRows = Array.isArray(consolidated)
+    ? rows.filter((r) => !r.outcome || r.outcome === core.OUTCOME.TRAVEL)
+    : (consolidated && consolidated.travel) || [];
+
+  if (!travelRows.length) {
+    throw new Error(
+      "No Travel transactions to reconcile. Steps 7-8 excluded every row as Retail or flagged it as an " +
+        "exception, so there is nothing to tick and no session worth saving."
+    );
+  }
+
+  const when = month instanceof Date ? month : month ? core.monthKeyToDate(month) : new Date();
+  const reference = core.paymentReference(when);
+  const label = core.sessionLabel(when);
+  const willSave = !dryRun;
+  if (willSave && confirm !== SAVE_LITERAL) {
+    throw new Error(`Saving the session requires the exact confirmation "${SAVE_LITERAL}" — refusing to proceed.`);
+  }
+
+  const browser = await openBrowser(onProgress);
+  const ctx = browser.contexts()[0] || (await browser.newContext());
+  const page = await ctx.newPage();
+  let keepTabOpen = false;
+
+  try {
+    await assertSignedIn(page);
+
+    // Steps 9-10.
+    await openIssuePayments(page, onProgress);
+    step("Steps 9-10 — Issue Payments", "Creditor Payment, Trust account, sorted by reference (BR10)");
+    const search = await searchCreditorPayments(page, { creditor, fromCreated, toCreated }, onProgress);
+    step("Step 10 — searched", `${search.creditor} · ${search.from} → ${search.to}`);
+
+    // Step 11.
+    const header = await fillPaymentHeader(page, { reference }, onProgress);
+    step("Step 11 — payment header", `${header.transactionType} · ${header.payeeName} · ${header.reference}`);
+
+    // Steps 12-13, every page.
+    const matched = await walkAllPages(page, travelRows, {
+      onProgress,
+      onStep: (s) => step(s.step, s.detail),
+    });
+
+    const ticked = matched.filter((m) => m.ticked);
+    const mismatched = matched.filter((m) => !m.ticked);
+
+    // BR15 — a Travel row that never appeared on ANY page. Reported once, at
+    // the end, rather than on each of fifty pages.
+    const seen = new Set(matched.map((m) => m.policy));
+    const notFound = travelRows
+      .filter((t) => (!t.outcome || t.outcome === core.OUTCOME.TRAVEL))
+      .map((t) => core.policyKey(t.policy != null ? t.policy : t.reference))
+      .filter((k) => k && !seen.has(k))
+      .map((policy) => ({ policy, ticked: false, remark: "Policy number not found in Tramada" }));
+
+    step(
+      "Steps 12-13 — matched",
+      `${ticked.length} ticked, ${mismatched.length} mismatched, ${notFound.length} not found in Tramada`
+    );
+
+    const outcome = {
+      reference,
+      label,
+      search,
+      header,
+      ticked,
+      mismatched: [...mismatched, ...notFound],
+      steps,
+      savedSession: false,
+    };
+
+    if (dryRun) {
+      // Left on screen deliberately: the point of stopping here is that a
+      // human looks at what was ticked before it becomes a session.
+      keepTabOpen = true;
+      try { await page.bringToFront(); } catch { /* not fatal */ }
+      step("Stopped before saving", `reply "${SAVE_LITERAL}" to save the session as ${label}`);
+      onProgress(100, `${ticked.length} lines ticked — not saved.`);
+      return outcome;
+    }
+
+    // Step 14.
+    await saveSession(page, label, onProgress);
+    step("Step 14 — session saved", `${label} — Issue was NOT clicked (BR16)`);
+    keepTabOpen = true;
+    try { await page.bringToFront(); } catch { /* not fatal */ }
+    return { ...outcome, savedSession: true };
+  } catch (err) {
+    step("Failed", err.message);
+    err.steps = steps;
+    throw err;
+  } finally {
+    if (!keepTabOpen) {
+      try { await page.close(); } catch { /* ignore */ }
+      try { await browser.close(); } catch { /* ignore */ }
+    }
+  }
+}
+
 module.exports = {
   TRAMADA_BASE_URL,
   SEARCH,
@@ -679,5 +824,7 @@ module.exports = {
   tickMatchingRows,
   walkAllPages,
   saveSession,
+  runTokioReconciliation,
+  SAVE_LITERAL,
   core,
 };
