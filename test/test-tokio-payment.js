@@ -57,6 +57,9 @@ function fakePage(html) {
     },
     async click(sel) { page.calls.push({ action: "click", sel }); },
     async waitForLoadState() {},
+    // Which page we are on decides whether "no grid" means no rows or a
+    // navigation that went wrong, so the stub has to answer it.
+    url() { return page._url || 'https://asp.tramada.com.au/ttms/x/finance/finance-payments-issue.htm'; },
     locator(sel) {
       const els = Array.from(window.document.querySelectorAll(sel));
       const wrap = (list) => ({
@@ -227,10 +230,23 @@ const travel = (policy, nett) => ({
     );
   });
 
-  await check("a grid the page does not have is reported, not read as empty", async () => {
+  // An empty search and a wrong page look identical in the DOM — Tramada
+  // renders no table either way. The URL is what tells them apart, and
+  // getting it wrong cost a run: a creditor with nothing outstanding was
+  // reported as a crash instead of as the true answer.
+  await check("no rows on the Issue Payments screen is an answer, not a crash", async () => {
+    const page = fakePage("<p>nothing here</p>");
+    const out = await tk.tickMatchingRows(page, [travel("21087245", 700)]);
+    assert.strictEqual(out.empty, true);
+    assert.deepStrictEqual(out.results, []);
+  });
+
+  await check("no rows ANYWHERE ELSE is still a crash", async () => {
+    const page = fakePage("<p>nothing here</p>");
+    page._url = "https://asp.tramada.com.au/ttms/x/home/notice-board.htm";
     await assert.rejects(
-      () => tk.tickMatchingRows(fakePage("<p>nothing here</p>"), [travel("21087245", 700)]),
-      /No transaction grid on this page/
+      () => tk.tickMatchingRows(page, [travel("21087245", 700)]),
+      /Expected the Issue Payments screen and found .*notice-board/
     );
   });
 

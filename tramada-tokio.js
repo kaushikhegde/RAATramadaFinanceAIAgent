@@ -518,10 +518,21 @@ async function readTransactionPage(page) {
 async function tickMatchingRows(page, travelRows, { onStep = () => {} } = {}) {
   const grid = await readTransactionPage(page);
   if (!grid.found) {
-    throw new Error(
-      "No transaction grid on this page — expected a table with a Reference column and checkboxes. " +
-        "Run `node tools/probe-tokio-payments.js` to see what is actually there."
-    );
+    /* NO GRID IS NOT A CRASH.
+       Tramada renders no table at all when a search matches nothing, so "no
+       grid" is the shape of an empty result as well as the shape of a wrong
+       page. Throwing treated a true answer — this creditor has nothing
+       outstanding — as a failure, and the run died instead of reporting it.
+       The two are told apart by the URL: on the Issue Payments screen an
+       empty grid means no rows; anywhere else means something navigated. */
+    const onIssuePage = /finance-payments-issue/i.test(page.url());
+    if (!onIssuePage) {
+      throw new Error(
+        `Expected the Issue Payments screen and found ${page.url()}. No transaction grid to read — ` +
+          "run `node tools/probe-tokio-payments.js` to see what is actually there."
+      );
+    }
+    return { headers: [], rows: [], results: [], empty: true };
   }
 
   // BR11: match on the Reference field (the 210 policy number) and the amount.
@@ -634,7 +645,17 @@ async function walkAllPages(page, travelRows, { onProgress = () => {}, onStep = 
 
   for (let pageNo = 1; pageNo <= MAX_PAGES; pageNo++) {
     onProgress(50 + Math.min(35, pageNo), `Matching page ${pageNo}...`);
-    const { results } = await tickMatchingRows(page, travelRows, { onStep });
+    const { results, empty } = await tickMatchingRows(page, travelRows, { onStep });
+    if (empty) {
+      onStep({
+        step: "No rows",
+        detail:
+          pageNo === 1
+            ? "the search returned nothing — this creditor has no outstanding segments in the window"
+            : `page ${pageNo} is empty`,
+      });
+      break;
+    }
     all.push(...results.map((r) => ({ ...r, page: pageNo })));
 
     // A page whose references are all ones already seen means the pager did

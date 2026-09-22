@@ -3860,12 +3860,26 @@ header.top { display: none !important }
     }
     const r = tokio.run;
     if (!r) return '';
+
+    /* A run that ticked NOTHING is the normal answer when the creditor has
+       nothing outstanding, so it is headlined as a finding rather than left
+       to read like a failure. */
+    const nothingFound = !r.ticked.length && r.mismatched.length &&
+      r.mismatched.every((m) => /not found in Tramada/i.test(m.remark || ''));
+
     return '<div class="tk-sheet">' +
       '<div style="font-size:12px;font-weight:600;margin-bottom:6px">' +
         (r.savedSession
           ? 'Session ' + esc(r.label) + ' saved — Issue was NOT clicked'
-          : 'Ticked in Tramada, nothing saved yet') +
+          : nothingFound
+            ? 'Nothing to tick — Tramada has no outstanding segments for this creditor'
+            : 'Ticked in Tramada, nothing saved yet') +
       '</div>' +
+      (nothingFound
+        ? '<div class="tk-warn">The search ran and came back empty. Every Travel policy below is ' +
+          'waiting on a Tramada segment that does not exist yet — so there is nothing to ' +
+          'reconcile, and nothing was written.</div>'
+        : '') +
       '<div class="tk-counts">' +
         '<div><b>' + r.ticked.length + '</b>ticked</div>' +
         '<div><b>' + r.mismatched.length + '</b>not ticked</div>' +
