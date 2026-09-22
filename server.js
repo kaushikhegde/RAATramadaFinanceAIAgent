@@ -43,6 +43,7 @@ const { runIpsiReconciliation } = require("./tramada-ipsi");
 const paymentsChat = require("./payments-chat");
 const tokioCore = require("./tokio-core");
 const tramadaTokio = require("./tramada-tokio");
+const tokioEmail = require("./tokio-email");
 const paymentsCore = require("./payments-core");
 const azureAuth = require("./azure-auth");
 const creds = require("./tramada-creds");
@@ -442,6 +443,51 @@ app.post("/api/tokio/reconcile", express.json({ limit: "24mb" }), async (req, re
   } catch (err) {
     // The steps matter most when it failed — they say how far it got.
     res.status(500).json({ error: err.message, steps: err.steps || steps });
+  }
+});
+
+
+/**
+ * Step 15 / BR17 — the consolidated sheet goes to Travel Accounts.
+ *
+ * The page sends the sheet it is showing, the same bytes the Export button
+ * would hand the user, so the mail and the download can never disagree.
+ *
+ * It DRAFTS by default. tokio-email.js says at length why: the message
+ * asserts "session saved, ready for review", and a person pressing Send in
+ * their own mail client is the person who owns that claim. Transmitting
+ * takes `transport: "smtp"` plus the exact literal, and credentials that are
+ * not in this repo.
+ */
+app.post("/api/tokio/email", express.json({ limit: "48mb" }), async (req, res) => {
+  const body = req.body || {};
+  try {
+    const attachment = body.attachment || {};
+    if (!attachment.filename || !attachment.contentBase64) {
+      return res.status(400).json({
+        error: "Nothing to attach. BR17 is the consolidated spreadsheet reaching Travel Accounts.",
+      });
+    }
+    const out = await tokioEmail.sendReconciliationEmail({
+      to: body.to || tokioEmail.TRAVEL_ACCOUNTS,
+      from: body.from || process.env.MAIL_FROM || null,
+      subject: body.subject || tokioEmail.SUBJECT,
+      label: body.label,
+      month: body.month,
+      reference: body.reference,
+      savedSession: body.savedSession === true,
+      counts: body.counts || {},
+      attachments: [{
+        filename: attachment.filename,
+        content: Buffer.from(attachment.contentBase64, "base64"),
+      }],
+      transport: body.transport === "smtp" ? "smtp" : "draft",
+      confirm: body.confirm || null,
+      dir: path.join(__dirname, "csv_uploads"),
+    });
+    res.json({ ...out, sendLiteral: tokioEmail.SEND_LITERAL });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 

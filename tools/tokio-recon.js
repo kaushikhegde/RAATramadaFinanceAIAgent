@@ -16,6 +16,7 @@
 require("dotenv").config();
 const fs = require("fs");
 const tk = require("../tramada-tokio");
+const mail = require("../tokio-email");
 
 const argv = process.argv.slice(2);
 const flag = (f) => argv.includes(f);
@@ -67,6 +68,48 @@ if (!sheetPath) {
     const remarks = out.mismatched.map((m) => ({ policy: m.policy, remark: m.remark }));
     fs.writeFileSync("tokio-remarks.json", JSON.stringify(remarks, null, 2));
     console.log(`Remarks for ${remarks.length} rows written to tokio-remarks.json.`);
+
+    /* STEP 15 — the mail to Travel Accounts.
+       Only offered once a session exists, because the subject says one does.
+       --email drafts a .eml; --email-send additionally transmits, and takes
+       the literal, which is deliberately awkward to type by accident. */
+    if (flag("--email") || flag("--email-send")) {
+      if (!out.savedSession) {
+        console.error(
+          "\n--email refused: no session was saved, and the mail's subject says one was. " +
+            "Re-run with --save first."
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const sheet = val("--attach", sheetPath);
+      const sent = await mail.sendReconciliationEmail({
+        label: out.label,
+        month: val("--month-label", month || ""),
+        reference: out.reference,
+        savedSession: true,
+        counts: {
+          ticked: out.ticked.length,
+          mismatched: out.mismatched.length,
+          exceptions: (consolidated.rows || consolidated).filter?.(
+            (r) => r && r.outcome === "exception"
+          )?.length,
+          retail: (consolidated.rows || consolidated).filter?.(
+            (r) => r && r.outcome === "retail"
+          )?.length,
+        },
+        attachments: [{ filename: require("path").basename(sheet), content: fs.readFileSync(sheet) }],
+        transport: flag("--email-send") ? "smtp" : "draft",
+        confirm: flag("--email-send") ? mail.SEND_LITERAL : null,
+      });
+      console.log(
+        sent.sent
+          ? `\nStep 15 — sent to ${sent.to}.`
+          : `\nStep 15 — draft written to ${sent.path}\n` +
+            `  Open it, check it, and press Send. To: ${sent.to}\n` +
+            `  Subject: ${sent.subject}`
+      );
+    }
   } catch (err) {
     console.error("\nFAILED: " + err.message);
     if (err.steps) for (const s of err.steps) console.error(`       · ${s.step}${s.detail ? " — " + s.detail : ""}`);

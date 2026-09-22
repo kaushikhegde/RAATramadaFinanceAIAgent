@@ -220,3 +220,49 @@ Marine transaction for the month and ticking a subset.
 
 This is not what the guide describes, so nothing uses it yet. It is worth
 putting to RAA before building the 50-page walk.
+
+---
+
+## Step 15 / BR17 — the mail to Travel Accounts
+
+Measured from "Reconciliation Guide - Tokio Marine (2).docx":
+
+> AI Agent emails the consolidated spreadsheet to Travel Accounts, advising
+> that the Tokio Marine session is saved and ready for review.
+> Email address is: TAccounts@raa.com.au with subject
+> **"AI Agent Tokio Marine reconciliation - Session saved, ready for review"**
+
+`tokio-email.js` holds both verbatim as `TRAVEL_ACCOUNTS` and `SUBJECT`.
+
+### A draft, not a send
+
+The default transport writes a `.eml` — a real message, addressed, subject
+lined, with the consolidated sheet attached — which a person opens in their
+own mail client and sends. `transport: "smtp"` transmits instead, and needs
+both the literal `SEND EMAIL` and SMTP credentials in the environment that
+this repo does not ship and never logs.
+
+That split is not timidity about mail. The message asserts *session saved,
+ready for review* — a claim about work a human is about to be asked to check —
+and BR16/BR18 already put the resolving, the rounding and the Issue click in
+a human's hands. The person who presses Send is the person who owns the claim.
+
+### What it refuses to say
+
+| guard | why |
+|---|---|
+| `savedSession !== true` | the subject says a session was saved. If none was, the mail is false. Truthy-but-not-`true` is refused too. |
+| no attachment, or an empty one | BR17 *is* the spreadsheet arriving. A mail without it is not step 15. |
+| the sheet still has `xCustomer` / `xInsuredName` | step 1 strips the passenger names before the file leaves Finance. This is the moment it leaves. |
+
+The body states plainly that Issue was **not** clicked, and lists what a
+person still owes: the exceptions, the rounding (BR14) and the transaction
+total (BR18).
+
+### Open with RAA
+
+The guide's subject names **Tokio Marine**. A subject reading *"AI Agent DVC
+reconciliation"* has also been quoted in passing — DVC is the Westpac virtual
+card flow in the other repo and has no reconciliation, so the two are unlikely
+to be the same requirement. `SUBJECT` follows the guide; the API and CLI both
+accept an override. Worth one sentence of confirmation before go-live.

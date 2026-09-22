@@ -6758,6 +6758,8 @@ function askMarkStale(){
     // The literal the server insists on. Typed here in full rather than
     // assembled, so grepping for it finds every place it is spoken.
     if (sv) sv.onclick = () => tokioReconcile('SAVE SESSION');
+    const em = card.querySelector('#tokioEmail');
+    if (em) em.onclick = tokioEmail;
     card.querySelectorAll('[data-tokio-pick]').forEach((b) => {
       b.onclick = () => pickTokioFile(b.getAttribute('data-tokio-pick'));
     });
@@ -6840,6 +6842,13 @@ function askMarkStale(){
           ? '<button class="btn sm" id="tokioSave"' + (tokio.running ? ' disabled' : '') + '>' +
               'Save session ' + esc(tokio.run.label) + '</button>'
           : '') +
+        /* STEP 15 appears only once step 14 has happened, because the mail's
+           subject says "Session saved, ready for review". Offering it before
+           then would offer to tell Travel Accounts something untrue. */
+        (tokio.run && tokio.run.savedSession
+          ? '<button class="btn sm" id="tokioEmail"' + (tokio.emailing ? ' disabled' : '') + '>' +
+              (tokio.emailing ? 'Preparing\u2026' : 'Email Travel Accounts') + '</button>'
+          : '') +
         '<span style="font-size:11.5px;color:var(--ink-2,#5a5a72)">' +
           res.rows.length + ' row(s) \u00b7 this is the sheet that goes to Travel Accounts</span>' +
       '</div>' + tokioRunBlock() + '</div>';
@@ -6863,7 +6872,19 @@ function askMarkStale(){
     const nothingFound = r.empty === true || (!r.ticked.length && r.mismatched.length &&
       r.mismatched.every((m) => /not found in Tramada/i.test(m.remark || '')));
 
-    return '<div class="tk-sheet">' +
+    const emailBlock =
+      (tokio.emailError ? '<div class="tk-err">Step 15 — ' + esc(tokio.emailError) + '</div>' : '') +
+      (tokio.emailResult
+        ? '<div class="tk-warn">' +
+            (tokio.emailResult.sent
+              ? 'Step 15 — sent to ' + esc(tokio.emailResult.to) + '.'
+              : 'Step 15 — draft written to <code>' + esc(tokio.emailResult.path || '') + '</code>. ' +
+                'Open it, check it, and press Send.<br>To: ' + esc(tokio.emailResult.to) +
+                '<br>Subject: ' + esc(tokio.emailResult.subject)) +
+          '</div>'
+        : '');
+
+    return '<div class="tk-sheet">' + emailBlock +
       '<div style="font-size:12px;font-weight:600;margin-bottom:6px">' +
         (r.savedSession
           ? 'Session ' + esc(r.label) + ' saved — Issue was NOT clicked'
@@ -6935,9 +6956,71 @@ function askMarkStale(){
 
   /* Built from the SAME rows the table shows, in the same order, so the file
      Finance opens is the sheet they were looking at. */
-  function tokioExportCsv() {
+  /* STEP 15 / BR17 — hand the consolidated sheet to Travel Accounts.
+
+     The server DRAFTS by default: it writes a .eml with the sheet attached,
+     addressed and subject-lined, and a person opens it and presses Send.
+     tokio-email.js says why at length — the message asserts "session saved,
+     ready for review", and the person pressing Send is the person who owns
+     that claim. */
+  async function tokioEmail() {
+    const built = tokioCsv();
+    const r = tokio.run;
+    if (!built || !r || !r.savedSession) return;
+
+    tokio.emailing = true;
+    tokio.emailResult = null;
+    tokio.emailError = '';
+    renderTokio();
+
+    // btoa() is byte-oriented; the sheet can carry non-ASCII names, so encode
+    // to UTF-8 first rather than letting btoa throw on the first accented
+    // character in a branch name.
+    const bytes = new TextEncoder().encode(built.text);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+
+    const res = tokio.result || {};
+    const outcomeCount = (name) =>
+      (res.rows || []).filter((row) => row.outcome === name).length;
+
+    try {
+      const resp = await fetch('/api/tokio/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          label: r.label,
+          month: (res.month && res.month.label) || '',
+          reference: r.reference,
+          savedSession: true,
+          counts: {
+            ticked: (r.ticked || []).length,
+            mismatched: (r.mismatched || []).length,
+            exceptions: outcomeCount('exception'),
+            retail: outcomeCount('retail'),
+          },
+          attachment: { filename: built.filename, contentBase64: btoa(bin) },
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || 'the draft could not be prepared');
+      tokio.emailResult = data;
+    } catch (err) {
+      tokio.emailError = err.message;
+    } finally {
+      tokio.emailing = false;
+      renderTokio();
+    }
+  }
+
+  /* ONE BUILDER, TWO DESTINATIONS.
+     Export downloads it and step 15 mails it. Building the CSV twice would
+     let the file Finance downloads and the file Travel Accounts receive
+     drift apart — the exact failure the server-side export was created to
+     stop. So the bytes are built once. */
+  function tokioCsv() {
     const res = tokio.result;
-    if (!res || !res.rows || !res.rows.length) return;
+    if (!res || !res.rows || !res.rows.length) return null;
 
     const srcCols = Object.keys(res.rows[0].source || {});
     const appCols = Object.keys(res.rows[0].appended || {});
@@ -6952,9 +7035,15 @@ function askMarkStale(){
         .concat(appCols.map((c) => r.appended[c]))
         .map(cell).join(','));
     }
-
     const month = (res.month && res.month.label) ? res.month.label.replace(/\s+/g, '-') : 'month';
-    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    return { text: lines.join('\n'), filename: 'tokio-consolidated-' + month + '.csv', month: month };
+  }
+
+  function tokioExportCsv() {
+    const built = tokioCsv();
+    if (!built) return;
+    const month = built.month;
+    const blob = new Blob([built.text], { type: 'text/csv' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = 'tokio-consolidated-' + month + '.csv';
