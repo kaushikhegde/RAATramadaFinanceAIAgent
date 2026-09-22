@@ -1790,8 +1790,16 @@ function tokioPolicy(index) {
    says they are the source of truth and are not reordered or altered; the
    consolidated sheet appends to the RIGHT of them. The two passenger-name
    columns the guide has a human delete before upload are deliberately absent. */
+/* THE NAMES tokio-core ACTUALLY READS.
+   These are not decorative. buildConsolidated() looks up xPolicyNo,
+   xSellPriceIncGST and xBranch by name, and deriveReportingMonth() reads
+   xTRVIssuedDate or xUWETransDate. The first cut of this fixture invented
+   xPolicyNumber / xTransactionDate / xBranchName, which parsed as a perfectly
+   valid spreadsheet carrying none of the columns the rules need — the card
+   answered "No readable transaction dates, so the reporting month cannot be
+   worked out", which is true and says nothing about why. */
 const TOKIO_B2B_COLS = [
-  "xPolicyNumber", "xTransactionDate", "xBranchName", "xOriginatingAgent",
+  "xPolicyNo", "xTRVIssuedDate", "xUWETransDate", "xBranch", "xOriginatingAgent",
   "xSalesAgent", "xProductName", "xSellPriceIncGST", "xNetPriceIncGST",
   "xCommissionIncGST", "xStartDate", "xEndDate", "xStatus",
 ];
@@ -1970,9 +1978,12 @@ async function makeTokio() {
 
 
     b2b.add({
-      xPolicyNumber: t.policy,
-      xTransactionDate: dmy(monthStart),
-      xBranchName: t.branch,
+      xPolicyNo: t.policy,
+      // Both date columns, because deriveReportingMonth() takes whichever it
+      // finds first and a real export carries both.
+      xTRVIssuedDate: dmy(monthStart),
+      xUWETransDate: dmy(monthStart),
+      xBranch: t.branch,
       xOriginatingAgent: "BC",
       // ~5-10% of policies have a sales agent that differs from the
       // originating one. The guide's notes say that is normal and NOT an

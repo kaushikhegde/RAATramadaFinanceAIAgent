@@ -36,15 +36,44 @@ check("policy numbers are stable within a run, so a re-run finds the same rows",
   assert.strictEqual(f.tokioPolicy(3), f.tokioPolicy(3));
 });
 
-check("the B2B columns are Tokio's own, with no passenger names", () => {
+check("the B2B columns are the ones tokio-core actually reads", () => {
   const cols = f.TOKIO_B2B_COLS;
-  assert.ok(cols.includes("xPolicyNumber"));
-  // BR03 computes from the SELL price; this column is the one it reads.
+  // Not decorative: buildConsolidated() and deriveReportingMonth() look these
+  // up BY NAME. A fixture that invents xPolicyNumber / xTransactionDate parses
+  // fine and carries none of the columns the rules need.
+  assert.ok(cols.includes("xPolicyNo"), "buildConsolidated reads xPolicyNo");
   assert.ok(cols.includes("xSellPriceIncGST"), "BR03 needs the sell price");
-  assert.ok(cols.includes("xBranchName"), "steps 7-8 key off the branch name");
+  assert.ok(cols.includes("xBranch"), "steps 7-8 key off the branch");
+  assert.ok(cols.includes("xTRVIssuedDate") || cols.includes("xUWETransDate"),
+    "deriveReportingMonth needs one of these or the month cannot be worked out");
   // Step 1: both passenger-name columns are removed by a human before upload.
   assert.ok(!cols.some((c) => /name/i.test(c) && !/branch|product|agent/i.test(c)),
     "a passenger-name column reached the fixture: " + cols.join(", "));
+});
+
+check("a B2B row the fixture writes survives the real pipeline", () => {
+  // End to end on one row, with no browser: the month is derived, the split
+  // computed and the row classified. This is what the card does.
+  const row = {
+    xPolicyNo: f.tokioPolicy(0), xTRVIssuedDate: "01/08/2026", xUWETransDate: "01/08/2026",
+    xBranch: "RAA Elizabeth Travel", xSellPriceIncGST: "100.00",
+  };
+  const month = core.deriveReportingMonth([row]);
+  assert.strictEqual(month.ok, true, month.reason);
+  assert.strictEqual(month.label, "August 2026");
+
+  // Each source is { byPolicy: Map } — what indexByPolicy() returns — not a
+  // bare Map. A bare Map is silently "not found" for every policy, which
+  // reads as "not in Tramada" rather than as a wiring mistake.
+  const found = (pol) => ({ byPolicy: new Map([[pol, [{}]]]) });
+  const built = core.buildConsolidated([row], {
+    payment: found(f.tokioPolicy(0)),
+    costing: found(f.tokioPolicy(0)),
+    rcc: { byPolicy: new Map() },
+  });
+  assert.strictEqual(built.rows.length, 1);
+  assert.strictEqual(built.rows[0].outcome, core.OUTCOME.TRAVEL, built.rows[0].appended.Remarks);
+  assert.strictEqual(built.rows[0].appended["RAA Total Nett"], 70);
 });
 
 check("the fixture's own numbers satisfy BR03's 30/70 split", () => {
