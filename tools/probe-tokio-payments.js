@@ -226,7 +226,92 @@ const line = (m) => console.log(m);
         }
 
         if (!measured) {
-          line("  no creditor tried had rows either. Pass --shape-from \"<creditor>\" with one you know has data.");
+          line("  no creditor tried had rows either.");
+
+          /* WHICH CRITERION IS EMPTYING THE LIST?
+           *
+           * Three creditors that demonstrably HAVE segments — booking 13061's
+           * receipt form offered [GSR] Journey Beyond and [RAAFEES] RAA- Fees
+           * — all returned nothing over two years. So it is not the creditor.
+           * That leaves the other four criteria, and guessing between them is
+           * what a probe exists to avoid.
+           *
+           * So: relax them ONE AT A TIME, straight against the form, and
+           * report the first search that yields rows. Read-only throughout —
+           * it counts checkboxes and never ticks one. */
+          line("\n=== which criterion is emptying the list? ===");
+          line("  relaxing one at a time, counting rows only");
+
+          const S = tk.SEARCH;
+          const countRows = async () =>
+            await page.evaluate(() => ({
+              boxes: document.querySelectorAll('input[type="checkbox"]').length,
+              allocs: document.querySelectorAll('input[id^="allocationAmount_"]').length,
+            }));
+
+          /** Set the form by hand, press Go, count. No guards, no creditor check. */
+          const tryIt = async (label, setup) => {
+            await tk.openIssuePayments(page, () => {});
+            try {
+              await setup();
+            } catch (err) {
+              line(`  ${label}: could not set up — ${err.message.split("\n")[0]}`);
+              return 0;
+            }
+            await Promise.all([
+              page.waitForLoadState("domcontentloaded").catch(() => {}),
+              page.click(S.go),
+            ]).catch(() => {});
+            await new Promise((r) => setTimeout(r, 1500));
+            const c = await countRows();
+            line(`  ${label}: ${c.boxes} checkbox(es), ${c.allocs} allocation input(s)`);
+            return c.boxes;
+          };
+
+          const wide = { from: "01-01-2025", to: "31-12-2027" };
+
+          // 1. Everything blank but the payment category. The broadest search
+          //    the form allows — if THIS is empty, there is nothing to pay.
+          await tryIt("category only, no creditor, no dates, no bank account", async () => {
+            await page.selectOption(S.paymentType, "CREDITOR_PAYMENT");
+            await page.fill(S.fromCreated, "").catch(() => {});
+            await page.fill(S.toCreated, "").catch(() => {});
+          });
+
+          // 2. Add the dates back.
+          await tryIt("category + two-year date window", async () => {
+            await page.selectOption(S.paymentType, "CREDITOR_PAYMENT");
+            await page.fill(S.fromCreated, wide.from);
+            await page.fill(S.toCreated, wide.to);
+          });
+
+          // 3. Add the Trust account back — the guide pins it, and if this is
+          //    where the rows vanish then these segments sit on another one.
+          await tryIt("category + dates + [TRUST] bank account", async () => {
+            await page.selectOption(S.paymentType, "CREDITOR_PAYMENT");
+            await page.selectOption(S.bankAccount, "1");
+            await page.fill(S.fromCreated, wide.from);
+            await page.fill(S.toCreated, wide.to);
+          });
+
+          // 4. What the bank account dropdown even offers. A single option
+          //    means "1" cannot be wrong; several means it might be.
+          const accounts = await page
+            .$$eval(S.bankAccount + " option", (os) => os.map((o) => `${o.value}=${o.text.trim()}`))
+            .catch(() => []);
+          line(`\n  bank accounts offered: ${accounts.join(" | ") || "(none)"}`);
+
+          const types = await page
+            .$$eval(S.paymentType + " option", (os) => os.map((o) => `${o.value}=${o.text.trim()}`))
+            .catch(() => []);
+          line(`  payment categories offered: ${types.join(" | ") || "(none)"}`);
+
+          line(
+            "\n  Read the four lines above in order: the first one with rows names the\n" +
+            "  criterion that was emptying the list. All four empty means the sandbox\n" +
+            "  has no creditor payments outstanding at all, and steps 12-14 need data\n" +
+            "  created before they can be measured."
+          );
         }
       }
     }

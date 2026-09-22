@@ -360,6 +360,35 @@ const travel = (policy, nett) => ({
       `/tokio/i appears ${hardcoded.length} times after the default — the guard is hardcoded again somewhere`);
   });
 
+  console.log("\nthe search form's two live traps");
+
+  // Measured 22-Sep-2026 in a signed-in Tramada. Both of these are invisible
+  // in the results: a branch-filtered list and a search that never ran both
+  // look exactly like a quiet month.
+  await check("Level 1 Branch is cleared AFTER the creditor, not before", () => {
+    const src = require("fs").readFileSync(require("path").join(__dirname, "..", "tramada-tokio.js"), "utf8");
+    const creditorAt = src.indexOf('await page.type(SEARCH.creditor');
+    const branchAt = src.indexOf('pick(page, SEARCH.level1Branch');
+    assert.ok(creditorAt > -1 && branchAt > -1, "both steps must be present");
+    assert.ok(
+      branchAt > creditorAt,
+      "picking a creditor makes Tramada populate Level 1 Branch itself ([ADL] RAA Adelaide), so clearing " +
+        "the branch first is silently undone and the search is filtered to one branch"
+    );
+  });
+
+  await check("the cleared branch is read back, not assumed", () => {
+    const src = require("fs").readFileSync(require("path").join(__dirname, "..", "tramada-tokio.js"), "utf8");
+    assert.match(src, /Level 1 Branch would not clear/, "a branch that refuses to clear must stop the search");
+    assert.match(src, /level1Branch: branchNow/, "and the settled value must be reported");
+  });
+
+  await check("a disabled Go is refused rather than clicked into silence", () => {
+    const src = require("fs").readFileSync(require("path").join(__dirname, "..", "tramada-tokio.js"), "utf8");
+    assert.match(src, /isEnabled\(SEARCH\.go\)/, "Go must be checked before it is clicked");
+    assert.match(src, /already been submitted once/, "and the reason said plainly");
+  });
+
   console.log("\nsteps 9-14 in one run");
 
   await check("nothing to reconcile is refused before a browser is opened", async () => {

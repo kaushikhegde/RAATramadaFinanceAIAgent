@@ -173,9 +173,20 @@ async function searchCreditorPayments(page, opts = {}, onProgress = () => {}) {
 
   await pick(page, SEARCH.paymentType, "CREDITOR_PAYMENT", "Payment Category");
   await pick(page, SEARCH.bankAccount, "1", "Bank Account"); // [TRUST] Trust Account
-  await pick(page, SEARCH.level1Branch, "", "Level 1 Branch"); // step 10: none
   await pick(page, SEARCH.sortBy, "REFERENCE", "Sort by"); // BR10
   await pick(page, SEARCH.sortOrder, "ASCENDING", "Sort order");
+
+  /* LEVEL 1 BRANCH IS SET *AFTER* THE CREDITOR, NOT BEFORE.
+   *
+   * Measured 22-Sep-2026: picking a creditor from the autocomplete makes
+   * Tramada populate Level 1 Branch itself — it came back as "1" ([ADL] RAA
+   * Adelaide) every time. Step 10 says the branch must be NONE, so setting it
+   * first and then choosing the creditor quietly undoes it, and every search
+   * is filtered to one branch with nothing on screen to say so.
+   *
+   * There is no way to see that in the results: a branch-filtered list looks
+   * exactly like a short month. So the branch is cleared after the creditor,
+   * and read back below. */
 
   /* CREDITOR CODE IS AN AUTOCOMPLETE, AND THE TYPED TEXT IS NOT A CODE.
    *
@@ -239,6 +250,17 @@ async function searchCreditorPayments(page, opts = {}, onProgress = () => {}) {
     );
   }
 
+  // Now the creditor is settled, take the branch back off (step 10: none).
+  await pick(page, SEARCH.level1Branch, "", "Level 1 Branch");
+  await sleep(300);
+  const branchNow = await page.inputValue(SEARCH.level1Branch).catch(() => "");
+  if (branchNow) {
+    throw new Error(
+      `Level 1 Branch would not clear — it reads "${branchNow}". Step 10 requires none; a branch left ` +
+        `in place silently limits the search to that branch and the results give no hint of it.`
+    );
+  }
+
   await page.fill(SEARCH.fromCreated, tramadaDate(fromCreated));
   await page.fill(SEARCH.toCreated, tramadaDate(toCreated));
 
@@ -250,6 +272,7 @@ async function searchCreditorPayments(page, opts = {}, onProgress = () => {}) {
     from: await page.inputValue(SEARCH.fromCreated),
     to: await page.inputValue(SEARCH.toCreated),
     creditor: creditorNow,
+    level1Branch: branchNow,
   };
   const wanted = {
     paymentType: "CREDITOR_PAYMENT",
@@ -262,6 +285,22 @@ async function searchCreditorPayments(page, opts = {}, onProgress = () => {}) {
     if (settled[k] !== v) {
       throw new Error(`${k} did not stick: wanted "${v}", the form reads "${settled[k]}".`);
     }
+  }
+
+  /* GO DISABLES ITSELF AFTER ONE CLICK.
+   *
+   * Measured: #goButton.disabled becomes true on submit and is only re-enabled
+   * by a fresh page load. A second search on the same page therefore does
+   * nothing at all — no error, no reload, just the previous results still on
+   * screen looking like a fresh answer. So every search comes through
+   * openIssuePayments(), and this asserts the button is actually live. */
+  const goLive = await page.isEnabled(SEARCH.go).catch(() => true);
+  if (!goLive) {
+    throw new Error(
+      "Go is disabled — this page has already been submitted once. Tramada only re-enables it on a fresh " +
+        "load, so re-open Issue Payments rather than searching again here; clicking it now would leave the " +
+        "previous results on screen as though they were new."
+    );
   }
 
   onProgress(35, `Searching ${settled.from} → ${settled.to}, sorted by reference...`);
