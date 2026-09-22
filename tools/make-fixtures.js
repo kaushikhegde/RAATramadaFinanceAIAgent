@@ -1799,8 +1799,9 @@ const TOKIO_B2B_COLS = [
 async function makeTokio() {
   const list = loadBookings();
   say(
-    `${list.length} booking${list.length === 1 ? "" : "s"} → insurance costings to ${CREDITOR}, ` +
-      `left UNPAID so they show on Issue Payments, then the four spreadsheets.\n`
+    `${list.length} booking${list.length === 1 ? "" : "s"} → insurance costings to ${CREDITOR}, each ` +
+      `receipted so the creditor becomes payable, the creditor payment left UNRAISED so it shows on ` +
+      `Issue Payments, then the four spreadsheets.\n`
   );
   sayPlan("tokio");
   if (DRY) return say("Dry run — Tramada was never opened.\n");
@@ -1961,6 +1962,43 @@ async function makeTokio() {
         "Receipted By": "Retail",
         Amount: nett,
       });
+    }
+
+    /* THE MONEY IN, OR NOTHING IS PAYABLE.
+       Measured 22-Sep-2026 the long way round: booking 15842 had its
+       insurance costing AND a client invoice (I.0000010834, $70.00) issued,
+       and Issue Payments still returned nothing for Tokio Marine over
+       2025-2027. makeMint() has said why all along, in its own comment:
+       "The money in. Without this the payment form has nothing payable."
+       A creditor segment only becomes payable once the client has been
+       receipted for it. So the receipt is raised here too — it exists to make
+       the segment payable and nothing else reads it. */
+    const amountIn = (t.sell).toFixed(2);
+    try {
+      const receipted = await runTramadaReceipt({
+        username: process.env.TRAMADA_USERNAME,
+        password: process.env.TRAMADA_PASSWORD,
+        bookingNo: rec.bookingNo,
+        receipt: {
+          transactionType: "EFT",
+          amount: amountIn,
+          reference: ref("TK", rec.bookingNo),
+          dateReceived: new Date().toISOString().slice(0, 10),
+          allocation: "ALL",
+        },
+        receiptCategory: "CLIENT_PAYMENT_RECEIPT",
+        dryRun: false,
+        callbacks: { onNeedLogin: () => say("     Sign into Tramada in the Chrome on port 9222.") },
+      });
+      const receiptNo = (receipted && receipted.receipt && receipted.receipt.receiptNo) || "";
+      if (!receiptNo) throw new Error("no receipt number came back");
+      say(`     ✓ receipted ${receiptNo} for $${amountIn} — ${CREDITOR} is now payable`);
+    } catch (err) {
+      // Said out loud and skipped: an unreceipted booking owes the creditor
+      // nothing, so its row would only exercise "not found in Tramada".
+      console.error(`     ! booking ${rec.bookingNo}: receipt failed — ${core.tidyError(err.message)}`);
+      say(`     – ${t.policy} skipped; no row written for it.`);
+      continue;
     }
 
     say(`     → ${t.policy} (${t.kind}) on booking ${rec.bookingNo}`);

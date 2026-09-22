@@ -106,4 +106,22 @@ check("the insurance costing carries the GROSS, so Tramada's split lands on the 
   }
 });
 
+check("the fixture receipts the client, or nothing is payable", () => {
+  // Booking 15842 had its insurance costing AND a client invoice issued
+  // (I.0000010834, $70.00) and Issue Payments still showed nothing. A
+  // creditor segment only becomes payable once the client is receipted —
+  // makeMint() has said so in a comment all along.
+  const src = require("fs").readFileSync(
+    require("path").join(__dirname, "..", "tools", "make-fixtures.js"), "utf8");
+  const tokioFrom = src.indexOf("async function makeTokio()");
+  const tokioTo = src.indexOf("async function makeAll()");
+  assert.ok(tokioFrom > -1 && tokioTo > tokioFrom, "makeTokio must be findable");
+  const body = src.slice(tokioFrom, tokioTo);
+  assert.match(body, /runTramadaReceipt\(/, "makeTokio must raise a receipt");
+  assert.match(body, /allocation: "ALL"/, "and allocate it, or the segment stays unpaid");
+  // But it must NOT pay the creditor — that is the whole point of the fixture.
+  assert.ok(!/issueCreditorPayment/.test(body),
+    "paying the creditor would remove the very rows steps 12-14 need");
+});
+
 console.log(`\n${n} assertions passed.\n`);
