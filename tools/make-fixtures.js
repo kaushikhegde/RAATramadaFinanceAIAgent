@@ -1865,7 +1865,16 @@ async function makeTokio() {
         creditor: CREDITOR,
         supplierName: CREDITOR,
         reference: policy,
-        amount: (sell * 0.7).toFixed(2), // RAA Total Nett — BR04's reconciled value
+        /* THE FULL SELL PRICE, NOT THE NETT.
+           Tramada applies its OWN 30% commission to an insurance costing and
+           pays the creditor the remaining 70%. Measured on booking 15842:
+           an amount of 70.00 came back as Due 70.00, Comm 21.00, Nett 49.00.
+           So putting RAA Total Nett in here makes Tramada pay 70% OF the nett
+           — 49.00 against a B2B report expecting 70.00, and every row fails
+           BR13's 1% tolerance for a reason that looks like a rounding bug.
+           The gross goes in; Tramada's own split then produces the nett the
+           consolidated sheet computed. */
+        amount: sell.toFixed(2),
         startDate: iso(monthStart),
         endDate: iso(new Date(today.getFullYear(), today.getMonth() + 11, 1)),
         issueDate: iso(monthStart),

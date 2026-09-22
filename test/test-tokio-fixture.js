@@ -85,4 +85,25 @@ check("Tokio's own net and commission columns are deliberately wrong", () => {
   assert.notStrictEqual(Number((sell * 0.65).toFixed(2)), Number(core.calcCommission(sell).totalNett.toFixed(2)));
 });
 
+check("the insurance costing carries the GROSS, so Tramada's split lands on the nett", () => {
+  // Measured on booking 15842: Tramada applies its own 30% commission to an
+  // insurance costing. An amount of 70.00 came back Due 70.00 / Comm 21.00 /
+  // Nett 49.00. So the fixture must put the SELL price in, not RAA Total Nett,
+  // or Tramada pays 70% of the nett and every row misses BR13 by 30%.
+  const src = require("fs").readFileSync(
+    require("path").join(__dirname, "..", "tools", "make-fixtures.js"), "utf8");
+  assert.match(src, /amount: sell\.toFixed\(2\)/,
+    "the insurance amount must be the gross sell price");
+  assert.ok(!/amount: \(sell \* 0\.7\)/.test(src),
+    "putting the nett in makes Tramada pay 70% of 70%");
+
+  // And the arithmetic that makes that true.
+  for (const sell of [100, 137.5, 175]) {
+    const tramadaNett = sell * 0.7;          // what Tramada will pay the creditor
+    const sheetNett = core.calcCommission(sell).totalNett; // what the sheet expects
+    assert.ok(Math.abs(tramadaNett - sheetNett) <= Math.abs(sheetNett) * core.AMOUNT_TOLERANCE,
+      `sell ${sell}: Tramada ${tramadaNett} vs sheet ${sheetNett} is outside BR13`);
+  }
+});
+
 console.log(`\n${n} assertions passed.\n`);
