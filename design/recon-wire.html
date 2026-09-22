@@ -3677,6 +3677,24 @@ header.top { display: none !important }
       '#tokioCard .tk-err{color:var(--err,#b3261e);font-size:12px;margin-top:10px}',
       '#tokioCard .tk-counts{display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:12.5px}',
       '#tokioCard .tk-counts b{font-size:17px;display:block}',
+      /* The consolidated sheet itself. The guide's "Other features" asks to
+         see it on the dashboard, with the Remarks column carrying the reason
+         for every exception and mismatch — three counts alone do not let
+         Finance check a single row back. */
+      '#tokioCard .tk-sheet{margin-top:16px;border-top:1px solid var(--line-2,#ececf4);padding-top:14px}',
+      '#tokioCard .tk-scroll{overflow:auto;max-height:340px;border:1px solid var(--line,#e3e3ee);border-radius:8px}',
+      '#tokioCard table.tk-tbl{border-collapse:collapse;width:100%;font-size:11.5px}',
+      '#tokioCard .tk-tbl th{position:sticky;top:0;background:#f6f6fb;text-align:left;padding:7px 9px;',
+      '  font-weight:600;white-space:nowrap;border-bottom:1px solid var(--line,#e3e3ee)}',
+      '#tokioCard .tk-tbl td{padding:6px 9px;border-bottom:1px solid var(--line-2,#f1f1f7);white-space:nowrap}',
+      '#tokioCard .tk-tbl td.rk{white-space:normal;min-width:220px;color:#8a5a00}',
+      '#tokioCard .tk-tbl tr.is-retail{background:#fafafa;color:var(--ink-2,#5a5a72)}',
+      '#tokioCard .tk-tbl tr.is-exception{background:#fffaf0}',
+      '#tokioCard .tk-pill{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:600}',
+      '#tokioCard .tk-pill.travel{background:#e7f5ec;color:#1b5e33}',
+      '#tokioCard .tk-pill.retail{background:#eeeef4;color:#5a5a72}',
+      '#tokioCard .tk-pill.exception{background:#fdecc8;color:#8a5a00}',
+      '#tokioCard .tk-acts{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}',
     ].join('\n');
     document.head.appendChild(css);
 
@@ -3732,8 +3750,10 @@ header.top { display: none !important }
       '<div class="tk-slots">' + slots + '</div>' +
       (tokio.busy ? '<div class="muted" style="margin-top:12px">Reading the four files\u2026</div>' : '') +
       (tokio.error ? '<div class="tk-err">' + esc(tokio.error) + '</div>' : '') +
-      monthBlock + counts;
+      monthBlock + counts + tokioSheet();
 
+    const exp = card.querySelector('#tokioExport');
+    if (exp) exp.onclick = tokioExportCsv;
     card.querySelectorAll('[data-tokio-pick]').forEach((b) => {
       b.onclick = () => pickTokioFile(b.getAttribute('data-tokio-pick'));
     });
@@ -3761,6 +3781,84 @@ header.top { display: none !important }
       fr.readAsArrayBuffer(file);
     };
     input.click();
+  }
+
+  /* THE CONSOLIDATED SHEET, AS A TABLE.
+     Step 4 says the Tokio Marine columns are the source of truth and keep
+     their order, with the calculated and lookup columns appended to the RIGHT.
+     So that is the column order here too — and the Remarks column last, which
+     is where BR15's reason for every exception and mismatch lands.
+
+     Nothing is classified here. `outcome` and `Remarks` both come from the
+     server, so the table, the counts and the export cannot disagree. */
+  function tokioSheet() {
+    const res = tokio.result;
+    if (!res || !res.rows || !res.rows.length) return '';
+
+    const srcCols = Object.keys(res.rows[0].source || {});
+    const appCols = Object.keys(res.rows[0].appended || {});
+    const head = ['#', 'Outcome'].concat(srcCols, appCols);
+
+    const body = res.rows.map((r) => {
+      const cls = r.outcome === 'Retail' ? 'is-retail'
+        : r.outcome === 'Exception' ? 'is-exception' : '';
+      const pill = '<span class="tk-pill ' + esc(String(r.outcome || '').toLowerCase()) + '">' +
+        esc(r.outcome || '') + '</span>';
+      const cells = [esc(String(r.line)), pill]
+        .concat(srcCols.map((c) => esc(String(r.source[c] == null ? '' : r.source[c]))))
+        .concat(appCols.map((c) => {
+          const v = r.appended[c];
+          const isRemark = /remark/i.test(c);
+          return (isRemark ? '<td class="rk">' : '<td>') +
+            esc(String(v == null ? '' : v)) + '</td>';
+        }));
+      // The first cells still need their own <td>; the appended ones brought
+      // theirs so the Remarks column could carry a class.
+      const fixed = cells.slice(0, 2 + srcCols.length).map((c) => '<td>' + c + '</td>').join('');
+      return '<tr class="' + cls + '">' + fixed + cells.slice(2 + srcCols.length).join('') + '</tr>';
+    }).join('');
+
+    return '<div class="tk-sheet">' +
+      '<div style="font-size:12px;font-weight:600;margin-bottom:7px">Consolidated working sheet ' +
+        '<span style="font-weight:400;color:var(--ink-2,#5a5a72)">— Tokio\u2019s own columns, then the ' +
+        'calculated and lookup columns, then Remarks</span></div>' +
+      '<div class="tk-scroll"><table class="tk-tbl"><thead><tr>' +
+        head.map((h) => '<th>' + esc(h) + '</th>').join('') +
+      '</tr></thead><tbody>' + body + '</tbody></table></div>' +
+      '<div class="tk-acts">' +
+        '<button class="btn sm" id="tokioExport">Export CSV</button>' +
+        '<span style="font-size:11.5px;color:var(--ink-2,#5a5a72)">' +
+          res.rows.length + ' row(s) \u00b7 this is the sheet that goes to Travel Accounts</span>' +
+      '</div></div>';
+  }
+
+  /* Built from the SAME rows the table shows, in the same order, so the file
+     Finance opens is the sheet they were looking at. */
+  function tokioExportCsv() {
+    const res = tokio.result;
+    if (!res || !res.rows || !res.rows.length) return;
+
+    const srcCols = Object.keys(res.rows[0].source || {});
+    const appCols = Object.keys(res.rows[0].appended || {});
+    const cell = (v) => {
+      const t = v == null ? '' : String(v);
+      return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+    };
+    const lines = [['Outcome'].concat(srcCols, appCols).map(cell).join(',')];
+    for (const r of res.rows) {
+      lines.push([r.outcome]
+        .concat(srcCols.map((c) => r.source[c]))
+        .concat(appCols.map((c) => r.appended[c]))
+        .map(cell).join(','));
+    }
+
+    const month = (res.month && res.month.label) ? res.month.label.replace(/\s+/g, '-') : 'month';
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'tokio-consolidated-' + month + '.csv';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   }
 
   /* The server holds every rule. The page posts the four files and renders
