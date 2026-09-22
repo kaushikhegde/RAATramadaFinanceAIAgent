@@ -1911,13 +1911,27 @@ async function makeTokio() {
     };
   });
 
-  const made = await createBookings(withPolicy, () => {});
+  /* FILES ONLY — no Tramada, no bookings, seconds instead of minutes.
+     Steps 1-8 are pure: the consolidated sheet, the 30/70 split, the three
+     lookups and the Travel/Retail/exception split are all decided from the
+     four spreadsheets and never touch Tramada. So a dashboard demo needs the
+     FILES, not the bookings. Bookings are only for steps 9-14.
+     The booking numbers below are synthetic and say so. */
+  const filesOnly = args.includes("--files-only");
+  const made = filesOnly
+    ? withPolicy.map((b, i) => ({ bookingNo: `FIX${String(90000 + i)}`, index: i }))
+    : await createBookings(withPolicy, () => {});
+  if (filesOnly) {
+    say(`--files-only: writing the four spreadsheets with synthetic booking numbers.`);
+    say(`     Nothing is created in Tramada, so steps 9-14 have nothing to reconcile.\n`);
+  }
 
   for (const [i, rec] of made.entries()) {
     const src = withPolicy[i];
     const t = src._tokio;
     const nett = (t.sell * 0.7).toFixed(2);
 
+    if (!filesOnly) {
     try {
       await runAddCostingLines({
         username: process.env.TRAMADA_USERNAME,
@@ -1974,6 +1988,7 @@ async function makeTokio() {
       console.error(`     ! booking ${rec.bookingNo}: receipt failed — ${core.tidyError(err.message)}`);
       say(`     – ${t.policy} skipped; no row written for it.`);
       continue;
+    }
     }
 
 
@@ -2045,8 +2060,11 @@ async function makeTokio() {
       `${(counts.br07 || 0) + (counts.br08 || 0)} exception(s).`
   );
   say(
-    `     Nothing was paid, so these segments should now appear on Issue Payments\n` +
-      `     for ${CREDITOR}. Check with:  npm run probe:tokio\n`
+    filesOnly
+      ? `     Files only — nothing exists in Tramada, so steps 9-14 have nothing to reconcile.\n` +
+        `     Drop the four files on the Tokio card to see steps 1-8.\n`
+      : `     Nothing was paid, so these segments should now appear on Issue Payments\n` +
+        `     for ${CREDITOR}. Check with:  npm run probe:tokio\n`
   );
 
   return made;

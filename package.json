@@ -58,7 +58,8 @@
     "test:cardwiring": "node test/test-ipsi-card-wiring.js",
     "tokio": "node tools/tokio-recon.js",
     "tokio:save": "node tools/tokio-recon.js --save",
-    "fixtures:tokio": "node tools/make-fixtures.js tokio"
+    "fixtures:tokio": "node tools/make-fixtures.js tokio",
+    "fixtures:tokio:files": "node tools/make-fixtures.js tokio --files-only"
   },
   "dependencies": {
     "@azure/identity": "^4.13.2",
