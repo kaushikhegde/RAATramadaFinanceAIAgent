@@ -293,11 +293,40 @@ only one was ever being done at a time.
 `makeTokio()` now pins `PRE_PAID` as the default (`--payment-type` still
 overrides) and invoices the segment via `runIssueInvoice`.
 
-### The Add/Issue Invoice selectors are NOT measured
+### The Add/Issue Invoice page, mapped live (24-Sep-2026)
 
-`INVOICE` in `tramada-segments.js` holds candidates. Every lookup goes through
-`oneOf`, which reports what the page really contains rather than timing out.
-Run `npm run probe:invoice -- <bookingNo>` once and correct the lists.
+Measured against booking 15875 in `raatravelsandbox`. **All four of the
+originally guessed `addLink` selectors were wrong** — the control is a submit
+BUTTON, not a link:
+
+```
+booking-invoices.htm?mode=edit&id={bookingNo}     the Invoices tab
+  #add  "Add / Issue Invoice"        →
+booking-client-invoice.htm?mode=add&parentId={bookingNo}
+  <h3>Segments To Invoice</h3> + grid
+  #selectAll  #deselectAll  #preview  #issue
+  #invoiceCategory = CLIENT_INVOICE (the only option)
+```
+
+Grid headings, in order: `D | Seg. Type | Creditor Details | Rates ex GST |
+Discount Markup ex GST | Tax ex GST | GST | Due inc GST | Receipted inc GST`.
+
+Two traps, both now pinned by tests:
+
+- The heading reads **"Segments To Invoice"** (capital T) and is **not** the
+  grid's `previousElementSibling` — it sits further up the document. Checking
+  one node found nothing and fell through to the "last grid with checkboxes"
+  fallback, which is right by luck on a booking with one grid and wrong on any
+  other. The match walks backwards through document order now.
+- **Every row's checkbox shares `id="segmentsToAllocate"`** — the same trap as
+  the IPSI allocation grid, where `#segmentsToAllocate` ticked the first row
+  whatever row was meant. Rows are addressed by a per-row handle.
+
+The run navigates straight to `booking-client-invoice.htm`, because clicking
+`#add` did not reliably navigate under CDP and left the run reading the LIST
+for a grid that is only on the FORM. Clicking `#add` remains the fallback.
+
+`npm run probe:invoice -- <bookingNo>` re-maps it if Tramada changes.
 
 ## Policy numbers: 7 digits seen in the wild
 

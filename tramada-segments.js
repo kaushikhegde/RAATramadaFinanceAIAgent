@@ -1037,27 +1037,42 @@ async function addInsuranceCosting(page, bookingNo, ins) {
  * concluded invoicing did not help. It was the payment type that was wrong,
  * so that conclusion is withdrawn.
  *
- * SELECTORS HERE ARE CANDIDATES, NOT MEASUREMENTS. Nothing on this page has
- * been seen by this code yet, so every lookup goes through `oneOf`, which
- * reports what the page ACTUALLY contains instead of timing out — the same
- * shape that turned "#cardNumberDisplay timeout" into a one-line fix on the
- * IPSI form. Run `node tools/probe-invoice-page.js <bookingNo>` and correct
- * the lists below the first time this is driven live.
+ * MEASURED LIVE 24-Sep-2026 against booking 15875 in raatravelsandbox. The
+ * first four `addLink` candidates written from guesswork were ALL wrong — the
+ * control is a submit BUTTON with id `#add`, not a link — which is why every
+ * lookup goes through `oneOf`, reporting what the page actually contains
+ * instead of timing out. `tools/probe-invoice-page.js` re-maps it.
+ *
+ * The flow:
+ *   booking-invoices.htm?mode=edit&id={bookingNo}     the Invoices tab
+ *     #add  "Add / Issue Invoice"                     →
+ *   booking-client-invoice.htm?mode=add&parentId={bookingNo}
+ *     <h3>Segments To Invoice</h3> + a grid, then #issue
+ *
+ * Note the heading's capital T ("Segments To Invoice") and that it is NOT the
+ * grid's previousElementSibling — it sits further up the document — so the
+ * match walks backwards rather than checking one node.
  * ────────────────────────────────────────────────────────────────────────── */
 
 const INVOICE = Object.freeze({
   // The Invoices tab of a booking, and the control that starts a new invoice.
   listUrl: (id) => `${TRAMADA_BASE_URL}/booking/booking-invoices.htm?mode=edit&id=${encodeURIComponent(id)}`,
-  addLink: [
-    'a[href*="booking-invoice.htm"]',
-    'a[href*="invoice"][href*="mode=add"]',
-    "#form_addInvoice",
-    "#addInvoice",
-  ],
-  // The "Segments to Invoice" grid at the foot of the Add/Issue Invoice page.
+  /* The form itself, reachable directly. Kept because clicking #add through
+     CDP did not always navigate, while this always lands on the form. */
+  formUrl: (id) =>
+    `${TRAMADA_BASE_URL}/booking/booking-client-invoice.htm?mode=add&parentId=${encodeURIComponent(id)}`,
+  addLink: ["#add", 'input[value="Add / Issue Invoice"]', "#form_addInvoice", "#addInvoice"],
+  // The "Segments To Invoice" grid at the foot of the Add/Issue Invoice page.
   segmentsHeading: /segments?\s*to\s*invoice/i,
-  issueButton: ["#form_issueButton", "#issue", "#form_save", "#save",
-    'input[value="Issue"]', 'input[value="Issue Invoice"]', 'button:has-text("Issue")'],
+  /* MEASURED: #issue is the commit. #preview only renders it, and
+     #selectAll / #deselectAll are deliberately NOT used — BR-wise this run
+     invoices the Tokio segment, not whatever else is on the booking. */
+  issueButton: ["#issue", "#form_issueButton", 'input[value="Issue"]'],
+  /* EVERY ROW'S CHECKBOX SHARES ONE ID, `segmentsToAllocate` — the same trap
+     as the IPSI allocation grid, where `#segmentsToAllocate` ticked the first
+     row whatever row was meant. Rows are addressed by the per-row
+     data-invoice-row handle instead, never by this id. */
+  rowCheckboxId: "segmentsToAllocate",
 });
 
 /**
@@ -1109,12 +1124,28 @@ async function readSegmentsToInvoice(page) {
 
     // The grid is the table that both mentions the heading (in itself or just
     // above it) and carries checkboxes.
+    /* MEASURED: the <h3>Segments To Invoice</h3> is NOT the grid's
+       previousElementSibling — it sits further up the document. Checking one
+       node found nothing and fell through to the positional fallback, which
+       happens to be right on a booking with one grid and wrong on any other.
+       So walk backwards through document order instead. */
+    const headingBefore = (t) => {
+      const all = Array.from(document.querySelectorAll("h1,h2,h3,h4,legend,caption,b,strong,td,div"));
+      for (const e of all) {
+        if (!re.test(norm(e.textContent))) continue;
+        // Only a heading that PRECEDES the table, and is not the table itself.
+        if (e.contains(t)) continue;
+        // 0x04 is DOCUMENT_POSITION_FOLLOWING, written as a number because
+        // `Node` is not a global in every context this runs in.
+        if (e.compareDocumentPosition(t) & 4) return true;
+      }
+      return false;
+    };
+
     let table = null;
     for (const t of document.querySelectorAll("table")) {
       if (!t.querySelector('input[type="checkbox"]')) continue;
-      const own = norm(t.textContent);
-      const before = t.previousElementSibling ? norm(t.previousElementSibling.textContent) : "";
-      if (re.test(own) || re.test(before)) { table = t; break; }
+      if (re.test(norm(t.textContent)) || headingBefore(t)) { table = t; break; }
     }
     // Fall back to the LAST table with checkboxes — Megan's "scroll to the
     // bottom". Reported so the caller can see which rule found it.
@@ -1209,13 +1240,23 @@ async function tickSegmentsToInvoice(page, match) {
 async function issueInvoiceForSegments(page, bookingNo, { match, dryRun = true, say = () => {} } = {}) {
   if (!match) throw new Error("Which segment should be invoiced? Pass `match`.");
 
-  say(`Opening the Invoices tab for booking ${bookingNo}…`);
-  await page.goto(INVOICE.listUrl(bookingNo), { waitUntil: "domcontentloaded" });
-
-  const addSel = await oneOf(page, INVOICE.addLink, "the Add/Issue Invoice control");
-  await page.locator(addSel).first().click();
-  await page.waitForLoadState("domcontentloaded").catch(() => {});
+  say(`Opening Add / Issue Invoice for booking ${bookingNo}…`);
+  /* Straight to the form. Clicking #add on the Invoices tab is the human
+     route and works, but did not always navigate under CDP, leaving the run
+     reading the LIST for a grid that is only on the FORM. The URL was
+     measured from that click, so this is the same destination. */
+  await page.goto(INVOICE.formUrl(bookingNo), { waitUntil: "domcontentloaded" });
   await sleep(600);
+
+  // If Tramada bounced us back (a booking with nothing to invoice, say), take
+  // the human route and let oneOf() report the page if that is missing too.
+  if (!/booking-client-invoice/i.test(page.url())) {
+    await page.goto(INVOICE.listUrl(bookingNo), { waitUntil: "domcontentloaded" });
+    const addSel = await oneOf(page, INVOICE.addLink, "the Add/Issue Invoice control");
+    await page.locator(addSel).first().click();
+    await page.waitForLoadState("domcontentloaded").catch(() => {});
+    await sleep(800);
+  }
 
   say("Ticking the segment to invoice…");
   const ticked = await tickSegmentsToInvoice(page, match);

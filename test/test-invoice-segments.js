@@ -33,9 +33,9 @@ function fakePage(html, url = "https://asp.tramada.com.au/ttms/x/booking/booking
       for (const k of Object.keys(g)) { saved[k] = global[k]; global[k] = g[k]; }
       try { return await fn(arg); } finally { Object.assign(global, saved); }
     },
-    url() { return url; },
+    url() { return page._url || url; },
     async waitForLoadState() {},
-    async goto() {},
+    async goto(u) { page._url = u; page.calls.push({ action: "goto", url: u }); },
     locator(sel) {
       const els = Array.from(window.document.querySelectorAll(sel));
       const wrap = (list) => ({
@@ -100,6 +100,48 @@ const gridHtml = (rows, { heading = "Segments to Invoice" } = {}) =>
     const out = await seg.readSegmentsToInvoice(page);
     assert.strictEqual(new Set(out.rows.map((r) => r.handle)).size, 2,
       "two rows sharing a creditor and policy must still be separately addressable");
+  });
+
+  await check("the REAL page shape: heading far above the grid, one shared checkbox id", async () => {
+    /* Measured live 24-Sep-2026, booking 15875. Two things this pins:
+         - <h3>Segments To Invoice</h3> (capital T) is NOT the grid's
+           previousElementSibling, it sits further up the document;
+         - every row's checkbox shares id="segmentsToAllocate", the same trap
+           as the IPSI allocation grid.
+       The old previousElementSibling check found nothing here and fell
+       through to "last grid with checkboxes", which is right by luck on a
+       booking with one grid and wrong on any other. */
+    const page = fakePage(`
+      <div class="pane">
+        <h3>Segments To Invoice</h3>
+        <p>Select the segments to include on this invoice.</p>
+        <table>
+          <tr><th>D</th><th>Seg. Type</th><th>Creditor Details</th><th>Due inc GST</th></tr>
+          <tr><td><input type="checkbox" id="segmentsToAllocate" name="segmentsToAllocate"></td>
+              <td>INS</td><td>Tokio Marine 21404023</td><td>100.00</td></tr>
+          <tr><td><input type="checkbox" id="segmentsToAllocate" name="segmentsToAllocate"></td>
+              <td>AIR</td><td>Qantas QF123</td><td>500.00</td></tr>
+        </table>
+      </div>`);
+    const out = await seg.readSegmentsToInvoice(page);
+    assert.strictEqual(out.found, true);
+    assert.strictEqual(out.how, "heading", "the heading must be found even when it is not adjacent");
+    assert.strictEqual(out.rows.length, 2);
+
+    const ticked = await seg.tickSegmentsToInvoice(page, /tokio/i);
+    assert.strictEqual(ticked.ticked.length, 1);
+    const boxes = Array.from(page.window.document.querySelectorAll('input[type="checkbox"]'));
+    assert.deepStrictEqual(boxes.map((b) => b.checked), [true, false],
+      "a shared id must not make the run tick the wrong segment");
+  });
+
+  await check("the measured selectors are the ones the module holds", () => {
+    assert.strictEqual(seg.INVOICE.addLink[0], "#add", "measured: a submit button, not a link");
+    assert.strictEqual(seg.INVOICE.issueButton[0], "#issue");
+    assert.match(seg.INVOICE.formUrl("15875"), /booking-client-invoice\.htm\?mode=add&parentId=15875$/);
+    assert.strictEqual(seg.INVOICE.rowCheckboxId, "segmentsToAllocate");
+    // Preview renders, Select All is somebody else's decision.
+    assert.ok(!seg.INVOICE.issueButton.some((s) => /preview|selectAll/i.test(s)));
   });
 
   console.log("\nchoosing what to tick");
@@ -170,12 +212,16 @@ const gridHtml = (rows, { heading = "Segments to Invoice" } = {}) =>
   console.log("\nthe run");
 
   await check("dryRun is the default and never clicks Issue", async () => {
-    const page = fakePage(gridHtml([{ creditor: "Tokio Marine" }]) +
-      '<a href="/ttms/x/booking/booking-invoice.htm?mode=add">Add/Issue Invoice</a>' +
-      '<input type="button" id="form_issueButton" value="Issue">');
+    // It now goes straight to booking-client-invoice.htm, the URL measured
+    // from clicking #add, so the stub starts there.
+    const page = fakePage(
+      gridHtml([{ creditor: "Tokio Marine" }]) + '<input type="button" id="issue" value="Issue">',
+      "https://asp.tramada.com.au/ttms/x/booking/booking-client-invoice.htm?mode=add&parentId=15875"
+    );
     const out = await seg.issueInvoiceForSegments(page, "15875", { match: /tokio/i });
     assert.strictEqual(out.issued, false);
-    assert.ok(!page.calls.some((c) => /issueButton/.test(c.sel || "")), "Issue was clicked on a dry run");
+    assert.ok(!page.calls.some((c) => c.action === "click" && /issue/i.test(c.sel || "")),
+      "Issue was clicked on a dry run");
   });
 
   await check("it refuses without a match rather than invoicing everything", async () => {
