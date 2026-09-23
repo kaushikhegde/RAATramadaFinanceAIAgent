@@ -28,3 +28,9 @@ approved*.txt
 # The Docker volume: runs.json, uploads/ and the Chrome profile the Tramada
 # login lives in. Bind-mounted so you can read it; never committed.
 data/
+
+# Microsoft Graph sign-in for the DVC emails (refresh token — never commit)
+.graph-token-cache.json
+
+# Emails the DVC run wrote (MAIL_TRANSPORT=outbox, and a copy of every send)
+outbox/

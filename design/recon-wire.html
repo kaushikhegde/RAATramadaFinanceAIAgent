@@ -124,6 +124,31 @@ header.top { display: none !important }
       accept: '.csv,text/csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       columns: 'Payment Reference, Processed Amount, MerchantCompanyName — .csv or .xlsx',
     },
+    /* THE ONLY CARD THAT TAKES TWO FILES. A DVC reconciliation matches the
+       Westpac DVC report against Tramada's own Agency CC Reimbursement export
+       — both spreadsheets, both uploaded here — and the answer is arithmetic.
+       Then the run goes straight on to steps 12-16: it ticks the confident
+       lines on the Issue Payment screen, saves the Payment Session and emails
+       Travel Accounts. Issue (step 17) stays a person's, and only at 100%.
+
+       `pair` names the second slot. It has to be a declaration rather than a
+       special case in `renderSource`, because a third two-file report added by
+       copying `=== 'dvc'` around is a third report that half works. */
+    dvc: {
+      title: 'DVC card reconciliation',
+      blurb: 'Yesterday\'s Westpac virtual-card charges against what Tramada holds for them. '
+           + 'The run matches the two spreadsheets on booking number and amount. Errors are emailed '
+           + 'to be fixed in the Westpac report and re-uploaded; once none arise it ticks the lines '
+           + 'in Tramada, saves Payment Session “DVC DD/MM/YYYY” and emails the accounts team. '
+           + 'It never presses Issue.',
+      accept: '.csv,text/csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      columns: 'Transaction amount, Tramada number, Segment type — .csv or .xlsx',
+      pair: {
+        key: 'tramada',
+        title: 'Tramada Agency CC Reimbursement export',
+        columns: 'Seg. Type, Booking No., Balance Due — .csv or .xlsx',
+      },
+    },
   };
 
   /* THE ORDER A COMBINED RUN GOES IN — BPay first, because BPay is what creates
@@ -139,9 +164,18 @@ header.top { display: none !important }
 
      `test/test-run-order.js` reads this array out of this file and fails if it
      drifts from core's. Do not reorder one without the other. */
-  const RUN_ORDER = ['bpay', 'mint', 'ipsi', 'travelpay'];
+  const RUN_ORDER = ['bpay', 'mint', 'ipsi', 'travelpay', 'dvc'];
 
-  const source = { bpay: null, mint: null, travelpay: null, ipsi: null };  // each: { file, rows, previewOpen }
+  const source = { bpay: null, mint: null, travelpay: null, ipsi: null, dvc: null };  // each: { file, rows, previewOpen }
+
+  /* THE SECOND FILE OF A TWO-FILE CARD, held OUTSIDE `source`.
+     `source[kind]` means "this report is loaded and can be run", and every
+     reader of it assumes `s.file.name` and `s.rows`. Dropping the Tramada
+     export in first — which is a perfectly normal thing to do — would have had
+     to put a half-built entry in there, and `loaded()` would then have counted
+     a card that cannot run while `renderSource` read `.file.name` off null.
+     So the pair lives here and the card reads both. */
+  const pairFile = { dvc: null };   // { file, rows, columns, format }
   let active = null;              // a report key, or 'both' when more than one is loaded
 
   /* Only BPay FILES anything. Everything else is a report of payments that
@@ -440,7 +474,8 @@ header.top { display: none !important }
     // Which card asked is remembered by openPicker — the file's own name and
     // contents never decide which parser it goes to.
     const picker = $('#filePicker');
-    if (picker) picker.onchange = (e) => load(e.target.files[0], pickerFor);
+    if (picker) picker.onchange = (e) =>
+      load(e.target.files[0], pickerFor && pickerFor.kind, pickerFor && pickerFor.part);
     // The "Filing as a new source type…" wizard belongs to the demo's detector.
     const detect = $('#detectPanel');
     if (detect) detect.style.display = 'none';
@@ -488,6 +523,18 @@ header.top { display: none !important }
       const n = parseFloat(String(r.amount).replace(/[$,\s]/g, ''));
       return sum + (isFinite(n) ? n : 0);
     }, 0);
+    /* A DVC line has no payment reference to count — a virtual card charge is
+       named by its merchant and its booking, and counting "references" would
+       read as a column the file does not have. Refunds are in the total with
+       their own sign, which is what the report's own total is (BR04). */
+    if (kind === 'dvc') {
+      const bookings = new Set(rs.map((r) => r.bookingNo).filter(Boolean));
+      const refunds = rs.filter((r) => r.refund).length;
+      return rs.length + ' card charge' + (rs.length === 1 ? '' : 's') +
+        ' · ' + bookings.size + ' booking' + (bookings.size === 1 ? '' : 's') +
+        (refunds ? ' · ' + refunds + ' refund' + (refunds === 1 ? '' : 's') : '') +
+        ' · ' + dollars(total.toFixed(2)) + ' on the card';
+    }
     if (checksOnly(kind)) {
       const companies = new Set(rs.map((r) => r.toCompany).filter(Boolean));
       return rs.length + ' reference' + (rs.length === 1 ? '' : 's') +
@@ -670,11 +717,117 @@ header.top { display: none !important }
      a card being torn down and rebuilt. */
   let ipsiNuvei = '';
 
+  /* ── DVC steps 12-16, the Tramada half ──
+     RAA's DRAWING (23-09-2026). Start run matches the two files. Errors: an
+     email, nothing in Tramada — a person fixes the Westpac report and
+     re-uploads. No errors: straight on to Tramada's Issue Payment screen, tick,
+     save the Payment Session "DVC DD/MM/YYYY" even if Tramada raises
+     something, and email the accounts team its state. A person Issues.
+
+     THE AGENT NEVER PRESSES ISSUE. That is Travel Accounts' step 17, in
+     Tramada, on the session the agent saved. There is no button for it here.
+
+     The card the Issue Payment search runs on (BR12) is server configuration
+     (`DVC_CARD`), not something the dashboard shows or asks for — RAA,
+     23-09-2026. `dvcResult` is what the server says happened, never the
+     page's guess. */
+  let dvcResult = null;         // { saved, complete, ticked, amount, errors, email, … }
+  let dvcDiff = null;           // what changed since the last upload of this day
+
+  /** What the run did in Tramada and who was told — after a run. */
+  function dvcPaymentBlock() {
+    if (!dvcResult) return '';
+    const r = dvcResult;
+    const box = (body) => '<div style="margin-top:10px;padding:10px;border:1px solid var(--line);' +
+      'border-radius:6px">' + body + '</div>';
+    /* Every email is in the outbox whatever happened to it — captured-only
+       (MAIL_TRANSPORT=outbox, which is how this runs behind the company proxy),
+       sent, or failed — so the line always links there. */
+    const outboxLink = ' <a href="/outbox" target="_blank" rel="noopener">Open the outbox</a>';
+    const emailLine = r.email
+      ? '<div class="muted" style="margin-top:6px">' + (r.email.sent
+          ? '✉ Emailed to ' + esc((r.email.to || []).join(', ')) + '.' + outboxLink
+          : r.email.captured
+            ? '✉ Email to the accounts team written to the outbox (not sent).' + outboxLink
+            : '<span style="color:var(--err)">✉ Not emailed — ' + esc(r.email.why || 'unknown') + '.</span>' +
+              outboxLink) +
+        '</div>'
+      : '';
+    const list = (xs) => xs && xs.length
+      ? '<ul style="margin:6px 0 0 18px;padding:0">' + xs.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>'
+      : '';
+
+    if (r.saved) {
+      return box('<b>' + (r.complete ? 'Session saved — ready to Issue.'
+          : 'Session saved — Tramada raised things to check before Issue.') +
+        '</b><div class="muted" style="margin-top:4px">Payment Session <b>' + esc(r.sessionLabel) +
+        '</b>' + (r.reopened ? ' was re-checked and saved again; it' : '') + ' holds ' + r.ticked + ' transaction' + (r.ticked === 1 ? '' : 's') + ', $' + esc(r.amount) +
+        '.' + (r.confirmed ? '' : ' Tramada raised no error but did not show the label afterwards — ' +
+          'check the session list.') +
+        (r.complete
+          ? ' Travel Accounts open it in Tramada' + (r.roundRemaining ? ', tick Round Remaining' : '') +
+            ' and press Issue — the agent never does.'
+          : ' Open the session, make any changes needed, then Issue:') + '</div>' +
+        list(r.complete ? [] : r.errors) + emailLine);
+    }
+    const why = r.error || r.why || 'nothing was entered in Tramada.';
+    /* RAA's drawing: spreadsheet errors come back to a person first. */
+    if (/spreadsheets do not reconcile yet/.test(why)) {
+      return box('<b>Errors found — fix the Westpac report and re-upload.</b>' +
+        '<div class="muted" style="margin-top:4px">Nothing has been entered in Tramada. The ' +
+        'reimbursement starts on the run that comes back with no errors.</div>' +
+        list(r.blockers || []) + emailLine);
+    }
+    return box('<b>' + (r.held === 'dry run'
+        ? 'Dry run — session not saved.' : 'No session saved.') + '</b>' +
+      '<div class="muted" style="margin-top:4px">' + esc(why) + '</div>' + list(r.errors) + emailLine);
+  }
+
+  /** "3 lines differ from the 09:14 upload" — shown on the card, never enforced. */
+  function dvcDiffLine() {
+    if (!dvcDiff) return '';
+    if (dvcDiff.same) return '<span class="muted">Identical to ' + esc(dvcDiff.label) + '.</span>';
+    return '<span style="color:var(--warn,#a60)">' + esc(dvcDiff.summary) + ' compared with ' +
+      esc(dvcDiff.label) + '.</span>';
+  }
+
   function ipsiNuveiField() {
     return '<div style="margin-top:8px;display:flex;align-items:center;gap:8px">' +
       '<label class="field-lbl" for="ipsiNuvei" style="margin:0">NUVEI amount<span class="req" aria-hidden="true">*</span></label>' +
       '<input class="btn" id="ipsiNuvei" aria-required="true" type="number" step="0.01" min="0" inputmode="decimal" ' +
       'style="width:110px" placeholder="0.00" value="' + esc(ipsiNuvei) + '"></div>';
+  }
+
+  /* ── the second slot of a two-file card ──
+     Drawn inside the card, under the same heading, so the two files read as
+     one upload rather than as two reports that happen to sit together — which
+     is what they are: a DVC run without both of them reconciles nothing, and
+     the card refuses rather than running half of it (see `dvcWarn`).
+
+     Its own buttons carry `data-choose-part` rather than `data-choose`, so the
+     existing delegate cannot pick them up and retarget the main slot's picker
+     at the wrong file. */
+  function pairSlot(kind) {
+    const def = (SOURCES[kind] || {}).pair;
+    if (!def) return '';
+    const p = pairFile[kind];
+    const head = '<div data-kind-part="' + kind + ':' + def.key + '" ' +
+      'style="margin-top:12px;padding-top:10px;border-top:1px dashed #D5DBE6">' +
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+      '<b style="font-size:13px">' + esc(def.title) + '</b>' +
+      (p ? '<span class="badge b-ok">loaded</span>' : '<span class="badge b-warn">needed</span>') +
+      '</div>';
+    const body = p
+      ? '<span class="file">' + esc(p.file.name) + ' · ' + p.rows.length + ' costing' +
+        (p.rows.length === 1 ? '' : 's') + ' · ' + kb(p.file.size) + '</span>'
+      : '<span class="file">' + esc(def.columns) + '</span>';
+    return head + body +
+      '<div class="muted rc-hint" data-hint="' + kind + ':' + def.key + '" style="margin-top:6px"></div>' +
+      '<div class="actions" style="margin-top:6px">' +
+      '<button class="btn sm ' + (p ? 'ghost' : 'indigo') + '" data-choose-part="' + kind + ':' + def.key + '">' +
+      (p ? 'Replace file' : 'Choose file') + '</button>' +
+      (p ? '<button class="btn sm ghost" data-clear-part="' + kind + ':' + def.key + '">Remove</button>' : '') +
+      '</div></div>';
   }
 
   /* ── IPSI's unresolved settlements ──
@@ -1148,10 +1301,12 @@ header.top { display: none !important }
           '<p>' + def.blurb + '</p>' +
           '<span class="file">' + def.columns + '</span>' +
           (kind === 'ipsi' ? ipsiNuveiField() : '') +
+          (kind === 'dvc' ? dvcDiffLine() + dvcPaymentBlock() : '') +
           '<div class="muted rc-figs" data-figs="' + kind + '" style="margin-top:8px"></div>' +
           '<div class="muted rc-hint" data-hint="' + kind + '" style="margin-top:8px">' + hintSeed + '</div>' +
           '<div class="card-slot" data-slot="' + kind + '"></div>' +
           '<div class="actions"><button class="btn sm indigo" data-choose="' + kind + '">Choose file</button></div>' +
+          pairSlot(kind) +
           (kind === 'ipsi' ? ipsiPendingBlock() + ipsiPayBlock() : '') +
           '</div></div>';
       }
@@ -1179,6 +1334,7 @@ header.top { display: none !important }
         (s.rows.length === 1 ? '' : 's') + ' · ' + kb(s.file.size) + esc(balances) + '</span>' +
         '<span class="result">' + (finished ? '✓ ' : '') + sourceStats(kind) + '</span>' +
         (kind === 'ipsi' ? ipsiNuveiField() : '') +
+        (kind === 'dvc' ? dvcDiffLine() + dvcPaymentBlock() : '') +
         '<div class="muted rc-figs" data-figs="' + kind + '" style="margin-top:8px"></div>' +
           '<div class="muted rc-hint" data-hint="' + kind + '" style="margin-top:8px">' + hintSeed + '</div>' +
         '<div class="card-slot" data-slot="' + kind + '"></div>' +
@@ -1192,6 +1348,7 @@ header.top { display: none !important }
         '<button class="btn sm ghost" data-choose="' + kind + '">Replace file</button>' +
         '<button class="btn sm ghost" data-clear="' + kind + '">Remove</button>' +
         '</div>' +
+        pairSlot(kind) +
         (s.previewOpen ? previewTable(kind) : '') +
         (kind === 'ipsi' ? ipsiPendingBlock() + ipsiPayBlock() : '') +
         '</div></div>';
@@ -1257,6 +1414,26 @@ header.top { display: none !important }
       b.onclick = () => {
         source[b.dataset.clear] = null;
         if (active === b.dataset.clear) active = null;
+        // The pair goes with the report it belongs to. Leaving a Tramada export
+        // sitting on an empty card would have the next Westpac report silently
+        // reconciled against yesterday's costings.
+        if (b.dataset.clear in pairFile) pairFile[b.dataset.clear] = null;
+        syncActive();
+        render();
+      };
+    });
+    // The second slot's own buttons — see pairSlot. `data-choose-part` rather
+    // than `data-choose` so the delegate above cannot retarget the main
+    // picker at the wrong file.
+    grid.querySelectorAll('[data-choose-part]').forEach((b) => {
+      b.onclick = () => {
+        const [kind, part] = b.dataset.choosePart.split(':');
+        openPicker(kind, part);
+      };
+    });
+    grid.querySelectorAll('[data-clear-part]').forEach((b) => {
+      b.onclick = () => {
+        pairFile[b.dataset.clearPart.split(':')[0]] = null;
         syncActive();
         render();
       };
@@ -1287,6 +1464,12 @@ header.top { display: none !important }
        Put them back. This is the last thing renderSource does, so it runs
        after every path that rebuilds the grid. */
     loaded().forEach(paintHint);
+    /* DVC's card speaks even when it is not LOADED. Dropping the Tramada export
+       first is a perfectly normal thing to do, and until the Westpac report
+       lands `loaded()` does not include 'dvc' — so the line above would never
+       reach it and the card would sit holding half an upload saying nothing
+       about the half it is still waiting for. */
+    if (pairFile.dvc && !source.dvc) paintHint('dvc');
     paintFigures();
 
     // Drop on a tile loads THAT tile's report — the card decides the parser,
@@ -1299,6 +1482,25 @@ header.top { display: none !important }
         ev.preventDefault(); dz.style.outline = '';
       }));
       dz.addEventListener('drop', (ev) => load(ev.dataTransfer.files[0], dz.dataset.kind));
+    });
+
+    /* THE SECOND SLOT IS ITS OWN DROP TARGET, and it has to be: the slot sits
+       inside the card, so a Tramada export dropped on it would otherwise reach
+       the card's handler above, be read with the Westpac parser and come back
+       "the sheet has no column for: transaction amount (aud)" — about a file
+       that is perfectly well formed. `stopPropagation` is what keeps the outer
+       handler from running as well and loading it twice. */
+    grid.querySelectorAll('[data-kind-part]').forEach((slot) => {
+      ['dragenter', 'dragover'].forEach((e) => slot.addEventListener(e, (ev) => {
+        ev.preventDefault(); ev.stopPropagation(); slot.style.outline = '2px dashed var(--indigo)';
+      }));
+      ['dragleave', 'drop'].forEach((e) => slot.addEventListener(e, (ev) => {
+        ev.preventDefault(); ev.stopPropagation(); slot.style.outline = '';
+      }));
+      slot.addEventListener('drop', (ev) => {
+        const [kind, part] = slot.dataset.kindPart.split(':');
+        load(ev.dataTransfer.files[0], kind, part);
+      });
     });
   }
 
@@ -1341,8 +1543,16 @@ header.top { display: none !important }
        complete than it is. */
     if (cardDone(kind)) {
       const n = cardRows(kind).length;
-      lines.push('<span class="rc-ok">✓ Reconciled in Tramada — all ' + n + ' row' +
-        (n === 1 ? '' : 's') + ' matched, nothing outstanding.</span>');
+      /* "IN TRAMADA" IS ONLY TRUE FOR THE REPORTS THAT WENT THERE. A DVC run
+         matches two spreadsheets and touches no portal at all, so the shared
+         sentence would have claimed a step that has not happened — on the one
+         card where the Tramada half is still a person's to do. */
+      lines.push(kind === 'dvc'
+        ? '<span class="rc-ok">✓ All ' + n + ' card charge' + (n === 1 ? '' : 's') +
+          ' matched to a Tramada costing, nothing flagged. Nothing has been entered ' +
+          'into Tramada — the Issue Payment step is still yours.</span>'
+        : '<span class="rc-ok">✓ Reconciled in Tramada — all ' + n + ' row' +
+          (n === 1 ? '' : 's') + ' matched, nothing outstanding.</span>');
     }
     if (cardNote[kind]) lines.push(cardNote[kind]);
     // IPSI's own warning shares this line with the note above it — "N rows
@@ -1359,6 +1569,14 @@ header.top { display: none !important }
       // Unlike the guard below, IPSI always repaints, even to blank — its
       // warning has to be able to disappear the moment NUVEI is filled in or
       // corrected, not just appear.
+      hint(kind, lines.join('<br>'));
+      return;
+    }
+    // DVC's own, same shape and same reason as IPSI's: "the other file is
+    // still needed" has to be able to disappear the moment it arrives.
+    if (kind === 'dvc') {
+      const w = dvcWarn();
+      if (w) lines.push('<span style="color:var(--err)">' + esc(w) + '</span>');
       hint(kind, lines.join('<br>'));
       return;
     }
@@ -1427,11 +1645,16 @@ header.top { display: none !important }
 
   /* One <input type=file>, retargeted per card. Two inputs would mean two
      places for the mockup's markup to change under us. */
+  /* `{ kind, part }`, not a bare kind. A two-file card has two slots pointing
+     at this one input, and the answer has to say which slot it came back for —
+     a Tramada export read with the Westpac parser is refused as "the sheet has
+     no column for: transaction amount (aud)", about a file that is perfectly
+     well formed. `part` is empty for every one-file card. */
   let pickerFor = null;
-  function openPicker(kind) {
+  function openPicker(kind, part) {
     const picker = $('#filePicker');
     if (!picker) return;
-    pickerFor = kind;
+    pickerFor = { kind: kind, part: part || '' };
     picker.value = '';
     picker.setAttribute('accept', SOURCES[kind].accept);
     picker.click();
@@ -1441,6 +1664,22 @@ header.top { display: none !important }
      does" — before this there was no preview to be the check. */
   function previewTable(kind) {
     const rs = (source[kind] && source[kind].rows) || [];
+    /* DVC's own preview. The shared checks-only one is Payment reference /
+       Merchant / Amount, and a DVC line has none of the first two — it would
+       have drawn a table of blanks over a file that is entirely readable.
+       Booking and segment type are what the match is made on (BR03), so they
+       are what the check before a run has to show. */
+    if (kind === 'dvc') {
+      return '<div class="tbl-wrap" style="margin-top:12px"><table><thead><tr>' +
+        '<th>Booking</th><th>Segment</th><th>Merchant</th><th class="num">Amount</th>' +
+        '</tr></thead><tbody>' +
+        rs.map((r) => '<tr><td class="mono">' +
+          (r.bookingNo ? esc(r.bookingNo) : '<span class="muted">—</span>') + '</td>' +
+          '<td>' + esc(r.segmentType || '') + '</td>' +
+          '<td>' + esc(r.merchant || '') + '</td>' +
+          '<td class="num">' + esc(r.amount) + '</td></tr>').join('') +
+        '</tbody></table></div>';
+    }
     const head = checksOnly(kind)
       ? '<th>' + (kind === 'travelpay' ? 'Payment reference' : 'Transaction reference') +
         '</th><th>' + (kind === 'travelpay' ? 'Merchant' : 'To company') +
@@ -1463,6 +1702,27 @@ header.top { display: none !important }
   // cached at load time, because it has to answer the same way whether
   // `syncActive` asks it before a render or `renderSource` asks it during one.
   const ipsiCombo = () => { const on = loaded(); return on.includes('ipsi') && on.length > 1; };
+
+  /* DVC RUNS ALONE TOO, and for a stronger reason than IPSI's. It opens no
+     browser at all — it matches two spreadsheets against each other — so there
+     is nothing for it to go before or after on a shared statement page, and
+     `runCombinedReconciliation` refuses a report it cannot place rather than
+     guessing at one. A run started with DVC and anything else loaded would
+     stop at the server with a sentence nobody asked for; this stops it here,
+     where the person can see which card to remove. */
+  const dvcCombo = () => { const on = loaded(); return on.includes('dvc') && on.length > 1; };
+
+  /* BOTH FILES, OR NO RUN. With only the Westpac report every line comes back
+     "Booking number not found" — a full screen of red about a report that is
+     perfectly correct, describing a file nobody uploaded. Said on the card the
+     moment the first file lands, not saved up for when Start run is pressed. */
+  function dvcWarn() {
+    if (dvcCombo()) return 'DVC runs alone — remove the other loaded report before starting this one.';
+    if (source.dvc && !pairFile.dvc) return 'The Tramada Agency CC Reimbursement export is needed too — ' +
+      'without it every line reads as a booking Tramada does not have.';
+    if (!source.dvc && pairFile.dvc) return 'The Westpac DVC report is needed too.';
+    return '';
+  }
 
   /* BR01 — the NUVEI amount and the settlement file's OWN total, to the cent.
      `amountCents` is what `recon-core.parseIpsiRows` already computed server
@@ -1545,7 +1805,14 @@ header.top { display: none !important }
      needed" on Mint's, TravelPay's and IPSI's cards too, even though only
      BPay needed the balances and only Mint needed its own total. */
   function missingFiguresFor(kind) {
-    if (!active || active === 'ipsi' || kind === 'ipsi') return '';
+    /* DVC joins IPSI in wanting none of this. It never opens a bank statement
+       page — it matches two spreadsheets — so an opening balance, a closing
+       balance and a statement date to create a page under are all fields that
+       belong to a step it does not take. It DOES want the date, but as the
+       settlement date it is reconciling, and `start()` already refuses without
+       one; telling somebody a DVC run needs an "opening balance" would send
+       them looking for a figure nothing here reads. */
+    if (!active || active === 'ipsi' || kind === 'ipsi' || active === 'dvc' || kind === 'dvc') return '';
     const on = loaded();
     if (!on.includes(kind)) return '';
     const date = ($('#rcDate') || {}).value, op = ($('#rcOpening') || {}).value,
@@ -1576,7 +1843,11 @@ header.top { display: none !important }
 
   function syncActive() {
     const on = loaded();
-    const invalidCombo = ipsiCombo();
+    const invalidCombo = ipsiCombo() || dvcCombo();
+    // DVC needs both of its files. A run with only the Westpac report matches
+    // nothing and reports a correct file as entirely unreconciled.
+    // Both DVC files, or no run. The payment has its own button and its own gate.
+    const dvcBad = on.includes('dvc') && !pairFile.dvc;
     // A blank NUVEI amount now says so on IPSI's own card the moment the file
     // lands (see ipsiNuveiWarn/paintHint), so Start run is held for it the
     // same as a typed-but-wrong figure — not just for BR01's mismatch, which
@@ -1597,7 +1868,7 @@ header.top { display: none !important }
        writing the same two cells. So the gaps are said out loud below (see
        paintFigures/missingFiguresFor) and do not disable anything; `start()`
        still refuses the run if they are still blank when it is pressed. */
-    if (run) run.disabled = !on.length || running || invalidCombo || ipsiBad || totalBad || busy;
+    if (run) run.disabled = !on.length || running || invalidCombo || ipsiBad || totalBad || dvcBad || busy;
     paintFigures();
     if (!invalidCombo) on.forEach(paintHint);
 
@@ -1677,6 +1948,11 @@ header.top { display: none !important }
     // typed in — `loadPendingSettlement` sets this deliberately; a plain
     // upload should not inherit it by accident.
     if (kind === 'ipsi') ipsiNuvei = '';
+    /* A NEW FILE IS NOT THE FILE THAT WAS RECONCILED. The session result and
+       the upload diff both belong to the run that produced them, and leaving
+       either on screen next to a file nobody has reconciled yet would say a
+       session was saved for arithmetic that has not been done. */
+    if (kind === 'dvc') { dvcResult = null; dvcDiff = null; }
     active = kind;
     syncActive();
     clearReport();                       // General 14 — an upload is not a run
@@ -1728,17 +2004,28 @@ header.top { display: none !important }
       : '';
   }
 
-  function reject(kind, name, why) {
+  function reject(kind, name, why, part) {
     // A file that cannot be read leaves no card behind claiming otherwise.
-    source[kind] = null;
-    if (active === kind) active = null;
+    // For a two-file card only the SLOT it was dropped in is cleared: a bad
+    // Tramada export is no reason to throw away a Westpac report that read
+    // perfectly well.
+    if (part) pairFile[kind] = null;
+    else {
+      source[kind] = null;
+      if (active === kind) active = null;
+    }
     syncActive();
     render();
-    hint(kind, '<span style="color:var(--err)">' + esc(name) + ' — ' + esc(why) + '</span>');
+    hint(part ? kind + ':' + part : kind,
+      '<span style="color:var(--err)">' + esc(name) + ' — ' + esc(why) + '</span>');
   }
 
-  function load(file, kind) {
+  function load(file, kind, part) {
     if (!file || !kind) return;
+    part = part || '';
+    // The slot this file is for, which is what `pending` is keyed on and what
+    // the server echoes back — see the `part` note on openPicker.
+    const slot = part ? kind + ':' + part : kind;
     const fr = new FileReader();
 
     /* A BPay WORKBOOK goes to the server like any other, for the same reason:
@@ -1754,12 +2041,14 @@ header.top { display: none !important }
         let bin = '';
         for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
         if (!ws || ws.readyState !== 1) {
-          reject(kind, file.name, 'not connected to the server — is it still running?');
+          reject(kind, file.name, 'not connected to the server — is it still running?', part);
           return;
         }
-        hint(kind, 'Reading ' + esc(file.name) + '…');
-        pending[kind] = { name: file.name, size: file.size };
-        ws.send(JSON.stringify({ type: 'recon_parse', source: kind, name: file.name, base64: btoa(bin) }));
+        hint(slot, 'Reading ' + esc(file.name) + '…');
+        pending[slot] = { name: file.name, size: file.size };
+        // `part` says WHICH file of a two-file card this is, so the server
+        // picks the parser rather than guessing from the headings.
+        ws.send(JSON.stringify({ type: 'recon_parse', source: kind, part: part, name: file.name, base64: btoa(bin) }));
       };
       fr.readAsArrayBuffer(file);
       return;
@@ -1774,12 +2063,14 @@ header.top { display: none !important }
         let bin = '';
         for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
         if (!ws || ws.readyState !== 1) {
-          reject(kind, file.name, 'not connected to the server — is it still running?');
+          reject(kind, file.name, 'not connected to the server — is it still running?', part);
           return;
         }
-        hint(kind, 'Reading ' + esc(file.name) + '…');
-        pending[kind] = { name: file.name, size: file.size };
-        ws.send(JSON.stringify({ type: 'recon_parse', source: kind, name: file.name, base64: btoa(bin) }));
+        hint(slot, 'Reading ' + esc(file.name) + '…');
+        pending[slot] = { name: file.name, size: file.size };
+        // `part` says WHICH file of a two-file card this is, so the server
+        // picks the parser rather than guessing from the headings.
+        ws.send(JSON.stringify({ type: 'recon_parse', source: kind, part: part, name: file.name, base64: btoa(bin) }));
       };
       fr.readAsArrayBuffer(file);
       return;
@@ -1959,7 +2250,7 @@ header.top { display: none !important }
      full titles — "BPay receipts CSV" tells you what to drop on it — but a
      dropdown does not need the word CSV four times, and the full set wrapped
      the filter row onto a second line. RAA writes them this way too. */
-  const PAY_TYPE = { bpay: 'BPay', mint: 'Mint', ipsi: 'IPSI', travelpay: 'TravelPay' };
+  const PAY_TYPE = { bpay: 'BPay', mint: 'Mint', ipsi: 'IPSI', travelpay: 'TravelPay', dvc: 'DVC' };
 
   function drawReportPicker() {
     const sel = $('#ibReport');
@@ -2100,12 +2391,20 @@ header.top { display: none !important }
     // same way a BPay row does instead of making Finance hover for it.
     const remarkCell = (r) =>
       '<td' + whyTip(r) + '>' + (r.remark ? '<b>' + esc(r.remark) + '</b>' : '<span class="muted">—</span>') + '</td>';
+    /* WHAT NAMES A ROW, AND WHO WAS PAID — asked of the row, not of the table.
+       A DVC line has neither a payment reference nor a merchant company: money
+       moved on a virtual card, so the merchant on the statement is what names
+       the charge and the supplier name is who it went to. Rendered through the
+       shared cells it came out as two empty columns over a file that reads
+       perfectly well, so each report answers with its own field instead. */
+    const refOf = (r) => r.transNo || r.merchant || '';
+    const companyOf = (r) => r.toCompany || r.supplierName || '';
     const body = shown.map((r) => mint
       ? '<tr><td><span class="tdot ' + dot(r) + '"></span></td>' +
-        '<td><b class="ref">' + esc(r.transNo) + '</b></td>' +
+        '<td><b class="ref">' + esc(refOf(r)) + '</b></td>' +
         '<td class="num">' + esc(r.amount) + '</td>' +
         bookingCell(r) +
-        '<td>' + esc(r.toCompany || '') + '</td>' +
+        '<td>' + esc(companyOf(r)) + '</td>' +
         '<td>' + badge(r.reconciliation) + '</td>' +
         remarkCell(r) + '</tr>'
       /* On a COMBINED run both kinds of row share this table, and a Mint row has
@@ -2115,8 +2414,8 @@ header.top { display: none !important }
          So each row is drawn from what it IS, not from what the run is. */
       : '<tr><td><span class="tdot ' + dot(r) + '"></span></td>' +
         (checksOnly(r.src)
-          ? '<td><b class="ref">' + esc(r.transNo) + '</b><div class="muted">' +
-            esc(r.toCompany || '') + ' · ' + esc((SOURCES[r.src] || {}).title || r.src) + '</div></td>'
+          ? '<td><b class="ref">' + esc(refOf(r)) + '</b><div class="muted">' +
+            esc(companyOf(r)) + ' · ' + esc((SOURCES[r.src] || {}).title || r.src) + '</div></td>'
           : '<td><b class="ref">' + esc(r.reference) + '</b><div class="muted">' +
             esc(r.date) + ' · ' + esc(r.recPayType) + '</div></td>') +
         '<td class="num">' + esc(r.amount) + '</td>' +
@@ -2782,6 +3081,13 @@ header.top { display: none !important }
       const mismatch = totalMismatch('travelpay');
       if (mismatch) { stop(mismatch, ['rcTotalTravelpay']); return; }
     }
+    /* Both DVC files, or no run. Start is already disabled while one is missing
+       (see syncActive's dvcBad), but that only guards the button; this guards
+       the run itself against whatever got it clicked anyway. */
+    if (on.includes('dvc')) {
+      const w = dvcWarn();
+      if (w) { stop(w); return; }
+    }
     if (!ws || ws.readyState !== 1) {
       stop('Not connected to the server — is it still running?');
       return;
@@ -2858,6 +3164,21 @@ header.top { display: none !important }
           }, {}),
           ...common,
         }
+      /* DVC sends BOTH files. `rows` is the Westpac DVC report; `tramadaRows`
+         is the Agency CC Reimbursement export it is matched against, already
+         parsed by this server on its way in. Its own frame shape rather than
+         a second `rows` key, so nothing downstream can mistake one file's rows
+         for the other's. */
+      : kind === 'dvc'
+        ? { type: 'recon_run', source: kind, rows,
+            tramadaRows: (pairFile.dvc || {}).rows || [],
+            ...common,
+            /* The run goes straight on to the Payment Session (steps 12-16).
+               `dryRun` is the toolbar's, already in `common`: everything except
+               Session. No card travels with it — the server holds BR12's card
+               (`DVC_CARD`) — and no approval field: the agent never presses
+               Issue, so there is nothing for one to approve. */
+          }
       : { type: 'recon_run', source: kind, rows, ...common }));
   }
 
@@ -2867,11 +3188,36 @@ header.top { display: none !important }
       // will use. `pending` holds the file's own facts, which the server never
       // saw and does not need to.
       const kind = SOURCES[m.source] ? m.source : 'mint';
-      const f = pending[kind];
-      delete pending[kind];
-      if (m.error || !f) { reject(kind, m.name || 'that file', m.error || 'the answer arrived for a file I was not waiting on'); return; }
+      /* WHICH SLOT this answer is for. A two-file card has two uploads in
+         flight against one `pending` map, and keying both on the report would
+         have the second answer delete the first's entry — the first file would
+         then be rejected as "the answer arrived for a file I was not waiting
+         on" while its own answer was still on the way. */
+      const pairDef = (SOURCES[kind] || {}).pair;
+      const part = pairDef && m.part === pairDef.key ? pairDef.key : '';
+      const slot = part ? kind + ':' + part : kind;
+      const f = pending[slot];
+      delete pending[slot];
+      if (m.error || !f) { reject(kind, m.name || 'that file', m.error || 'the answer arrived for a file I was not waiting on', part); return; }
       if (!m.rows || !m.rows.length) {
-        reject(kind, m.name, (m.problems && m.problems[0] && m.problems[0].why) || 'nothing in it could be checked');
+        reject(kind, m.name, (m.problems && m.problems[0] && m.problems[0].why) || 'nothing in it could be checked', part);
+        return;
+      }
+      if (part) {
+        pairFile[kind] = {
+          file: { name: f.name, size: f.size }, rows: m.rows,
+          columns: (m.columns || []).filter(Boolean),
+          format: m.format === 'xlsx' ? 'xlsx' : 'csv',
+        };
+        /* A NEW TRAMADA EXPORT IS A NEW RECONCILIATION. The readiness verdict
+           was reached against the export that was loaded when the run happened,
+           and half of what it checked lives in this file — so replacing it has
+           to take the payment button away until somebody runs it again. */
+        if (kind === 'dvc') { dvcResult = null; dvcDiff = null; }
+        // Not `clearReport()` — the Westpac half may already be loaded and
+        // this is the other half of the SAME upload, not a new one.
+        syncActive();
+        render();
         return;
       }
       /* The server's `problems` carry the whole row, not just its line number,
@@ -2882,6 +3228,19 @@ header.top { display: none !important }
       accept(kind, f, m.rows, (m.problems || []).map((p) => p.line),
         (m.problems || []).map((p) => p.row).filter(Boolean),
         m.columns || [], m.format || 'csv');
+      /* BR01's roll call, said on the card. A DVC report with no Segment Type
+         column still reconciles on booking number and amount — it just runs
+         without step 5's sense check, and a run that is quietly less sure than
+         it looks is worse than one that says so. Reported, never enforced:
+         refusing the file would stop a reconciliation that would have matched
+         every line. */
+      if ((m.missingColumns || []).length) {
+        const list = m.missingColumns.map(esc).join(', ');
+        cardNote[kind] = (cardNote[kind] ? cardNote[kind] + '<br>' : '') +
+          '<span style="color:var(--warn,#8a6d00)">BR01: this file has no ' + list +
+          ' column. It will still reconcile on booking number and amount.</span>';
+        paintHint(kind);
+      }
       if (m.enriching) {
         syncActive();
       }
@@ -2996,6 +3355,11 @@ header.top { display: none !important }
     } else if (m.type === 'recon_done') {
       if (m.runId) lastRunId = m.runId;
       running = false;
+      /* WHAT THE SERVER DID, NOT WHAT THE PAGE WORKED OUT. Held even when no
+         session was saved, because "nothing was entered, and why" is the
+         message that stops somebody going into Tramada looking for one. */
+      if (m.payment) dvcResult = { ...m.payment, email: m.email || null };
+      dvcDiff = m.uploadDiff || null;
       needLogin = null;
       vncOpen = false;
       $('#startRun').disabled = false;
@@ -3357,6 +3721,23 @@ header.top { display: none !important }
        time to time and a rename typed into it would be lost on the next build.
        The names match the upload cards on the Sources screen, because a person
        reading this screen has just come from that one. */
+    const grid = host.querySelector('.g-4');
+    /* FIVE REPORTS, FOUR CARDS IN THE MOCKUP. The fifth is cloned from the
+       fourth here rather than typed into the mockup, for the same reason the
+       other two are retitled here: the client sends a new mockup from time to
+       time and anything typed into it is lost on the next build. Guarded by a
+       marker because this function runs on every overview render, and an
+       unguarded clone would add a card a second.
+
+       A report with no card at all would be the worse outcome: this is the one
+       screen whose being wrong is invisible — every figure on it looks like a
+       figure, and nobody re-adds one (§6b). A DVC run that had happened would
+       simply not have been on it. */
+    if (grid && grid.querySelectorAll('.stream').length === 4 && !grid.dataset.dvcStream) {
+      const extra = grid.querySelectorAll('.stream')[3].cloneNode(true);
+      grid.appendChild(extra);
+      grid.dataset.dvcStream = '1';
+    }
     const streams = host.querySelectorAll('.g-4 .stream');
     const retitle = (card, title, sub) => {
       if (!card) return;
@@ -3366,6 +3747,7 @@ header.top { display: none !important }
     };
     retitle(streams[2], 'IPSI', 'IPSI merchant settlement · by merchant reference');
     retitle(streams[3], 'TravelPay', 'TravelPay merchant settlement · by payment reference');
+    retitle(streams[4], 'DVC', 'DVC card reconciliation · by booking number and amount');
     /* The LATEST run of that report, not every run of it ever. A stream card
        reads as "how did today's Mint settlement go" — summing six months into
        it would make the card climb forever and mean nothing. Per source, so
@@ -3383,7 +3765,7 @@ header.top { display: none !important }
        two used to ask for 'merchant' and 'refunds' — sources that have never
        existed here, so those cards always read 0 / 0 no matter how many IPSI
        or TravelPay runs had been done. */
-    ['mint', 'bpay', 'ipsi', 'travelpay'].forEach((src, i) => fillStream(streams[i], forSource(src)));
+    ['mint', 'bpay', 'ipsi', 'travelpay', 'dvc'].forEach((src, i) => fillStream(streams[i], forSource(src)));
 
     fillReaction(host, o.needsReaction || [], true);
     fillActivity(host, o.activity || []);

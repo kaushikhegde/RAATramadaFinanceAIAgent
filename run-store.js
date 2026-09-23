@@ -505,7 +505,7 @@ function appendActivity(runId, message, ok, at = new Date().toISOString()) {
   return entry;
 }
 
-function finishRun(runId, { pageNumber, summary, selection, finished, balances, error } = {}) {
+function finishRun(runId, { pageNumber, summary, selection, finished, balances, error, committed } = {}) {
   const run = runs.find((r) => r.id === runId);
   if (!run) return null;
   run.finishedAt = new Date().toISOString();
@@ -514,7 +514,15 @@ function finishRun(runId, { pageNumber, summary, selection, finished, balances, 
   if (pageNumber != null) run.pageNumber = pageNumber;
   if (summary) run.summary = summary;
   if (balances) run.balances = balances;
-  run.committed = {
+  /* WHAT THIS RUN MADE PERMANENT. Normally derived from the statement page's
+     own selection and Done — but a DVC run commits something else entirely: it
+     issues an Agency CC Reimbursement and never touches a statement page. It
+     passes its own `committed` rather than being squeezed into `done` and
+     `ticked`, because `done: true` on the overview means "the statement page
+     was committed", and a payment that set it would be a figure on a dashboard
+     saying something that did not happen — the one screen whose being wrong is
+     invisible (§6b). */
+  run.committed = committed || {
     done: !!(finished && finished.done),
     ticked: (selection && selection.ticked && selection.ticked.length) || 0,
     missing: (selection && selection.missing) || [],

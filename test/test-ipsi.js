@@ -542,9 +542,23 @@ console.log("\nIPSI is not a statement-page report, and a combined run has to kn
 }
 
   const onThePage = Object.keys(C.REPORTS).filter((k) => C.REPORTS[k].recPayType);
-  const ownFlow = Object.keys(C.REPORTS).filter((k) => !C.REPORTS[k].recPayType);
+  /* BY WHAT THE REPORT DOES, NOT BY A FIELD IT LACKS. This read
+     `!REPORTS[k].recPayType`, which was only ever a description of IPSI — and
+     then DVC arrived with no recPayType either, because it reconciles two
+     spreadsheets against each other and never opens a browser. Under the old
+     line a DVC file would have been handed to IPSI's receipts flow: a report
+     running the wrong automation and then blaming the data, which is the exact
+     bug this split was made to fix. `runCombinedReconciliation` buckets the
+     same way and refuses anything that lands in neither. */
+  const ownFlow = Object.keys(C.REPORTS).filter((k) => C.REPORTS[k].issuesReceipt);
+  const offline = Object.keys(C.REPORTS).filter((k) => C.REPORTS[k].offline);
   check("IPSI is the one with its own flow", ownFlow, ["ipsi"]);
-  check("the other three share the page", onThePage, ["bpay", "mint", "travelpay"]);
+  check("the three page reports share the page", onThePage, ["bpay", "mint", "travelpay"]);
+  check("and DVC is the one that needs no browser at all", offline, ["dvc"]);
+  ok("which puts every report in exactly one bucket",
+    Object.keys(C.REPORTS).every((k) =>
+      [onThePage.includes(k), ownFlow.includes(k), offline.includes(k)].filter(Boolean).length === 1),
+    JSON.stringify({ onThePage, ownFlow, offline }));
   ok("and IPSI is the one that issues a receipt", C.REPORTS.ipsi.issuesReceipt === true);
   ok("while none of the page reports do",
     onThePage.every((k) => !C.REPORTS[k].issuesReceipt), JSON.stringify(onThePage));

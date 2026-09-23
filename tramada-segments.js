@@ -979,8 +979,90 @@ async function addTourSegment(page, bookingNo, seg) {
 
   await sleep(400);
   await saveSegmentForm(page);
+  // Same false "saved" as the cruise form — see addCruiseSegment. Booking
+  // 15914's tour was refused and reported added (23-09-2026).
+  const refused = await readSaveErrors(page);
+  if (refused.length) throw new Error(`Tour segment did not save: ${refused.join("; ")}`);
   await assertSaved(page, `Tour segment ${seg.supplierName || ""}`.trim());
   return { type: "TUR", reference: seg.reference || seg.supplierName || "Tour" };
+}
+
+/* ── Cruise segment (itinerary) ────────────────────────────────────────── */
+
+/**
+ * A cruise, costed on its own form — the CRU row on the Issue Payment grid.
+ *
+ * Added for `tools/make-dvc-bookings.js`: the DVC grid RAA sent (23-09-2026)
+ * is mostly cruise lines, and a reconciliation fixture that never produces a
+ * CRU row never exercises the segment-type sense check (step 5) on the one type
+ * the real report carries most. Field ids measured read-only on
+ * `booking-cruise-segment.htm?mode=add` the same day.
+ *
+ * Priced the way `addTourSegment` is and for the same reason: the line TOTAL
+ * in the rate, one cabin, duration type Total — so Tramada's computed total
+ * equals the amount asked for, and the receipt and the card charge made from
+ * it agree to the cent instead of by rate × cabins × nights arithmetic.
+ */
+async function addCruiseSegment(page, bookingNo, seg) {
+  await page.goto(
+    `${TRAMADA_BASE_URL}/booking/booking-cruise-segment.htm?mode=add&pageSourceParam=itinerariesPage&parentId=${encodeURIComponent(bookingNo)}`,
+    { waitUntil: "domcontentloaded" }
+  );
+  await page.waitForSelector("#cruiseCompanyName, #costingcreditor", { timeout: 15000 });
+
+  await fillIf(page, "#cruiseCompanyName", seg.supplierName || seg.cruiseCompany);
+  {
+    const diff = page.locator("#creditorDifferentRadio");
+    if (await diff.count()) await diff.check().catch(() => {});
+    const creditor = seg.creditor || seg.supplierName;
+    if (!creditor) throw makeNeedsCreditor("cruise", seg.supplierName);
+    const unmatched = await pickCreditor(page, "#costingcreditor", creditor);
+    if (unmatched) {
+      throw makeNeedsCreditor("cruise", unmatched,
+        await readCreditorOptions(page, "#costingcreditor", unmatched));
+    }
+  }
+
+  /* Both ports are REQUIRED — the save is refused with "Departure Port must be
+     entered" / "Arrival Port must be entered" without them. They are city-code
+     autocompletes, like the hotel's City Code, and are tried the same way. */
+  for (const [sel, list] of [["#departurePort", seg.departurePort], ["#arrivalPort", seg.arrivalPort || seg.departurePort]]) {
+    let took = null;
+    for (const c of [].concat(list || [])) {
+      try { took = await pickAutocomplete(page, sel, c); } catch { /* next */ }
+      if (took) break;
+    }
+    if (!took && list) throw makeNeedsCity([].concat(list), "");
+  }
+  await fillIf(page, "#cruiseName", seg.cruiseName);
+  await selectIf(page, "#shipName", seg.shipName);
+  await setDateField(page, "#embarkDate", toTramadaDate(seg.embarkDate));
+  await setDateField(page, "#disembarkDate", toTramadaDate(seg.disembarkDate || seg.embarkDate));
+  await setDateField(page, "#itineraryconfirmationOrIssueDate", toTramadaDate(seg.embarkDate));
+  await fillIf(page, "#itineraryconfirmationOrReferenceNumber", seg.reference);
+  await fillIf(page, "#costingcreditorInvoiceNumber", seg.reference);
+  await selectIf(page, "#itinerarystatusTypeCode", seg.status || "HK");
+
+  await setMoneyField(page, "#localRateInclGst", seg.amount);
+  await setMoneyField(page, "#audRateInclGst", seg.amount);
+  await fillIf(page, "#numberOfCabins", seg.cabins || 1);
+  await selectIf(page, "#durationTypeCode", seg.durationType || "Total");
+  await fillIf(page, "#duration", seg.duration || 1);
+
+  await sleep(400);
+  await saveSegmentForm(page);
+  /* ASKED DIRECTLY, not left to `assertSaved`. `segmentFormSaved` cannot tell
+     an unsaved form from a saved one on these screens: the hotel form answers a
+     successful Save with a fresh, blank add form, and its "Segment Created :"
+     check reads the next label as a date — which is what makes hotels pass, so
+     it is left alone. The price is that a REFUSED cruise also passes: booking
+     15899's first cruise was rejected with "Departure Port must be entered"
+     and reported saved (23-09-2026). A refusal always carries its reason, so
+     that is what is checked here. */
+  const refused = await readSaveErrors(page);
+  if (refused.length) throw new Error(`Cruise segment did not save: ${refused.join("; ")}`);
+  await assertSaved(page, `Cruise segment ${seg.supplierName || ""}`.trim());
+  return { type: "CRU", reference: seg.reference || seg.supplierName || "Cruise" };
 }
 
 /* ── Insurance costing line ────────────────────────────────────────────── */
@@ -1798,6 +1880,7 @@ async function runAddSegments({ username, password, bookingNo, segments = [], ca
       if (s.kind === "flight") added.push(await addFlightSegment(page, bookingNo, s));
       else if (s.kind === "hotel") added.push(await addHotelSegment(page, bookingNo, s));
       else if (s.kind === "tour") added.push(await addTourSegment(page, bookingNo, s));
+      else if (s.kind === "cruise") added.push(await addCruiseSegment(page, bookingNo, s));
       else throw new Error(`Unknown segment kind: ${s.kind}`);
     }
     onProgress(100, `Added ${added.length} segment(s).`);
@@ -2202,6 +2285,7 @@ module.exports = {
   shouldResumeHotelForm,
   hasOpenSegmentPage,
   addTourSegment,
+  addCruiseSegment,
   addTicketCosting,
   addInsuranceCosting,
   addServiceFeeCosting,

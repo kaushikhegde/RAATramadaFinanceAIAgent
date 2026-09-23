@@ -183,6 +183,63 @@ that already has a page stops and names the page rather than creating another.
 Keyed on the statement DATE, not on today, so the guide's public-holiday case
 still works: two files uploaded on one Tuesday, dated Monday and Tuesday, get
 their two pages.
+## The DVC card
+
+The one report that reconciles **two spreadsheets against each other**. Both
+files go on the same card:
+
+| | |
+|---|---|
+| Westpac DVC report | Transaction amount, Tramada number, Segment type (+ the rest of BR01) |
+| Tramada Agency CC Reimbursement export | Seg. Type, Booking No., Balance Due |
+
+Either container, either slot. The rules are `docs/dvc.md`; they live in
+`recon-core.js` as `reconcileDvc` and are tested by `npm run test:dvc`.
+
+A run matches on **booking number and amount** (BR03) with five cents of
+tolerance a line and fifty across the report (BR04), uses the segment type only
+as a sense check that can downgrade a match but never refuse one (step 5), reads
+a 3% overcharge as a foreign merchant fee (BR06), finds one card charge covering
+several costings and several charges against one costing (BR05), and writes the
+document's own Remarks vocabulary against every line that needs a person
+(step 11). Export hands back the Westpac spreadsheet with its Remarks column
+filled in.
+
+**Errors go back to a person first** (RAA, 23-09-2026): the email names every
+line that does not reconcile, nothing is entered in Tramada, and the corrected
+Westpac report is re-uploaded. **When no errors arise it goes straight on into
+Tramada**, with no approval click:
+
+1. Finance > Payments > Issue Payment, with BR12's parameters and BR13's dates
+   (steps 12–13). The Credit Card is server configuration, `DVC_CARD`, not a
+   dashboard field — it defaults to Tramada's masked label
+   `555003....0457 CA - A - Westpac DVC VCC`, never a card number (§4).
+2. Tick every row, each tick verified (step 14). Step 15's totals are checked;
+   anything Tramada raises is reported, and does not stop the session.
+3. Save the Payment Session **`DVC DD/MM/YYYY`** (step 16). A re-run of the same
+   day reopens that session from Finance → Payment Sessions, ticks whatever is
+   confident now and saves it again, so it never makes a second one. When
+   nothing is flagged any more, the email says *ready to issue*.
+4. Email the reconciliation, with the updated spreadsheet attached (step 18),
+   to `DVC_EMAIL_TO`. Behind the company proxy nothing can leave, so it is
+   written to the **outbox**, `/outbox` on the server, as a real `.eml`. Graph
+   and SMTP are there for when a network lets them out (`docs/email.md`). There is no default
+   recipient, so a sandbox run cannot mail TAccounts@raa.com.au by accident.
+
+**The agent never presses Issue.** Step 17 is Travel Accounts': they open the
+session, check it, tick Round Remaining if the email says to, and Issue. The
+toolbar's dry run does everything except Session.
+
+To get something real onto the Issue Payment grid in the sandbox,
+`npm run fixtures:dvc:tramada` books costed CRU/HTL/TUR segments, receipts the
+client, pays each supplier on the DVC card (Issue Agency Credit Card
+Transaction) and writes matching Westpac and Tramada files into `csv_uploads/`.
+
+```bash
+npm run fixtures:dvc        # writes fixtures/dvc-*.{csv,xlsx}; no browser needed
+npm run test:dvc
+```
+
 ## What it touches, and what it will not
 
 On the reconciliation page it sets the sort, writes the statement balances,
@@ -374,7 +431,7 @@ marked *sample data*.
 ## Tests
 
 ```bash
-npm test        # 694 assertions, all offline — no network, no browser
+npm test        # 1,277 assertions, all offline — no network, no browser
 npm run shots   # 109 render checks — the page, a BPay run, a Mint run, the overview
                 #   the PNGs it writes go to shots/out/
 ```
@@ -399,6 +456,8 @@ table cell. None of those show up in a node test.
 | `fixtures/mint-payments.csv` | Three real creditor payments, all correct |
 | `fixtures/mint-payments-varied.csv` | The same three distorted, plus one that does not exist — one run, every outcome |
 | `fixtures/bookings.json` + `tools/run-bookings.js` | Builds bookings for a BPay run to reconcile against |
+| `fixtures/dvc-westpac.csv` / `.xlsx` | A day's Westpac DVC report, in both containers |
+| `fixtures/dvc-tramada.csv` / `.xlsx` | The Agency CC Reimbursement export it is matched against |
 
 ## Building something to reconcile against
 
@@ -406,6 +465,8 @@ table cell. None of those show up in a node test.
 npm run start:chrome        # once, and sign into Tramada in that window
 npm run fixtures            # or: fixtures:bpay | fixtures:travelpay | fixtures:mint
 #   long form: node tools/make-fixtures.js all
+
+npm run fixtures:dvc        # no browser, no Tramada — see below
 ```
 
 Creates REAL bookings, and then whatever that report needs to exist before its
