@@ -269,6 +269,50 @@ accept an override. Worth one sentence of confirmation before go-live.
 
 ---
 
+## The real answer: nothing is creditor-payable in this sandbox, for anyone
+
+Measured 24-Sep-2026. Three searches, widening from our booking to the whole
+environment, and the last one settles it.
+
+| search | criteria | result |
+|---|---|---|
+| Tokio, wide | `[TOKIOMARINE]`, 01-01-2025 → 31-12-2027, branch cleared | no grid, no rows |
+| **every creditor** | creditor blank, 01-01-2020 → 31-12-2030, branch cleared | no grid, no rows |
+| **every creditor, Tramada's own defaults** | creditor blank, To date left at its default `24-09-2026` | no grid, no rows |
+
+And the decisive one — Finance → Payments → **Search** (existing payments),
+every category, every transaction type, all branches, no date floor:
+
+```
+No records found.
+```
+
+**No payment of any kind has ever been issued in this sandbox.** Not to Tokio,
+not to anyone.
+
+So this was never a Tokio problem, nor an insurance problem, nor a
+`PRE_PAID` vs `PRE_PAID_CCCF` problem. The creditor-payment path has simply
+never been exercised in `raatravelsandbox`. Megan's steps describe how
+production behaves; this environment has never produced a payable creditor
+segment for anybody.
+
+That is why booking 15875 does not appear despite having every precondition
+anyone has named — see the table below. Nothing was wrong with the booking.
+
+### What this changes
+
+Steps 12-14 cannot be demonstrated here at all, by us or by RAA, until either
+the sandbox is configured so creditor segments become payable, or we are given
+an environment where they already are. No amount of fixture-building on our
+side will produce a row on that screen.
+
+The matching, ticking, BR12 per-row selection and session-saving code is built
+and tested against the real grid shape; it has nothing to act on.
+
+---
+
+## Earlier working (superseded by the finding above)
+
 ## Why the costings never reached Issue Payments — NOT yet answered
 
 > **Tested 24-Sep-2026 and the answer below is incomplete.** Booking 15875 was
