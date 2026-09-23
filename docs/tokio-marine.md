@@ -269,7 +269,38 @@ accept an override. Worth one sentence of confirmation before go-live.
 
 ---
 
-## Why the costings never reached Issue Payments — answered 23-Sep-2026
+## Why the costings never reached Issue Payments — NOT yet answered
+
+> **Tested 24-Sep-2026 and the answer below is incomplete.** Booking 15875 was
+> driven through it by hand, live:
+>
+> | | |
+> |---|---|
+> | Tokio insurance costing | present, `#costingpaymentTypeCode` = **`PRE_PAID`** |
+> | Payment Narrative | `Pre-Paid` |
+> | Client invoice | **issued** — `I.0000010836`, $100.00, the INS segment ticked |
+> | Creditor payment | none (Booking Payments: "No records found") |
+> | Issue Payments, `[TOKIOMARINE]`, 01-01-2025 → 31-12-2027, branch cleared | **no grid, no rows** |
+>
+> So **PRE_PAID plus an invoice is necessary but NOT sufficient.** Something
+> else still keeps an insurance costing off Issue Payments in this sandbox.
+>
+> Worth noting: all three payment-type options an insurance segment offers are
+> PRE_PAID variants, and "pre-paid" means the creditor is already settled. It
+> is possible that in this configuration an insurance costing can never be
+> creditor-payable, and that the Tokio segments RAA pays in production reach
+> Issue Payments by some other route. That is a question for RAA, not a guess
+> to make here.
+>
+> **Ask Megan:** on a booking where the Tokio segment DOES appear on the
+> creditor payment results screen, what else is set that 15875 does not have?
+> A creditor invoice rather than a client one? A different segment type? A
+> branch or consultant setting?
+>
+> The code changes below stand — PRE_PAID is right, and invoicing is a real
+> step — they are just not the whole answer.
+
+## What Megan said, 23-Sep-2026
 
 Megan, RAA trainer, gave the two halves:
 
