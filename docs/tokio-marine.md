@@ -279,8 +279,13 @@ accept an override. Worth one sentence of confirmation before go-live.
 > | Tokio insurance costing | present, `#costingpaymentTypeCode` = **`PRE_PAID`** |
 > | Payment Narrative | `Pre-Paid` |
 > | Client invoice | **issued** — `I.0000010836`, $100.00, the INS segment ticked |
+> | Client receipt | **posted and fully allocated** — `R.0000009958`, EFT, $100.00 received, $100.00 allocated |
 > | Creditor payment | none (Booking Payments: "No records found") |
 > | Issue Payments, `[TOKIOMARINE]`, 01-01-2025 → 31-12-2027, branch cleared | **no grid, no rows** |
+>
+> Every precondition anyone has named is therefore met — the segment is
+> chargeable pre-paid, the client has been invoiced AND receipted in full, and
+> RAA has not paid Tokio. There is no missing step on our side left to blame.
 >
 > So **PRE_PAID plus an invoice is necessary but NOT sufficient.** Something
 > else still keeps an insurance costing off Issue Payments in this sandbox.
