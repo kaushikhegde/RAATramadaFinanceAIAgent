@@ -153,4 +153,40 @@ check("the fixture receipts the client, or nothing is payable", () => {
     "paying the creditor would remove the very rows steps 12-14 need");
 });
 
+check("makeTokio invoices the segment, and does not issue the payment", () => {
+  // Megan, 23-Sep-2026: PRE_PAID *and* invoiced. Both, or the segment never
+  // reaches Issue Payments. The fixture is the only place both happen.
+  const src = require("fs").readFileSync(
+    require("path").join(__dirname, "..", "tools", "make-fixtures.js"), "utf8");
+  const body = src.slice(src.indexOf("async function makeTokio()"), src.indexOf("async function makeAll()"));
+  assert.match(body, /runIssueInvoice\(/, "makeTokio must invoice the insurance segment");
+  assert.match(body, /"--payment-type", "PRE_PAID"/,
+    "PRE_PAID must be the DEFAULT — the form's own default is the one value known not to work");
+});
+
+check("the printed expectation counts the same way the rows were dealt", () => {
+  /* PLAN has six entries and planFor() CYCLES it. `PLAN.slice(0, n)` stops
+     counting at six, so at --limit 10 the run printed "3 Travel, 1 Retail,
+     2 exceptions" while really producing 5, 2 and 3. That line is what a
+     person reads to decide whether the dashboard agrees with the fixture,
+     so a wrong one makes a correct run look broken. */
+  const src = require("fs").readFileSync(
+    require("path").join(__dirname, "..", "tools", "make-fixtures.js"), "utf8");
+  const body = src.slice(src.indexOf("async function makeTokio()"), src.indexOf("async function makeAll()"));
+  assert.ok(!/PLAN\.slice\(0,\s*made\.length\)/.test(body),
+    "PLAN.slice() does not cycle — it undercounts every run longer than PLAN");
+  assert.match(body, /planFor\(i\)/, "the tally must go through planFor(), like the dealing does");
+
+  // And the arithmetic itself, independent of the source text.
+  const PLAN = ["travel", "travel", "retail", "br07", "br08", "travel"];
+  const planFor = (i) => PLAN[i % PLAN.length];
+  const tally = (len) => Array.from({ length: len }).reduce((m, _, i) => {
+    const k = planFor(i); m[k] = (m[k] || 0) + 1; return m;
+  }, {});
+  const ten = tally(10);
+  assert.strictEqual(ten.travel, 5);
+  assert.strictEqual(ten.retail, 2);
+  assert.strictEqual((ten.br07 || 0) + (ten.br08 || 0), 3);
+});
+
 console.log(`\n${n} assertions passed.\n`);

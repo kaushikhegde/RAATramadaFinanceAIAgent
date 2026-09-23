@@ -2097,7 +2097,18 @@ async function makeTokio() {
     say(`     ${shortPath(c.path)} — ${c.rows.length} row(s)`);
   }
 
-  const counts = PLAN.slice(0, made.length).reduce((m, k) => ((m[k] = (m[k] || 0) + 1), m), {});
+  /* COUNT THE SAME WAY THE ROWS WERE DEALT.
+     PLAN has six entries and planFor() CYCLES it, so `PLAN.slice(0, n)`
+     stops counting at six however many rows were made. At --limit 10 this
+     line said "3 Travel, 1 Retail, 2 exceptions" while the run had really
+     produced 5, 2 and 3 — and this is the line a person reads to decide
+     whether the dashboard agrees with the fixture. Getting it wrong makes a
+     correct run look broken, which is worse than not printing it at all. */
+  const counts = made.reduce((m, _, i) => {
+    const k = planFor(i);
+    m[k] = (m[k] || 0) + 1;
+    return m;
+  }, {});
   say(
     `\n     expect from steps 7-8: ${counts.travel || 0} Travel, ${counts.retail || 0} Retail excluded, ` +
       `${(counts.br07 || 0) + (counts.br08 || 0)} exception(s).`
