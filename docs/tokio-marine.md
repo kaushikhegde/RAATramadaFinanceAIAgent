@@ -266,3 +266,51 @@ reconciliation"* has also been quoted in passing — DVC is the Westpac virtual
 card flow in the other repo and has no reconciliation, so the two are unlikely
 to be the same requirement. `SUBJECT` follows the guide; the API and CLI both
 accept an override. Worth one sentence of confirmation before go-live.
+
+---
+
+## Why the costings never reached Issue Payments — answered 23-Sep-2026
+
+Megan, RAA trainer, gave the two halves:
+
+1. **Payment Type is `Chargeable [PRE_PAID]`** — not the insurance form's own
+   default of `PRE_PAID_CCCF`. Her booking 82457 shows Payment Type
+   "Chargeable [PRE_PAID]", Payment Narrative "Pre-Paid".
+2. **The segment must then be INVOICED**: Invoices → Add/Issue Invoice →
+   scroll to *Segments to Invoice* → tick the Tokio insurance → Issue.
+   *"Then it will show up in the creditor payment results screen."*
+
+### A conclusion withdrawn
+
+`tools/make-fixtures.js` previously recorded that "every option is a PRE_PAID
+variant, so an insurance costing here can never become creditor-payable, and
+no amount of invoicing or receipting changes that." That was measured on
+booking 15842 — which carried a client invoice **and** the CCCF payment type.
+The variants are not equivalent: CCCF means the creditor is already settled.
+Invoicing never had a chance against it. Both halves are needed together, and
+only one was ever being done at a time.
+
+`makeTokio()` now pins `PRE_PAID` as the default (`--payment-type` still
+overrides) and invoices the segment via `runIssueInvoice`.
+
+### The Add/Issue Invoice selectors are NOT measured
+
+`INVOICE` in `tramada-segments.js` holds candidates. Every lookup goes through
+`oneOf`, which reports what the page really contains rather than timing out.
+Run `npm run probe:invoice -- <bookingNo>` once and correct the lists.
+
+## Policy numbers: 7 digits seen in the wild
+
+Megan's training booking carries policy **2100044** — seven digits.
+`policyKey` accepts `21` + six (eight in total), so it returns `null` for that
+value and the row cannot be matched.
+
+`tickMatchingRows` used to skip such a row in silence, and the Travel line was
+then reported as *"not found in Tramada"* — which says the segment does not
+exist, when it is sitting on the grid unread. It now reports an
+`unreadable reference` step naming the value.
+
+That is the symptom handled. The question stands: **is a live Tokio policy
+ever not eight digits?** The guide writes the series as nine, every real row
+RAA supplied is eight, and a trainer hand-typed seven. Until RAA says which
+lengths are real, `policyKey` stays strict and loud rather than lenient.

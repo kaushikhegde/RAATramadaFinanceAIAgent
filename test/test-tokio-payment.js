@@ -150,7 +150,31 @@ const travel = (policy, nett) => ({
       "two rows sharing a reference must still be separately addressable");
   });
 
-  console.log("\nstep 11 — the payment header");
+  await check("a grid row whose reference has no policy number is REPORTED, not skipped", async () => {
+    /* Live, 23-Sep-2026: a training booking was raised with policy 2100044 —
+       SEVEN digits. policyKey wants 21 + six. The row sat on the Issue
+       Payments grid and was passed over without a word, and the Travel line
+       was then reported as "not found in Tramada" — a different claim from
+       "found, but its reference could not be read". */
+    const page = fakePage(grid([
+      { reference: "2100044 - 2100044 - GRAY/MEGAN DR", amount: "70.00" },
+      { reference: "21087245", amount: "700.00" },
+    ]));
+    const steps = [];
+    await tk.tickMatchingRows(page, [travel("21087245", 700)], { onStep: (s) => steps.push(s) });
+    const note = steps.find((s) => s.step === "unreadable reference");
+    assert.ok(note, `no step reported the unreadable row; got ${JSON.stringify(steps.map((s) => s.step))}`);
+    assert.match(note.detail, /2100044/, "the unreadable reference must be quoted back");
+  });
+
+  await check("a fully readable grid does not cry wolf", async () => {
+    const page = fakePage(grid([{ reference: "21087245", amount: "700.00" }]));
+    const steps = [];
+    await tk.tickMatchingRows(page, [travel("21087245", 700)], { onStep: (s) => steps.push(s) });
+    assert.ok(!steps.some((s) => s.step === "unreadable reference"));
+  });
+
+  console.log("\nstep 11 — refusing to hunt for a header that is not there");
 
   /* The live failure this pair exists for: the dashboard reported "Could not
      find the Transaction Type select … Run probe-tokio-payments.js and update

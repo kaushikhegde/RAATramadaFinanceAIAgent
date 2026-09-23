@@ -569,11 +569,32 @@ async function tickMatchingRows(page, travelRows, { onStep = () => {} } = {}) {
   // Walking the grid row by row asking "does this one match?" cannot make that
   // choice — it has to see the whole group.
   const byPolicy = new Map();
+  /* A GRID ROW WHOSE REFERENCE WE CANNOT READ IS NOT NOTHING.
+     This used to `continue` in silence. The Travel row it belonged to then
+     came back as "Policy number not found in Tramada" — which reads as "the
+     segment does not exist" when the truth is "it is right there and we
+     could not parse its reference". Those need different actions from a
+     person, so they get different words.
+     Live example, 23-Sep-2026: a training booking was raised with policy
+     2100044 — SEVEN digits. policyKey wants 21 + six, and returned null. */
+  const unreadable = [];
   for (const row of grid.rows) {
     const key = core.policyKey(row.reference);
-    if (!key) continue;
+    if (!key) {
+      unreadable.push(row.reference == null ? "" : String(row.reference));
+      continue;
+    }
     if (!byPolicy.has(key)) byPolicy.set(key, []);
     byPolicy.get(key).push(row);
+  }
+  if (unreadable.length) {
+    onStep({
+      step: "unreadable reference",
+      detail:
+        `${unreadable.length} row(s) on this page carry a reference with no 21-series policy number in it ` +
+        `and were left alone: ${unreadable.slice(0, 5).map((u) => JSON.stringify(u.slice(0, 40))).join(", ")}` +
+        (unreadable.length > 5 ? ` and ${unreadable.length - 5} more` : ""),
+    });
   }
 
   // buildConsolidated() rows are { line, row, policy, appended, outcome }.

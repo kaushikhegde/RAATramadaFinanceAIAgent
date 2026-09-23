@@ -106,7 +106,7 @@ const fs = require("fs");
 const path = require("path");
 const core = require("../recon-core");
 const xlsxLite = require("../xlsx-lite");
-const { runFullBooking, runAddCostingLines } = require("../tramada-segments");
+const { runFullBooking, runAddCostingLines, runIssueInvoice } = require("../tramada-segments");
 const { runTramadaReceipt } = require("../tramada-receipt");
 const { runCreditorPayment } = require("../tramada-payment");
 const ipsi = require("../tramada-ipsi");
@@ -1857,9 +1857,10 @@ async function makeTokio() {
      page rather than the itinerary, which is what runAddCostingLines() is for.
      So: booking first, insurance line second, and the booking is only counted
      as a Tokio fixture once the line is actually on it. */
-  // Overridable: --payment-type PRE_PAID tries a different costing payment
-  // type, which is the one lever that might make these payable (see below).
-  const ins_paymentType = valueOf("--payment-type", "");
+  /* PRE_PAID — "Chargeable", confirmed by RAA 23-Sep-2026. See the long note
+     on the costing line below for why the form's own default is wrong here.
+     --payment-type overrides it for anyone re-testing the alternatives. */
+  const ins_paymentType = valueOf("--payment-type", "PRE_PAID");
 
   const withPolicy = list.map((b, i) => {
     const policy = tokioPolicy(i);
@@ -1892,19 +1893,28 @@ async function makeTokio() {
         endDate: iso(new Date(today.getFullYear(), today.getMonth() + 11, 1)),
         issueDate: iso(monthStart),
         status: "Confirmed",
-        /* PAY STATUS IS WHY THESE NEVER REACHED ISSUE PAYMENTS.
-           Measured on booking 15875: the costing came out with Pay Status
-           "Paid" and Creditor Payments 0.00, and Issue Payments only lists
-           UNPAID creditor segments. The insurance form's
-           #costingpaymentTypeCode defaults to PRE_PAID_CCCF — pre-paid, i.e.
-           the creditor is already settled — and every option it offers in
-           this sandbox is a PRE_PAID variant:
-             PRE_PAID        Chargeable
-             PRE_PAID_CCCF   Chargeable CCCF   (the default)
+        /* PAY STATUS IS WHY THESE NEVER REACHED ISSUE PAYMENTS — and RAA
+           has now said which type they actually use.
+
+           Megan (RAA trainer), 23-Sep-2026: the insurance segment is
+           "Chargeable Pre paid" — #costingpaymentTypeCode = PRE_PAID, NOT
+           the form's own default of PRE_PAID_CCCF. Her screenshot of booking
+           82457 shows Payment Type "Chargeable [PRE_PAID]" with Payment
+           Narrative "Pre-Paid".
+
+           What was measured before, on booking 15875, was the DEFAULT:
+           PRE_PAID_CCCF came out with Pay Status "Paid" and Creditor
+           Payments 0.00, and Issue Payments only lists UNPAID creditor
+           segments. The three options are
+             PRE_PAID        Chargeable        ← what RAA uses
+             PRE_PAID_CCCF   Chargeable CCCF   (the form default)
              PRE_PAID_GROSS  Chargeable Gross
-           So an insurance costing here can never become creditor-payable, and
-           no amount of invoicing or receipting changes that. Passed through so
-           it can be tried once RAA says which type they use live. */
+           so "every option is a PRE_PAID variant" was true and beside the
+           point: the variants differ, and CCCF is the settled one.
+
+           Pinned as the DEFAULT here rather than left to the form, because
+           the form's default is the one value known not to work.
+           --payment-type still overrides it. */
         paymentType: ins_paymentType,
       }],
       _tokio: { policy, kind, branch, sell },
@@ -1953,15 +1963,48 @@ async function makeTokio() {
       continue;
     }
 
-    /* THE MONEY IN, OR NOTHING IS PAYABLE.
-       Measured 22-Sep-2026 the long way round: booking 15842 had its
-       insurance costing AND a client invoice (I.0000010834, $70.00) issued,
-       and Issue Payments still returned nothing for Tokio Marine over
-       2025-2027. makeMint() has said why all along, in its own comment:
-       "The money in. Without this the payment form has nothing payable."
-       A creditor segment only becomes payable once the client has been
-       receipted for it. So the receipt is raised here too — it exists to make
-       the segment payable and nothing else reads it. */
+    /* INVOICE THE SEGMENT — the step RAA named, and the one that was missing.
+
+       Megan (RAA trainer), 23-Sep-2026: "Then we need to invoice this
+       insurance, to show that it's been paid. So click on Invoices,
+       Add/Issue Invoice, then scroll to the bottom to 'segments to invoice'
+       and check the Tokio insurance tickbox. Then it will show up in the
+       creditor payment results screen."
+
+       This is paired with PRE_PAID above. An earlier run invoiced a
+       PRE_PAID_CCCF costing (booking 15842, invoice I.0000010834) and Issue
+       Payments still showed nothing, from which this file concluded that
+       "no amount of invoicing or receipting changes that". That conclusion
+       was wrong: the payment type was, so the invoice never had a chance.
+       Both halves are needed, and only one was being done.
+
+       Best-effort: a booking whose invoice fails still gets its receipt and
+       its row, because the failure is worth SEEING on the next probe rather
+       than hidden behind a skipped fixture. */
+    try {
+      await runIssueInvoice({
+        username: process.env.TRAMADA_USERNAME,
+        password: process.env.TRAMADA_PASSWORD,
+        bookingNo: rec.bookingNo,
+        match: CREDITOR,
+        dryRun: false,
+        callbacks: {
+          onProgress: (p, m) => console.log(`       [${String(p).padStart(3)}%] ${m}`),
+          onNeedLogin: () => say("     Sign into Tramada in the Chrome on port 9222."),
+        },
+      });
+      say(`     ✓ invoiced the ${CREDITOR} segment on ${rec.bookingNo}`);
+    } catch (err) {
+      console.error(`     ! booking ${rec.bookingNo}: invoicing failed — ${core.tidyError(err.message)}`);
+      say(`     – carrying on; this segment may not reach Issue Payments.`);
+    }
+
+    /* THE MONEY IN.
+       makeMint() has said why all along, in its own comment: "The money in.
+       Without this the payment form has nothing payable." A creditor segment
+       only becomes payable once the client has been receipted for it. Kept
+       alongside the invoice above — the two answer different halves of
+       "payable", and the live run will say if one is redundant. */
     const amountIn = (t.sell).toFixed(2);
     try {
       const receipted = await runTramadaReceipt({

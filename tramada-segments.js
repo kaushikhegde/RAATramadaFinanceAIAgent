@@ -1018,6 +1018,222 @@ async function addInsuranceCosting(page, bookingNo, ins) {
   return { type: "INS", reference: ins.reference || ins.supplierName || "Insurance" };
 }
 
+/* ── Add / Issue Invoice ────────────────────────────────────────────────────
+ *
+ * THE STEP THAT MAKES A TOKIO COSTING REACH ISSUE PAYMENTS.
+ *
+ * Megan (RAA trainer), 23-Sep-2026, in her own words:
+ *
+ *   "Then we need to invoice this insurance, to show that it's been paid.
+ *    So click on Invoices, Add/Issue Invoice, then scroll to the bottom to
+ *    'segments to invoice' and check the Tokio insurance tickbox.
+ *    Then it will show up in the creditor payment results screen."
+ *
+ * Two things had to be true and only one of them was known:
+ *   1. the costing's payment type is PRE_PAID ("Chargeable"), not the form's
+ *      own default PRE_PAID_CCCF — see tools/make-fixtures.js;
+ *   2. the segment is INVOICED.
+ * An earlier attempt raised a client invoice against a CCCF costing and
+ * concluded invoicing did not help. It was the payment type that was wrong,
+ * so that conclusion is withdrawn.
+ *
+ * SELECTORS HERE ARE CANDIDATES, NOT MEASUREMENTS. Nothing on this page has
+ * been seen by this code yet, so every lookup goes through `oneOf`, which
+ * reports what the page ACTUALLY contains instead of timing out — the same
+ * shape that turned "#cardNumberDisplay timeout" into a one-line fix on the
+ * IPSI form. Run `node tools/probe-invoice-page.js <bookingNo>` and correct
+ * the lists below the first time this is driven live.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+const INVOICE = Object.freeze({
+  // The Invoices tab of a booking, and the control that starts a new invoice.
+  listUrl: (id) => `${TRAMADA_BASE_URL}/booking/booking-invoices.htm?mode=edit&id=${encodeURIComponent(id)}`,
+  addLink: [
+    'a[href*="booking-invoice.htm"]',
+    'a[href*="invoice"][href*="mode=add"]',
+    "#form_addInvoice",
+    "#addInvoice",
+  ],
+  // The "Segments to Invoice" grid at the foot of the Add/Issue Invoice page.
+  segmentsHeading: /segments?\s*to\s*invoice/i,
+  issueButton: ["#form_issueButton", "#issue", "#form_save", "#save",
+    'input[value="Issue"]', 'input[value="Issue Invoice"]', 'button:has-text("Issue")'],
+});
+
+/**
+ * What this page really offers, for an error message worth reading.
+ * Named controls only, capped, and never the values in them.
+ */
+async function describeControls(page, limit = 30) {
+  return await page
+    .evaluate((n) => {
+      const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+      return Array.from(document.querySelectorAll("input, select, textarea, button, a"))
+        .filter((el) => el.type !== "hidden")
+        .map((el) => {
+          const name = el.id ? "#" + el.id
+            : el.name ? `[name=${el.name}]`
+            : el.tagName.toLowerCase() + (norm(el.textContent) ? `("${norm(el.textContent).slice(0, 20)}")` : "");
+          return name;
+        })
+        .slice(0, n);
+    }, limit)
+    .catch(() => []);
+}
+
+/** The first of `selectors` that is on the page, or a throw that says what is. */
+async function oneOf(page, selectors, what) {
+  for (const sel of selectors) {
+    if (await page.locator(sel).count().catch(() => 0)) return sel;
+  }
+  const present = await describeControls(page);
+  throw new Error(
+    `Could not find ${what}. Looked for ${selectors.join(", ")}. ` +
+      (present.length
+        ? `The page has: ${present.join(", ")}. Run \`node tools/probe-invoice-page.js <bookingNo>\` and correct INVOICE in tramada-segments.js.`
+        : `The page at ${page.url()} appears empty or still loading.`)
+  );
+}
+
+/**
+ * Read the "Segments to Invoice" grid: one entry per tickable row, with the
+ * row's text so a caller can choose by creditor or policy rather than by
+ * position. Rows are tagged so each is separately addressable — the same
+ * BR12 lesson as the Issue Payments grid: "the first row mentioning Tokio"
+ * is not the same as "the Tokio row I mean".
+ */
+async function readSegmentsToInvoice(page) {
+  return await page.evaluate((headingSrc) => {
+    const re = new RegExp(headingSrc, "i");
+    const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+
+    // The grid is the table that both mentions the heading (in itself or just
+    // above it) and carries checkboxes.
+    let table = null;
+    for (const t of document.querySelectorAll("table")) {
+      if (!t.querySelector('input[type="checkbox"]')) continue;
+      const own = norm(t.textContent);
+      const before = t.previousElementSibling ? norm(t.previousElementSibling.textContent) : "";
+      if (re.test(own) || re.test(before)) { table = t; break; }
+    }
+    // Fall back to the LAST table with checkboxes — Megan's "scroll to the
+    // bottom". Reported so the caller can see which rule found it.
+    let how = "heading";
+    if (!table) {
+      const withBoxes = Array.from(document.querySelectorAll("table"))
+        .filter((t) => t.querySelector('input[type="checkbox"]'));
+      table = withBoxes[withBoxes.length - 1] || null;
+      how = "last grid with checkboxes";
+    }
+    if (!table) return { found: false, how: null, rows: [] };
+
+    const rows = [];
+    Array.from(table.querySelectorAll("tr")).forEach((tr, i) => {
+      const box = tr.querySelector('input[type="checkbox"]');
+      if (!box) return;
+      const handle = `tokio-inv-${i}`;
+      box.setAttribute("data-invoice-row", handle);
+      rows.push({
+        handle,
+        text: norm(tr.textContent),
+        checked: !!box.checked,
+        disabled: !!box.disabled,
+      });
+    });
+    return { found: true, how, rows };
+  }, INVOICE.segmentsHeading.source);
+}
+
+/**
+ * Tick the segments whose row text matches, with a REAL click.
+ *
+ * Tramada recalculates in its own onclick handler; setting `.checked` in
+ * script leaves those handlers unrun and the total wrong. Every checkbox in
+ * this app is ticked through Playwright for that reason.
+ */
+async function tickSegmentsToInvoice(page, match) {
+  const grid = await readSegmentsToInvoice(page);
+  if (!grid.found) {
+    const present = await describeControls(page);
+    throw new Error(
+      "No \"Segments to Invoice\" grid on this page. " +
+        (present.length ? `It has: ${present.join(", ")}.` : `Landed on ${page.url()}.`)
+    );
+  }
+  const re = match instanceof RegExp ? match : new RegExp(String(match).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+  const wanted = grid.rows.filter((r) => re.test(r.text));
+
+  if (!wanted.length) {
+    throw new Error(
+      `Nothing in "Segments to Invoice" matches ${re}. The grid (found by ${grid.how}) holds: ` +
+        grid.rows.map((r) => JSON.stringify(r.text.slice(0, 60))).join(", ")
+    );
+  }
+  const blocked = wanted.filter((r) => r.disabled);
+  if (blocked.length) {
+    throw new Error(
+      `${blocked.length} matching segment(s) cannot be ticked — already invoiced, or not yours to invoice: ` +
+        blocked.map((r) => JSON.stringify(r.text.slice(0, 60))).join(", ")
+    );
+  }
+
+  const ticked = [];
+  for (const r of wanted) {
+    if (r.checked) { ticked.push(r); continue; }
+    await page.locator(`input[data-invoice-row="${r.handle}"]`).check();
+    ticked.push(r);
+  }
+  await sleep(300);
+
+  // Read back. A tick Tramada rejected is worse than one never attempted.
+  const after = await readSegmentsToInvoice(page);
+  const stuck = ticked.filter((t) => {
+    const now = after.rows.find((r) => r.text === t.text);
+    return !now || !now.checked;
+  });
+  if (stuck.length) {
+    throw new Error(
+      `${stuck.length} segment(s) did not stay ticked: ` +
+        stuck.map((r) => JSON.stringify(r.text.slice(0, 60))).join(", ")
+    );
+  }
+  return { ticked: ticked.map((r) => r.text), grid: grid.how, total: grid.rows.length };
+}
+
+/**
+ * Steps: Invoices → Add/Issue Invoice → tick the segment → Issue.
+ *
+ * `dryRun` does everything except the Issue click, which is the only step
+ * that writes. Default is a dry run, like every other committing flow here.
+ */
+async function issueInvoiceForSegments(page, bookingNo, { match, dryRun = true, say = () => {} } = {}) {
+  if (!match) throw new Error("Which segment should be invoiced? Pass `match`.");
+
+  say(`Opening the Invoices tab for booking ${bookingNo}…`);
+  await page.goto(INVOICE.listUrl(bookingNo), { waitUntil: "domcontentloaded" });
+
+  const addSel = await oneOf(page, INVOICE.addLink, "the Add/Issue Invoice control");
+  await page.locator(addSel).first().click();
+  await page.waitForLoadState("domcontentloaded").catch(() => {});
+  await sleep(600);
+
+  say("Ticking the segment to invoice…");
+  const ticked = await tickSegmentsToInvoice(page, match);
+
+  if (dryRun) {
+    say(`Dry run — ${ticked.ticked.length} segment(s) ticked, Issue NOT clicked.`);
+    return { ...ticked, issued: false };
+  }
+
+  const issueSel = await oneOf(page, INVOICE.issueButton, "the Issue button");
+  await page.locator(issueSel).first().click();
+  await page.waitForLoadState("domcontentloaded").catch(() => {});
+  await sleep(800);
+  await assertSaved(page, `Invoice for booking ${bookingNo}`);
+  say("Invoice issued.");
+  return { ...ticked, issued: true };
+}
+
 /* ── Service Fee costing line (OPTIONAL) ────────────────────────────────────
  * Under an EFT receipt there is normally no credit-card surcharge, so the PDF
  * pipeline SKIPS this by default. When enabled, the fee-TYPE code (e.g.
@@ -1851,6 +2067,27 @@ async function runAddCostingLines({ username, password, bookingNo, lines = [], c
   });
 }
 
+/**
+ * Invoice a booking's segments — Megan's step, on its own CDP connection.
+ *
+ * `dryRun` defaults to TRUE here as everywhere else that writes: issuing an
+ * invoice is a real financial document, and the caller says so explicitly.
+ */
+async function runIssueInvoice({ username, password, bookingNo, match, dryRun = true, callbacks = {} } = {}) {
+  const onProgress = callbacks.onProgress || (() => {});
+  if (!bookingNo) throw new Error("bookingNo required");
+  return await withPage({ username, password, callbacks }, async (page) => {
+    onProgress(20, `Invoicing the ${match} segment on booking ${bookingNo}...`);
+    const out = await issueInvoiceForSegments(page, bookingNo, {
+      match,
+      dryRun,
+      say: (m) => onProgress(60, m),
+    });
+    onProgress(100, out.issued ? "Invoice issued." : "Ticked, not issued (dry run).");
+    return out;
+  });
+}
+
 /* ── Full pipeline orchestrator ────────────────────────────────────────── */
 
 /**
@@ -2210,6 +2447,11 @@ module.exports = {
   addTourSegment,
   addTicketCosting,
   addInsuranceCosting,
+  runIssueInvoice,
+  issueInvoiceForSegments,
+  readSegmentsToInvoice,
+  tickSegmentsToInvoice,
+  INVOICE,
   addServiceFeeCosting,
   readCostings,
   readItinerary,
