@@ -1805,6 +1805,27 @@ const TOKIO_B2B_COLS = [
 ];
 
 async function makeTokio() {
+  /* --live: the four files built from segments ALREADY on Tramada's Issue
+     Payments grid, instead of from bookings this run creates.
+     Both modes matter and neither replaces the other. The default exercises
+     the whole chain — booking, costing, invoice, receipt — which is what
+     proves the fixture path still works end to end. --live skips all of that
+     and reconciles against what the grid really holds, which is the only way
+     to demonstrate steps 12-14 without first having created something for
+     them to find. Kept in this file so `fixtures:tokio` stays the one
+     command, like bpay, mint and travelpay. */
+  if (args.includes("--live")) {
+    const out = valueOf("--out", "");
+    const argv = process.argv.slice();
+    process.argv = [argv[0], argv[1]].concat(out ? ["--out", out] : []);
+    try {
+      require("./make-tokio-live-fixture.js");
+    } finally {
+      process.argv = argv;
+    }
+    return;
+  }
+
   const list = loadBookings();
   say(
     `${list.length} booking${list.length === 1 ? "" : "s"} → insurance costings to ${CREDITOR}, each ` +
