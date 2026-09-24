@@ -5459,7 +5459,14 @@ function askMarkStale(){
           (all.length ? 'Nothing matches that filter.'
             : (loaded().length
                 ? 'Nothing here yet — press Start run on Sources &amp; upload.'
-                : 'Load a report on Sources &amp; upload.')) + '</td></tr>') +
+                /* A Tokio run on screen with "Load a report" written over it
+                   reads as a broken page. Tokio is not a statement-line
+                   report, so this table is right to be empty — it just has
+                   to say which of the two nothings it means. */
+                : ((tokio && (tokio.result || tokio.run))
+                    ? 'No statement-line report in this run — the Tokio Marine ' +
+                      'reconciliation is below.'
+                    : 'Load a report on Sources &amp; upload.'))) + '</td></tr>') +
       '</tbody></table>';
 
     afterTable(pane, all, shown);
@@ -7088,6 +7095,12 @@ function askMarkStale(){
          Finance check a single row back. */
       '.tk-host .tk-sheet{margin-top:16px;border-top:1px solid var(--line-2,#ececf4);padding-top:14px}',
       '.tk-host .tk-scroll{overflow:auto;max-height:340px;border:1px solid var(--line,#e3e3ee);border-radius:8px}',
+      /* The fifteen-step checklist is not a long list — it is FIFTEEN rows,
+         and it is the thing being read on a demo. Under the 340px cap it cut
+         off at step 11 with the caption sitting under half a row, so the two
+         steps that matter most (14, save without Issue; 15, the email) were
+         the two you had to find by scrolling. It gets no cap. */
+      '.tk-host .tk-scroll.tk-full{max-height:none}',
       '.tk-host table.tk-tbl{border-collapse:collapse;width:100%;font-size:11.5px}',
       '.tk-host .tk-tbl th{position:sticky;top:0;background:#f6f6fb;text-align:left;padding:7px 9px;',
       '  font-weight:600;white-space:nowrap;border-bottom:1px solid var(--line,#e3e3ee)}',
@@ -7176,9 +7189,13 @@ function askMarkStale(){
     });
     const mi = document.getElementById('tokioMonth');
     if (mi) mi.onchange = () => { tokio.month = mi.value; sendTokio(); };
-    // The same run, on the screen people read results on.
+    // The same run, on the screen people read results on. render() repaints
+    // the statement-line table too, which has its own thing to say once a
+    // Tokio run exists — without it that table still reads "Load a report on
+    // Sources & upload" directly above a saved session.
     renderTokioReport();
     drawReportPicker();
+    render();
   }
 
   /* ── THE SAME RUN, ON THE RECONCILIATION REPORT SCREEN ──
@@ -7561,7 +7578,7 @@ function askMarkStale(){
       '<div style="font-size:12px;font-weight:600;margin-bottom:7px">' +
         'The guide\u2019s 15 steps \u2014 ' + doneCount + ' of 15 done' +
       '</div>' +
-      '<div class="tk-scroll"><table class="tk-tbl"><tbody>' + rows + '</tbody></table></div>' +
+      '<div class="tk-scroll tk-full"><table class="tk-tbl"><tbody>' + rows + '</tbody></table></div>' +
       '<div class="muted" style="font-size:11px;margin-top:7px">' +
         'Step 1 is Finance\u2019s, before the files arrive. Step 14 saves the session and ' +
         'stops \u2014 Issue is always a person\u2019s click (BR16/BR18).' +

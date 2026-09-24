@@ -192,6 +192,15 @@ async function main() {
     }
   });
 
+  check("the statement-line table says which nothing it means", () => {
+    /* "Load a report on Sources & upload" written directly above a saved
+       Tokio session reads as a broken page. Tokio is not a statement-line
+       report, so this table is RIGHT to be empty — it has to say so. */
+    const pane = doc.getElementById("triagePane").textContent;
+    assert.ok(/No statement-line report in this run/.test(pane),
+      "the empty table still says 'Load a report' over a finished Tokio run");
+  });
+
   // ── the payment-type filter ──
   const sel = doc.getElementById("ibReport");
   check("Tokio Marine is offered as a payment type", () => {
