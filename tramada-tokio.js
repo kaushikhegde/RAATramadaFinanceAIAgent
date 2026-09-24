@@ -412,16 +412,18 @@ const PAYMENT = Object.freeze({
   paymentDate: ["#paymentpaymentDate"],
   paymentAmount: ["#paymentpaymentAmount"],
   sessionLabel: ["#paymentsessionLabel", "#sessionLabel", "#sessionName", "#label"],
-  /* NOT YET MEASURED. The error that sent us here listed only the first 30
-     controls and the TinyMCE toolbar ate the rest, so the save control was
-     never shown. Candidates widened, and the diagnostic below now lists
-     BUTTONS when a button is what is missing. */
+  /* MEASURED 24-Sep-2026: the button is id="Session", labelled "Session",
+     and it sits in a row with #cancel, #preview and #issue. Nothing in its
+     id or its label says "save" — every guess that assumed so missed it. */
   saveSession: [
-    "#paymentsaveSession", "#saveSession", "#saveSessionButton",
-    "#form_saveSession", "#save", "#form_save",
-    'input[value="Save Session"]', 'input[value="Save session"]', 'input[value="Save"]',
-    'button[value="Save Session"]',
+    "#Session",
+    "#paymentsaveSession", "#saveSession", "#saveSessionButton", "#form_saveSession",
+    'input[value="Save Session"]', 'input[value="Session"]',
   ],
+  /* BR16's button, listed ONLY so it can be recognised and refused. It is
+     one control away from the save, which is exactly why the guard below
+     exists rather than trusting the selector list to stay correct. */
+  issueForbidden: ["#issue"],
   nextPage: ["#nextPage", 'a[title="Next"]', 'input[value="Next"]', "a.next"],
 });
 
@@ -933,6 +935,37 @@ async function saveSession(page, label, onProgress = () => {}) {
   }
 
   const saveSel = await firstPresent(page, PAYMENT.saveSession, { what: "Save Session button" });
+
+  /* BR16, CHECKED AT THE MOMENT OF THE CLICK.
+     On this page #issue sits in the same row as the save button, two
+     controls apart. A selector list is a static promise; this is the last
+     point where it can be held to it. If the thing about to be clicked is
+     Issue — by selector, by id, or by the label a person would read — stop.
+     Nothing downstream can undo an issued payment. */
+  const target = await page
+    .evaluate((sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return null;
+      return {
+        id: el.id || "",
+        text: ((el.value || el.textContent) || "").replace(/\s+/g, " ").trim(),
+      };
+    }, saveSel)
+    .catch(() => null);
+
+  const looksLikeIssue =
+    PAYMENT.issueForbidden.includes(saveSel) ||
+    /issue/i.test(saveSel) ||
+    (target && (/^issue$/i.test(target.id) || /^issue\b/i.test(target.text)));
+
+  if (looksLikeIssue) {
+    throw new Error(
+      `Refusing to click ${saveSel}${target && target.text ? ` ("${target.text}")` : ""} — that is Issue, ` +
+        "not Save Session. BR16 puts Issue in a person's hands, and an issued payment cannot be undone. " +
+        "Nothing was saved."
+    );
+  }
+
   await Promise.all([page.waitForLoadState("domcontentloaded").catch(() => {}), page.click(saveSel)]);
   await sleep(1500);
 

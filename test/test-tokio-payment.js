@@ -741,13 +741,56 @@ const travel = (policy, nett) => ({
     assert.ok(!clicked.some((s) => /issue/i.test(s)), `Issue was clicked: ${clicked.join(", ")}`);
   });
 
-  await check("BR16 — no Issue selector exists in the module at all", () => {
-    // Stronger than checking what one run clicked: a control this file cannot
-    // name is one it cannot click by accident, now or after an edit.
+  await check("BR16 — #issue is named only to be REFUSED, never to be clicked", () => {
+    /* This used to assert the module could not name #issue at all, which was
+       the right guard while nothing referenced it. It now does, on purpose:
+       measured 24-Sep-2026, #issue sits two controls from the save button on
+       the same page, so the run has to be able to RECOGNISE it in order to
+       refuse it. The property that matters is therefore not "never named"
+       but "never clicked", which is what this checks. */
     const src = require("fs").readFileSync(require("path").join(__dirname, "..", "tramada-tokio.js"), "utf8");
     const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-    assert.ok(!/["'`]#issue["'`]/.test(code), "an #issue selector is present");
+
+    // Every mention of #issue must be in the forbid-list or the guard.
+    const lines = code.split("\n").filter((l) => /#issue/i.test(l));
+    assert.ok(lines.length, "the guard needs to be able to name it");
+    for (const l of lines) {
+      assert.ok(
+        /issueForbidden|looksLikeIssue|Refusing to click/.test(l),
+        `#issue appears outside the guard: ${l.trim()}`
+      );
+    }
+    // And nothing anywhere clicks it.
+    assert.ok(!/click\([^)]*#issue/i.test(code), "something clicks #issue");
     assert.ok(!/value=\\?["']Issue\\?["']/.test(code), "an Issue button selector is present");
+  });
+
+  await check("BR16 — a save selector that resolves to Issue is refused", async () => {
+    /* The selector list is a static promise. This is the last point it can
+       be held to: if the control about to be clicked turns out to be Issue,
+       by id or by the label a person reads, the run stops. An issued payment
+       cannot be undone. */
+    const page = fakePage(`
+      <table><tr><td>Session Label</td><td><input id="paymentsessionLabel"></td></tr></table>
+      <input type="button" id="issue" value="Issue">`);
+    // Point the save lookup straight at Issue, as a bad edit would.
+    const real = tk.PAYMENT.saveSession.slice();
+    try {
+      tk.PAYMENT.saveSession.length = 0;
+      tk.PAYMENT.saveSession.push("#issue");
+      await assert.rejects(
+        () => tk.saveSession(page, "TOKIO_SEP 26"),
+        (err) => {
+          assert.match(err.message, /that is Issue, not Save Session/i, err.message);
+          assert.match(err.message, /Nothing was saved/i);
+          return true;
+        }
+      );
+      assert.ok(!page.calls.some((c) => c.action === "click"), "it must not have clicked anything");
+    } finally {
+      tk.PAYMENT.saveSession.length = 0;
+      real.forEach((x) => tk.PAYMENT.saveSession.push(x));
+    }
   });
 
   await check("Tramada refusing the session is reported, not swallowed", async () => {
