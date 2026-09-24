@@ -70,7 +70,8 @@
     "probe:invoice": "node tools/probe-invoice-page.js",
     "email:dvc": "node tools/send-dvc-email.js",
     "email:signin": "node tools/email-signin.js",
-    "fixtures:tokio:live": "node tools/make-tokio-live-fixture.js"
+    "fixtures:tokio:live": "node tools/make-tokio-live-fixture.js",
+    "probe:allocate": "node tools/probe-allocate-row.js"
   },
   "dependencies": {
     "@azure/identity": "^4.13.2",
