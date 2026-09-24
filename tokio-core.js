@@ -26,20 +26,42 @@ function cents(v) {
 /* --------------------------------------------------------- the policy key */
 
 /**
- * The Tokio Marine policy number: the 210-series, eight digits.
+ * The Tokio Marine policy number, however the reference carries it.
  *
- * The AFTER template digs it out of the Payment Report's Reference with
+ * THE "21" RULE WAS WRONG, and it cost a live run. Measured 24-Sep-2026 on
+ * the real Issue Payments grid, Tokio Marine's own outstanding segments read:
+ *
+ *   20018654 - 20018654 - GATES/CHARLIE MR, …
+ *   2200128  - 2200128  - CHUDY/ALEXANDER MR / …
+ *   220044   - 220044   - GRAY/MEGAN DR / …
+ *   2203224  - 2203224  - MOUSE/MICKEY MR / …
+ *
+ * Six to eight digits, starting 20 and 22 as well as 21. Every one of them
+ * was skipped as "no 21-series policy number", so a search that had found
+ * the right creditor's segments matched nothing at all. The rule came from
+ * RAA's sample extract, where every row happened to be 21-series, and from
+ * the AFTER template's helper:
  *
  *   MID(C2, FIND("2", C2, 1), 8)
  *
- * — the first "2" anywhere in the string, then eight characters. On
- * "21087245 - 21087245 - ALTUS/ELIZABETH MRS" that works. On a reference whose
- * first "2" is not the start of the policy number it returns eight wrong
- * digits and says nothing, and the row reconciles against another policy.
+ * — first "2", then eight characters. That is both too loose (a "2" inside a
+ * name yields eight wrong digits, silently) and too tight (it assumes eight).
  *
- * So this looks for an eight-digit run beginning "21" instead, and returns null
- * rather than a guess when there isn't one.
+ * THE REFERENCE'S OWN SHAPE IS BETTER THAN COUNTING DIGITS. Tramada writes
+ * "POLICY - POLICY - NAMES…", so the policy is the first dash-separated
+ * field. That needs no assumption about length or prefix, and a reference
+ * that does not have that shape still falls back to a digit run — reported,
+ * never guessed at.
  */
+/* SIX TO EIGHT DIGITS, LEADING 2 — the lengths seen in RAA's own extract
+   and on the live grid (220044, 2200128, 20018654, 21087245).
+   NINE IS STILL REFUSED. The guide writes the series as "210XXXXXX", nine
+   digits, but no row anywhere has ever been nine, and accepting nine would
+   let a longer number — a booking or transaction id sitting in a reference —
+   pass as a policy. Refusing it keeps that guess impossible; if RAA ever
+   produce a real nine-digit policy this is the one line to widen. */
+const POLICY_RE = /^2\d{5,7}$/;
+
 function policyKey(v) {
   if (v == null) return null;
   const s = String(v).trim();
@@ -47,10 +69,20 @@ function policyKey(v) {
 
   // A bare policy number, however it arrived (number, text, padded).
   const bare = s.replace(/\s+/g, "");
-  if (/^21\d{6}$/.test(bare)) return bare;
+  if (POLICY_RE.test(bare)) return bare;
 
-  // Embedded in a longer reference, e.g. "21087245 - 21087245 - NAME".
-  const m = s.match(/\b(21\d{6})\b/);
+  /* "POLICY - POLICY - NAMES…" — Tramada's reference format. The first
+     dash-separated field IS the policy, so take it rather than counting
+     digits. This is what makes 220044 and 2200128 readable alongside
+     21087245. */
+  const first = s.split(/\s*-\s*/)[0].replace(/\s+/g, "");
+  if (POLICY_RE.test(first)) return first;
+
+  /* Last resort for a reference of some other shape: the first 2-leading
+     run of 6-9 digits, on its own word boundary. Deliberately NOT the
+     template's "first 2 then eight characters", which happily returns
+     digits from the middle of a name. */
+  const m = s.match(/\b(2\d{5,7})\b/);
   return m ? m[1] : null;
 }
 

@@ -213,20 +213,23 @@ const travel = (policy, nett) => ({
   });
 
   await check("a grid row whose reference has no policy number is REPORTED, not skipped", async () => {
-    /* Live, 23-Sep-2026: a training booking was raised with policy 2100044 —
-       SEVEN digits. policyKey wants 21 + six. The row sat on the Issue
-       Payments grid and was passed over without a word, and the Travel line
-       was then reported as "not found in Tramada" — a different claim from
-       "found, but its reference could not be read". */
+    /* A row whose reference genuinely carries no policy number — a quote
+       that was never replaced, which RCC really does contain. It sat on the
+       grid and was passed over without a word, and the Travel line was then
+       reported as "not found in Tramada" — a different claim from "found,
+       but its reference could not be read".
+       (This test used to use 2100044, seven digits, back when policyKey
+       demanded 21 + six. That rule was wrong and is gone; the reporting it
+       exposed is what still matters.) */
     const page = fakePage(grid([
-      { reference: "2100044 - 2100044 - GRAY/MEGAN DR", amount: "70.00" },
+      { reference: "RAAQ-846157711 - QUOTE NEVER CONVERTED", amount: "70.00" },
       { reference: "21087245", amount: "700.00" },
     ]));
     const steps = [];
     await tk.tickMatchingRows(page, [travel("21087245", 700)], { onStep: (s) => steps.push(s) });
     const note = steps.find((s) => s.step === "unreadable reference");
     assert.ok(note, `no step reported the unreadable row; got ${JSON.stringify(steps.map((s) => s.step))}`);
-    assert.match(note.detail, /2100044/, "the unreadable reference must be quoted back");
+    assert.match(note.detail, /RAAQ/, "the unreadable reference must be quoted back");
   });
 
   await check("a fully readable grid does not cry wolf", async () => {

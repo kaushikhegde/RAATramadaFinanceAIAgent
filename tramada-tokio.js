@@ -576,7 +576,9 @@ async function tickMatchingRows(page, travelRows, { onStep = () => {} } = {}) {
      could not parse its reference". Those need different actions from a
      person, so they get different words.
      Live example, 23-Sep-2026: a training booking was raised with policy
-     2100044 — SEVEN digits. policyKey wants 21 + six, and returned null. */
+     2100044 — seven digits, when policyKey still demanded 21 + six. That
+     rule is gone (see tokio-core), but the reporting stays: a reference we
+     cannot read is a different thing from a segment that is not there. */
   const unreadable = [];
   for (const row of grid.rows) {
     const key = core.policyKey(row.reference);
@@ -591,7 +593,7 @@ async function tickMatchingRows(page, travelRows, { onStep = () => {} } = {}) {
     onStep({
       step: "unreadable reference",
       detail:
-        `${unreadable.length} row(s) on this page carry a reference with no 21-series policy number in it ` +
+        `${unreadable.length} row(s) on this page carry a reference with no readable policy number in it ` +
         `and were left alone: ${unreadable.slice(0, 5).map((u) => JSON.stringify(u.slice(0, 40))).join(", ")}` +
         (unreadable.length > 5 ? ` and ${unreadable.length - 5} more` : ""),
     });

@@ -36,6 +36,44 @@ check("it does NOT repeat the template's MID(FIND(\"2\")) bug", () => {
   assert.strictEqual(t.policyKey(ref), "21087245");
 });
 
+/* MEASURED 24-Sep-2026 on the live Issue Payments grid. The "21 + six" rule
+   skipped every one of these, so a search that had found the right creditor's
+   segments matched nothing at all. */
+check("the policy formats really on Tramada's grid all read", () => {
+  const real = {
+    "20018654 - 20018654 - GATES/CHARLIE MR, ": "20018654",
+    "2200128 - 2200128 - CHUDY/ALEXANDER MR /": "2200128",
+    "220044 - 220044 - GRAY/MEGAN DR / GRAY/MEGAN DR": "220044",
+    "2203224 - 2203224 - MOUSE/MICKEY MR / MOUSE/MICKEY MR": "2203224",
+    "21087245 - 21087245 - ALTUS/ELIZABETH MRS": "21087245",
+  };
+  for (const [ref, want] of Object.entries(real)) {
+    assert.strictEqual(t.policyKey(ref), want, ref);
+  }
+});
+
+check("a bare policy number of any real length reads", () => {
+  for (const p of ["220044", "2200128", "20018654", "21087245", "2100044"]) {
+    assert.strictEqual(t.policyKey(p), p, p);
+  }
+});
+
+check("the reference's FIRST field wins, not a digit run from a name", () => {
+  // The AFTER template's MID(C2, FIND("2",C2,1), 8) takes the first "2"
+  // anywhere — including one inside a passenger name — and returns eight
+  // wrong digits in silence. Taking the first dash-separated field cannot.
+  assert.strictEqual(
+    t.policyKey("220044 - 220044 - SMITH/2000 MR"), "220044",
+    "a number in the NAME must not win over the policy"
+  );
+});
+
+check("things that are not policy numbers are still refused", () => {
+  for (const bad of ["", "ABC", "12345", "2", "RAAQ-846157711", "1234567"]) {
+    assert.strictEqual(t.policyKey(bad), null, JSON.stringify(bad));
+  }
+});
+
 check("a reference with no 210-series number is null, not a guess", () => {
   assert.strictEqual(t.policyKey("BOOKING 74585 - ALTUS/ELIZABETH"), null);
   assert.strictEqual(t.policyKey(""), null);
