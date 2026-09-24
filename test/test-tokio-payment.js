@@ -75,6 +75,10 @@ function fakePage(html) {
     },
     async isEnabled() { return page._goDisabled !== true; },
     isClosed() { return page._closed === true; },
+    async title() { return page._title || (window.document.title || ""); },
+    // Navigation is a no-op here: the stub IS the page under test, and a
+    // goto that replaced its content would test the stub, not the reader.
+    async goto(u) { page._url = u; page.calls.push({ action: "goto", url: u }); },
     async bringToFront() { page.calls.push({ action: "bringToFront" }); },
     async selectOption(sel, value) {
       const el = window.document.querySelector(sel);
@@ -879,6 +883,37 @@ const travel = (policy, nett) => ({
     const src = require("fs").readFileSync(require("path").join(__dirname, "..", "tramada-tokio.js"), "utf8");
     assert.match(src, /isEnabled\(SEARCH\.go\)/, "Go must be checked before it is clicked");
     assert.match(src, /already been submitted once/, "and the reason said plainly");
+  });
+
+  console.log("\nstep 14 — one session per month");
+
+  const SESSIONS = (rows) => `
+    <table>
+      <tr><th>Action</th><th>Info.</th><th>Payment Category</th><th>Trans. Type</th>
+          <th>Paid To</th><th>Reference</th><th>Payment Date</th><th>Amount</th></tr>
+      ${rows.map((r) => `<tr><td>e</td><td>${r.label}</td><td>SP</td><td>EFT</td>
+        <td>Tokio Marine</td><td>${r.reference}</td><td>24-09-2026</td><td>0.00</td></tr>`).join("")}
+    </table>`;
+
+  await check("the sessions list is read by heading", async () => {
+    const page = fakePage(SESSIONS([
+      { label: "TOKIO_SEP 26", reference: "TOKIO_SEP 2026" },
+      { label: "Tokio Marine Agency Tramada Dec-23", reference: "Tokio Marine Agency Tramada Dec-23" },
+    ]));
+    const rows = await tk.readPaymentSessions(page);
+    assert.ok(Array.isArray(rows), "it should have read the table");
+    assert.strictEqual(rows.length, 2);
+    assert.strictEqual(rows[0].label, "TOKIO_SEP 26");
+    assert.strictEqual(rows[0].reference, "TOKIO_SEP 2026");
+  });
+
+  await check("a page it cannot read returns null, NOT an empty list", async () => {
+    /* "I could not look" and "there is nothing there" lead to opposite
+       decisions about whether saving is safe. Collapsing them into [] would
+       quietly pick the dangerous one. */
+    const page = fakePage("<p>Error Page</p>");
+    const rows = await tk.readPaymentSessions(page);
+    assert.strictEqual(rows, null);
   });
 
   console.log("\nsteps 9-14 in one run");

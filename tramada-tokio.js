@@ -921,6 +921,61 @@ async function walkAllPages(page, travelRows, { onProgress = () => {}, onStep = 
  * selector that is not in this file cannot be clicked by accident, and BR18
  * puts issuing, rounding and the payment total in a human's hands.
  */
+/* The Payment Sessions list. Not measured beyond its title — candidates,
+   and a failure that says what it landed on. */
+const SESSIONS_URLS = [
+  "/finance/finance-payment-sessions.htm",
+  "/finance/finance-payment-session-search.htm",
+  "/finance/finance-payments-sessions.htm",
+];
+
+/**
+ * Every payment session label Tramada already holds.
+ *
+ * Returns null — not an empty list — when the page cannot be read. "I could
+ * not look" and "there is nothing there" lead to opposite decisions about
+ * whether it is safe to save, and collapsing them into [] would quietly
+ * choose the dangerous one.
+ */
+async function readPaymentSessions(page) {
+  for (const path of SESSIONS_URLS) {
+    try {
+      await page.goto(`${TRAMADA_BASE_URL}${path}`, { waitUntil: "domcontentloaded" });
+    } catch { continue; }
+    await sleep(800);
+    // A title probe must never be what stops us reading the page.
+    let title = "";
+    try { title = (await page.title()) || ""; } catch { title = ""; }
+    if (/error/i.test(title)) continue;
+
+    const rows = await page
+      .evaluate(() => {
+        const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+        for (const t of document.querySelectorAll("table")) {
+          const heads = Array.from(t.querySelectorAll("th, thead td")).map((h) => norm(h.textContent));
+          const iInfo = heads.findIndex((h) => /^info/i.test(h));
+          const iRef = heads.findIndex((h) => /^reference$/i.test(h));
+          const iPaid = heads.findIndex((h) => /paid to/i.test(h));
+          if (iInfo < 0 && iRef < 0) continue;
+          return Array.from(t.querySelectorAll("tr"))
+            .map((tr) => Array.from(tr.querySelectorAll("td")).map((td) => norm(td.textContent)))
+            .filter((c) => c.length > Math.max(iInfo, iRef))
+            .map((c) => ({
+              label: iInfo >= 0 ? c[iInfo] : "",
+              reference: iRef >= 0 ? c[iRef] : "",
+              paidTo: iPaid >= 0 ? c[iPaid] : "",
+            }))
+            .filter((r) => r.label || r.reference);
+        }
+        return null;
+      })
+      .catch(() => null);
+
+    if (rows) return rows;
+  }
+  return null;
+}
+
 async function saveSession(page, label, onProgress = () => {}) {
   if (!label) throw new Error("A session label is required — step 14.");
   onProgress(90, `Saving the session as ${label}...`);
@@ -1032,7 +1087,8 @@ async function saveSession(page, label, onProgress = () => {}) {
  */
 const SAVE_LITERAL = "SAVE SESSION";
 
-async function runTokioReconciliation({
+async function runTokioReconciliation(options = {}) {
+  const {
   consolidated,
   month,
   confirm,
@@ -1041,7 +1097,7 @@ async function runTokioReconciliation({
   fromCreated,
   toCreated,
   callbacks = {},
-} = {}) {
+  } = options;
   const onProgress = callbacks.onProgress || (() => {});
   const steps = [];
   const step = (name, detail) => {
@@ -1069,6 +1125,9 @@ async function runTokioReconciliation({
   if (willSave && confirm !== SAVE_LITERAL) {
     throw new Error(`Saving the session requires the exact confirmation "${SAVE_LITERAL}" — refusing to proceed.`);
   }
+  /* `replaceExisting` is the caller saying, deliberately, that a session
+     already carrying this label is expected and a second one is wanted. */
+  const replaceExisting = options.replaceExisting === true;
 
   const browser = await openBrowser(onProgress);
   const ctx = browser.contexts()[0] || (await browser.newContext());
@@ -1077,6 +1136,33 @@ async function runTokioReconciliation({
 
   try {
     await assertSignedIn(page);
+
+    /* ONE SESSION PER MONTH — checked BEFORE any work.
+       Tramada let two `TOKIO_SEP 26` sessions exist side by side, silently,
+       one per run. For a real month that is a trap: Travel Accounts would
+       find two sessions for the same period and have to guess which to
+       issue, and issuing the wrong one cannot be undone.
+       Checked first, not at save time, so a duplicate costs nothing — the
+       run stops before it has ticked anything. */
+    if (willSave) {
+      const existing = await readPaymentSessions(page);
+      if (existing === null) {
+        step("Existing sessions", "could not be read — carrying on, the save itself will still be checked");
+      } else {
+        const clash = existing.filter(
+          (r) => r.label === label || r.reference === reference
+        );
+        if (clash.length && !replaceExisting) {
+          throw new Error(
+            `Tramada already holds ${clash.length} payment session for ${label} ` +
+              `(reference ${reference}). Saving another would leave Travel Accounts with two sessions ` +
+              "for the same month and no way to tell which to issue. Delete the existing one, or pass " +
+              "replaceExisting if a second is genuinely wanted. Nothing was ticked."
+          );
+        }
+        step("Existing sessions", `${existing.length} on file, none clashing with ${label}`);
+      }
+    }
 
     // Steps 9-10.
     await openIssuePayments(page, onProgress);
@@ -1199,6 +1285,7 @@ async function runTokioReconciliation({
 
 module.exports = {
   findSameLine,
+  readPaymentSessions,
   // The screen, re-exported so a caller (and test/test-tokio-dates.js) still
   // has one place to reach for it.
   TRAMADA_BASE_URL,
