@@ -474,6 +474,55 @@ const travel = (policy, nett) => ({
       "by the row's own handle — BR12 means one reference can name two rows");
   });
 
+  await check("a tick survives Tramada re-ORDERING the grid", async () => {
+    /* THE BUG THAT KEPT REPORTING A CORRECT TICK AS A REFUSAL.
+       Rows are tagged tokio-row-<index>, which is only stable while the DOM
+       is. Ticking A makes Tramada redraw the grid; if the redraw re-orders
+       it, index 0 afterwards is a DIFFERENT LINE. The old check read that
+       other row's state and called a good tick a refusal — live, 220044
+       ticked at 175 and was then reported as one "Tramada would not keep
+       ticked". Identity is reference + amount, not position. */
+    const page = fakePage(grid([
+      { reference: "21087245", amount: "700.00" },
+      { reference: "21099988", amount: "250.50" },
+    ]));
+    const doc = page.document;
+    const rows = () => Array.from(doc.querySelectorAll("tr")).filter((r) => r.querySelector("input"));
+    // Ticking anything flips the two rows around, as a redraw may.
+    for (const box of doc.querySelectorAll('input[type="checkbox"]')) {
+      box.addEventListener("click", () => {
+        const [a, b] = rows();
+        if (a && b && b.parentNode) b.parentNode.insertBefore(b, a);
+      });
+    }
+
+    const out = await tk.tickMatchingRows(page, [travel("21087245", 700)]);
+    assert.strictEqual(out.results.length, 1);
+    assert.strictEqual(out.results[0].ticked, true,
+      "the row moved, it did not come untick");
+    assert.strictEqual(out.results[0].policy, "21087245");
+  });
+
+  await check("BR12 — the right sibling is verified when a reference repeats", () => {
+    // Two lines, one policy, different amounts. Re-finding by reference alone
+    // would answer about whichever came first.
+    const rows = [
+      { handle: "tokio-row-0", reference: "21087245", amount: 150, ticked: false },
+      { handle: "tokio-row-1", reference: "21087245", amount: 700, ticked: true },
+    ];
+    const found = tk.findSameLine(rows, { reference: "21087245", amount: 700, handle: "tokio-row-9" });
+    assert.ok(found, "the line should still be found after a redraw");
+    assert.strictEqual(found.amount, 700, "it must be the line the AMOUNT chose");
+    assert.strictEqual(found.ticked, true);
+  });
+
+  await check("a stale handle pointing at another reference is not trusted", () => {
+    const rows = [{ handle: "tokio-row-0", reference: "21099988", amount: 250.5, ticked: true }];
+    // The handle matches, the reference does not — the row at that index changed.
+    const found = tk.findSameLine(rows, { reference: "21087245", amount: 700, handle: "tokio-row-0" });
+    assert.strictEqual(found, null, "it must not answer about a different policy");
+  });
+
   await check("a tick that will not stay is reported, and the page carries on", async () => {
     /* Live 24-Sep-2026: 220044 matched and was ticked correctly, then the
        read-back 120ms later found it unticked and the whole run stopped —

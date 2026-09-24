@@ -551,6 +551,45 @@ async function readTransactionPage(page) {
  * leaves Tramada's own onclick unrun — which on the IPSI receipt form meant a
  * row that looked ticked and was never allocated.
  */
+/**
+ * The same grid line, found again after Tramada has redrawn the page.
+ *
+ * A HANDLE IS NOT AN IDENTITY. readTransactionPage tags rows as
+ * `tokio-row-<index>`, which is only stable while the DOM is. Ticking the A
+ * column makes Tramada redraw the grid — and if a redraw re-orders it, or
+ * drops a row, index 3 afterwards is a DIFFERENT LINE from index 3 before.
+ * Verifying "did my tick hold?" against that reads the state of some other
+ * row and reports a correct tick as a refusal, which is what the live run
+ * kept doing to 220044.
+ *
+ * So the line is found again by what actually identifies it: its reference
+ * AND its amount. Both, because BR12 exists precisely because one policy
+ * appears more than once with different amounts — matching on reference
+ * alone would find the sibling line and answer about that instead.
+ *
+ * The handle is still tried first: when nothing moved it is exact, and it
+ * costs nothing.
+ */
+function findSameLine(rows, line) {
+  if (!Array.isArray(rows) || !line) return null;
+
+  if (line.handle) {
+    const byHandle = rows.find((r) => r.handle === line.handle);
+    // Only trust the handle if it still points at the same line.
+    if (byHandle && byHandle.reference === line.reference) return byHandle;
+  }
+
+  const sameRef = rows.filter((r) => r.reference === line.reference);
+  if (!sameRef.length) return null;
+  if (sameRef.length === 1) return sameRef[0];
+
+  // Several lines share the reference — BR12's case. Take the one whose
+  // amount matches to the cent; never "the first with that policy".
+  const want = core.cents(line.amount);
+  const exact = sameRef.find((r) => core.cents(r.amount) === want);
+  return exact || null;
+}
+
 async function tickMatchingRows(page, travelRows, { onStep = () => {} } = {}) {
   const grid = await readTransactionPage(page);
   if (!grid.found) {
@@ -692,7 +731,7 @@ async function tickMatchingRows(page, travelRows, { onStep = () => {} } = {}) {
       });
       await sleep(700);
       const seen = await readTransactionPage(page);
-      return seen.rows.find((x) => x.handle === line.handle) || null;
+      return findSameLine(seen.rows, line);
     };
 
     let now = await tickOnce(false);
@@ -740,7 +779,7 @@ async function tickMatchingRows(page, travelRows, { onStep = () => {} } = {}) {
   // checking the wrong one would report success either way.
   const after = await readTransactionPage(page);
   for (const r of results.filter((x) => x.ticked)) {
-    const now = after.rows.find((x) => x.handle === r.handle);
+    const now = findSameLine(after.rows, { reference: r.reference, amount: r.amount, handle: r.handle });
     if (!now || !now.ticked) {
       throw new Error(
         `The A column was ticked for reference ${r.reference} and had come undone by the end of the ` +
@@ -1046,6 +1085,7 @@ async function runTokioReconciliation({
 }
 
 module.exports = {
+  findSameLine,
   // The screen, re-exported so a caller (and test/test-tokio-dates.js) still
   // has one place to reach for it.
   TRAMADA_BASE_URL,
