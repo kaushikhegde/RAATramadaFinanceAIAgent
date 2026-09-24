@@ -4327,6 +4327,65 @@ const RUN_ORDER = ["bpay", "mint", "ipsi", "travelpay", "dvc"];
 }
 
 /**
+ * THE PHASES OF A COMBINED RUN, in the order RAA asked for on 24-Sep-2026:
+ *
+ *   BPAY  →  Mint + TravelPay  →  IPSI
+ *
+ * The point of this existing at all is that a person should be able to upload
+ * every report they have and press Start run, and the agent works out the
+ * order. Before this, uploading IPSI beside anything else was refused outright
+ * and Mint uploaded without BPay reconciled against a statement page that did
+ * not exist.
+ *
+ * Nothing here runs in parallel, and nothing can: there is one browser driving
+ * Tramada, so a combined run is a sequence. These are its three phases.
+ *
+ *   receipts   BPay files a real receipt per row. Must precede everything —
+ *              the receipts are what the statement page is then made from.
+ *   statement  One page, every report that has a `recPayType`: BPay's own rows,
+ *              Mint's and TravelPay's. Ticked and committed once.
+ *   ownFlow    IPSI, which has no `recPayType` because it never touches a
+ *              statement page — it works on Tramada's Finance Receipts screens.
+ *              LAST, and for a mechanical reason as well as RAA's: it opens its
+ *              own CDP connection and closing it takes the shared Chrome down
+ *              with it, so it cannot overlap the statement phase.
+ *
+ * A report in none of the three is not guessed at — `unplaced` names it and the
+ * run refuses. That is DVC, which opens no browser at all.
+ *
+ * `loaded` is whichever reports have rows; order of arrival is irrelevant.
+ */
+/**
+ * WHAT A RUN MAY DO ABOUT THE DAY'S STATEMENT PAGE.
+ *
+ *   reuse    the day already has one — never make a second (POC feedback
+ *            General 04)
+ *   create   there is none, and this run carries BPay, which is what a
+ *            statement page is made from
+ *   refuse   there is none, and this run has no BPay
+ *
+ * The third is the one that was missing. Mint and TravelPay reconcile AGAINST
+ * the page BPay makes; neither files anything onto it. A run of those two with
+ * no BPay used to create an empty page for the day, report every line as
+ * missing — correctly, there was nothing on it — and leave the date occupied,
+ * so the real BPay run an hour later was refused as a duplicate. One wrong
+ * page, two wrong answers, and the file was fine all along.
+ */
+function statementPageAction({ hasPageForDate, mayCreate }) {
+  if (hasPageForDate) return "reuse";
+  return mayCreate ? "create" : "refuse";
+}
+
+function runPhases(loaded) {
+  const order = RUN_ORDER.filter((k) => (loaded || []).includes(k));
+  const receipts = order.filter((k) => REPORTS[k].files);
+  const statement = order.filter((k) => REPORTS[k].recPayType);
+  const ownFlow = order.filter((k) => REPORTS[k].issuesReceipt);
+  const unplaced = order.filter((k) => !statement.includes(k) && !ownFlow.includes(k));
+  return { order, receipts, statement, ownFlow, unplaced };
+}
+
+/**
  * Which matcher a report reconciles with, and which column it reads.
  *
  * This lives here, once, because it was decided in two different places and
@@ -5181,7 +5240,7 @@ module.exports = {
   matchTravelPayAgainstStatement, MATCHERS, matcherFor, matchesOn, SORT_BY,
   BOOKING_RECEIPT_COLUMNS, findFiledReceipt,
   TRAVELPAY_COLUMNS, parseTravelPayRows, serialDate, bookingFromReference,
-  bookingFromDelimitedReference, REPORTS, RUN_ORDER,
+  bookingFromDelimitedReference, REPORTS, RUN_ORDER, runPhases, statementPageAction,
   IPSI_COLUMNS, IPSI_REMARKS, IPSI_REFERENCE_REQUIRED, isPreAuth, parseIpsiRows, matchIpsiAgainstReceipts,
   matchIpsiAgainstPayments,
   explainIpsiMiss,

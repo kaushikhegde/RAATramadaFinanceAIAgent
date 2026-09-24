@@ -1283,7 +1283,25 @@ async function openOrCreateDayStatement(page, o) {
   }
   const already = core.pagesForDate(found.pages, o.statementDate);
 
-  if (already.length) {
+  /* REUSE, CREATE OR REFUSE — decided by core.statementPageAction, which is
+     where the rule is written down and tested. Creating is BPAY's right alone:
+     Mint and TravelPay reconcile against the page BPay makes and file nothing
+     onto it, so a run of those two without BPay must reuse or stop. The Sources
+     screen has always promised it stops; now it does. */
+  const action = core.statementPageAction({
+    hasPageForDate: already.length > 0,
+    mayCreate: o.mayCreate !== false,
+  });
+
+  if (action === "refuse") {
+    throw new Error(
+      `No statement for ${core.toTramadaDate(o.statementDate)} on ${accountLabel}, and this run ` +
+      "has no BPay receipts to make one from. BPAY creates the statement page the other reports " +
+      "reconcile against — upload the BPay report as well, or run BPay for that date first."
+    );
+  }
+
+  if (action === "reuse") {
     say(`${accountLabel} already has a statement for ${core.toTramadaDate(o.statementDate)} — ` +
       "reconciling that one rather than creating a second.", true);
     const opened = await openStatementForDate(page, o);
@@ -1878,7 +1896,11 @@ async function runCombinedReconciliation(o = {}) {
   if (!results.length) throw new Error("No rows to run.");
 
   const rowsOf = (k) => results.filter((r) => r.src === k);
-  const writes = order.filter((k) => core.REPORTS[k].files);
+  /* THE PHASES, FROM ONE PLACE. BPAY → Mint + TravelPay → IPSI, decided by
+     core.runPhases so the order is a tested fact rather than three filters
+     written out here and kept in step by hand. */
+  const phases = core.runPhases(order);
+  const writes = phases.receipts;
   /* IPSI IS NOT A STATEMENT-PAGE REPORT, and a combined run has to know that.
      It reconciles on Tramada's Finance Receipts screens — ticking receipts that
      already exist and issuing one merchant receipt covering them — and never
@@ -1888,8 +1910,8 @@ async function runCombinedReconciliation(o = {}) {
      reported as "CCTEST02 is not among the transactions on this page" — a
      report that ran the wrong automation and then blamed the data. It gets its
      own flow now, in the same run. */
-  const onThePage = order.filter((k) => core.REPORTS[k].recPayType);
-  const ownFlow = order.filter((k) => core.REPORTS[k].issuesReceipt);
+  const onThePage = phases.statement;
+  const ownFlow = phases.ownFlow;
   /* A REPORT THAT FITS NEITHER BUCKET STOPS THE RUN RATHER THAN BEING GUESSED
      AT. `ownFlow` used to be "everything with no recPayType", which was only
      ever a description of IPSI — the DVC report has no recPayType either, and
@@ -1900,7 +1922,7 @@ async function runCombinedReconciliation(o = {}) {
      anything unplaced refuses out loud. DVC is `offline: true`: it reconciles
      two spreadsheets against each other and never opens a browser, so it has no
      place in a run that exists to drive one. */
-  const unplaced = order.filter((k) => !onThePage.includes(k) && !ownFlow.includes(k));
+  const unplaced = phases.unplaced;
   if (unplaced.length) {
     throw new Error(
       `${unplaced.map((k) => core.REPORTS[k].title).join(", ")} cannot run alongside another report — ` +
@@ -1923,47 +1945,58 @@ async function runCombinedReconciliation(o = {}) {
     });
   }
 
-  /* IPSI, before the shared page is opened — `runIpsiReconciliation` opens and
-     closes its OWN CDP connection, and over CDP `browser.close()` takes down
-     the shared Chrome. A page held open across it would be dead by the time it
-     returned, which is the same rule the receipts follow and for the same
-     reason. */
+  /* IPSI RUNS LAST — BPAY → Mint + TravelPay → IPSI.
+
+     RAA asked for exactly that order, and for a run to SEQUENCE whatever is
+     loaded rather than refusing until somebody uploads the reports one at a
+     time. BPay first, because it creates the statement page; Mint and
+     TravelPay on that page; IPSI after, because it uses no statement page at
+     all — it works on Tramada's Finance Receipts screens.
+
+     It used to run BEFORE the page, for a mechanical reason that still holds:
+     `runIpsiReconciliation` opens and closes its OWN CDP connection, and over
+     CDP `browser.close()` takes down the shared Chrome, so a page held open
+     across it would be dead by the time it returned. Running it LAST obeys the
+     same rule from the other side — it is called once the statement phase's
+     `finally` has closed the shared browser, never while a page is open. */
   const ipsiRuns = [];
-  for (const k of ownFlow) {
-    const mine = rowsOf(k);
-    say(`${core.REPORTS[k].title}: not a statement-page report — running its own flow for ${mine.length} row${mine.length === 1 ? "" : "s"}.`);
-    try {
-      const out = await runIpsiReconciliation({
-        rows: mine,
-        dryRun,
-        payerName: o.payerName,
-        reference: o.ipsiReference,
-        dateReceived: o.statementDate,
-        toDate: o.statementDate,
-        callbacks: cb,
-      });
-      // Its results are copies, so the verdicts are merged back by `n` — the
-      // numbering is shared across every report in this run and the inbox and
-      // the store both key on it.
-      for (const done of out.results || []) {
-        const mineRow = results.find((r) => r.n === done.n);
-        if (mineRow) Object.assign(mineRow, done);
-      }
-      ipsiRuns.push({ report: k, ...out });
-    } catch (err) {
-      const why = core.tidyError(err.message);
-      say(`${core.REPORTS[k].title} stopped: ${why}`, false);
-      for (const r of mine) {
-        r.error = why;
-        r.reconciliation = r.reconciliation || "Not reconciled";
-        r.why = why;
-        row(r.n, { reconciliation: r.reconciliation, why });
+  async function runOwnFlowReports() {
+    for (const k of ownFlow) {
+      const mine = rowsOf(k);
+      say(`${core.REPORTS[k].title}: not a statement-page report — running its own flow for ${mine.length} row${mine.length === 1 ? "" : "s"}.`);
+      try {
+        const out = await runIpsiReconciliation({
+          rows: mine,
+          dryRun,
+          payerName: o.payerName,
+          reference: o.ipsiReference,
+          dateReceived: o.statementDate,
+          toDate: o.statementDate,
+          callbacks: cb,
+        });
+        // Its results are copies, so the verdicts are merged back by `n` — the
+        // numbering is shared across every report in this run and the inbox and
+        // the store both key on it.
+        for (const done of out.results || []) {
+          const mineRow = results.find((r) => r.n === done.n);
+          if (mineRow) Object.assign(mineRow, done);
+        }
+        ipsiRuns.push({ report: k, ...out });
+      } catch (err) {
+        const why = core.tidyError(err.message);
+        say(`${core.REPORTS[k].title} stopped: ${why}`, false);
+        for (const r of mine) {
+          r.error = why;
+          r.reconciliation = r.reconciliation || "Not reconciled";
+          r.why = why;
+          row(r.n, { reconciliation: r.reconciliation, why });
+        }
       }
     }
   }
-
   // Nothing left for a statement page is a complete run, not an empty one.
   if (!onThePage.length) {
+    await runOwnFlowReports();
     return {
       results, pageNumber: null, statementRows: 0,
       summary: core.summariseCombined(results),
@@ -1973,6 +2006,10 @@ async function runCombinedReconciliation(o = {}) {
     };
   }
 
+  /* The statement phase's answer, held rather than returned: IPSI still has to
+     run after it, and it cannot run until this block's `finally` has closed the
+     shared browser. */
+  let pageOut = null;
   const browser = await openBrowser();
   let page;
   let ok = false;
@@ -1989,6 +2026,10 @@ async function runCombinedReconciliation(o = {}) {
       accountLabel,
       statementDate: o.statementDate,
       source: "bpay",
+      /* Only a run carrying BPay may create the day's page — see
+         openOrCreateDayStatement. Mint or TravelPay on their own reuse the one
+         BPay made, or stop. */
+      mayCreate: order.includes("bpay"),
       // Step 27 — Finance's figure off the Westpac statement, not a copy of
       // the opening balance. Only used when this run CREATES the page.
       closingBalance: o.closingBalance,
@@ -2099,17 +2140,29 @@ async function runCombinedReconciliation(o = {}) {
     const finished = await finishStatementPage(page, ticked.length, say, dryRun);
 
     ok = true;
-    return {
+    pageOut = {
       results, pageNumber, statementRows: seen,
-      summary: core.summariseCombined(results),
       balances, selection, finished,
-      // What the reports that do not use this page did, kept beside what it did.
-      ipsi: ipsiRuns,
     };
   } finally {
     if (ok && page) await page.close().catch(() => {});
     await browser.close().catch(() => {});
   }
+
+  /* IPSI, now that the shared browser is shut. Last in the order RAA asked for,
+     and the only point in the run where opening a second CDP connection cannot
+     pull a page out from under anything. */
+  await runOwnFlowReports();
+
+  /* SUMMARISED AFTER IPSI, not before. `runOwnFlowReports` writes its verdicts
+     onto the same `results` rows, so a summary built inside the try above would
+     count every IPSI row as whatever it was before its own flow ran. */
+  return {
+    ...pageOut,
+    summary: core.summariseCombined(results),
+    // What the reports that do not use this page did, kept beside what it did.
+    ipsi: ipsiRuns,
+  };
 }
 
 /**

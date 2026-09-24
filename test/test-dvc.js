@@ -523,15 +523,22 @@ check("and it has a place in the run order", C.RUN_ORDER.includes("dvc"), true);
   try { C.matcherFor("dvc"); } catch (e) { threw = e.message; }
   ok("asking for a statement matcher refuses out loud", /does not reconcile against a statement page/.test(threw), threw);
 }
-/* The same guard in the combined run. `ownFlow` used to be "every report with
-   no recPayType", which was only ever a description of IPSI — under that line a
-   DVC file would have been handed to IPSI's receipts flow. */
+/* The same guard in the combined run's phases. `ownFlow` used to be "every
+   report with no recPayType", which was only ever a description of IPSI — under
+   that line a DVC file would have been handed to IPSI's receipts flow. Asked of
+   `runPhases` itself now, not of recon-run's source text, because that is where
+   the buckets are decided. */
 {
+  const p = C.runPhases(["dvc"]);
+  ok("DVC is in no phase — it is not IPSI's flow and not the page's",
+    !p.ownFlow.includes("dvc") && !p.statement.includes("dvc") && !p.receipts.includes("dvc"),
+    JSON.stringify(p));
+  ok("...so it is unplaced, and an unplaced report stops the run",
+    p.unplaced.includes("dvc"), JSON.stringify(p));
   const src = fs.readFileSync(path.join(__dirname, "..", "recon-run.js"), "utf8");
-  ok("the combined run buckets by what a report does, not by a missing field",
-    /const ownFlow = order\.filter\(\(k\) => core\.REPORTS\[k\]\.issuesReceipt\)/.test(src),
-    "ownFlow is back to !recPayType — a DVC file would be run through IPSI's receipts flow");
-  ok("...and an unplaced report stops the run", /const unplaced = order\.filter/.test(src));
+  ok("and the combined run refuses whatever runPhases could not place",
+    /const unplaced = phases\.unplaced/.test(src) && /if \(unplaced\.length\) \{/.test(src),
+    "the combined run is not refusing unplaced reports any more");
 }
 
 console.log("\nthe browser's copy of what a DVC card is");

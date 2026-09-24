@@ -112,7 +112,8 @@ header.top { display: none !important }
       blurb: 'Card settlements IPSI has already put through. Nothing is filed against a '
            + 'statement page — the run finds the matching receipts (and refunds, against '
            + 'Payments To Reconcile) in Tramada and issues one Finance Merchant Payment '
-           + 'Receipt covering them. Runs alone — it has no statement page to share.',
+           + 'Receipt covering them. Has no statement page to share, so it runs '
+           + 'last in a combined run, on its own screens.',
       accept: '.csv,text/csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       columns: 'Transaction Reference, Transaction Amount, Booking Number — .csv or .xlsx',
     },
@@ -1359,23 +1360,36 @@ header.top { display: none !important }
          sure of, which is that BPay goes first because it is what creates the
          bank statement the others reconcile against.
 
-         The other reports are NAMED rather than listed generically, because
-         which ones are loaded is exactly what the person is checking. */
-      const others = loaded().filter((k) => k !== 'bpay').map((k) => (SOURCES[k] || {}).title || k);
-      const list = others.length > 1
-        ? others.slice(0, -1).join(', ') + ' and ' + others[others.length - 1]
-        : (others[0] || 'the other report');
-      const hasBpay = loaded().indexOf('bpay') >= 0;
+         IT NOW STATES THE WHOLE ORDER, because since 24-Sep-2026 IPSI can be
+         loaded with the rest and the run sequences everything itself. The
+         phases are named in the order they happen — BPAY, then the statement
+         page, then IPSI on its own screens — rather than listing whatever was
+         loaded in whatever order the cards sit in. Nothing runs in parallel:
+         one browser drives Tramada. */
+      const on = loaded();
+      const title = (k) => (SOURCES[k] || {}).title || k;
+      const andList = (ks) => ks.length > 1
+        ? ks.slice(0, -1).map(title).join(', ') + ' and ' + title(ks[ks.length - 1])
+        : (ks.length ? title(ks[0]) : '');
+      const hasBpay = on.indexOf('bpay') >= 0;
+      const onPage = on.filter((k) => k === 'mint' || k === 'travelpay');
+      const own = on.filter((k) => k === 'ipsi');
+      const when = esc(($('#rcDate') || {}).value || 'that date');
+
+      const steps = [];
+      if (hasBpay) steps.push('<b>BPAY first</b> — it creates the bank statement page');
+      if (onPage.length) steps.push('then ' + esc(andList(onPage)) + ' on that page');
+      if (own.length) steps.push('then <b>IPSI last</b>, on its own Finance Receipts screens');
+
       grid.insertAdjacentHTML('beforeend',
         '<div class="note" style="grid-column:1/-1;padding:10px 14px;border-radius:10px;' +
         'background:#EAF3FF;border:1px solid #B9D4F5;color:#1B4A7A;font-size:13px">' +
+        'One run for ' + when + ', in this order: ' + steps.join('; ') + '. ' +
         (hasBpay
-          ? '<b>BPAY reconciliation will run first</b>, followed by ' + esc(list) +
-            ' reconciliation for ' + esc(($('#rcDate') || {}).value || 'that date') + '. BPay creates the bank statement ' +
-            'the others reconcile against, so it cannot be the other way round.'
-          : '<b>' + esc(list) + '</b> will reconcile against the bank statement BPAY created ' +
-            'for ' + esc(($('#rcDate') || {}).value || 'that date') + '. If BPAY has not run for that date yet, this will stop ' +
-            'and say so rather than creating a second statement.') +
+          ? 'Nothing runs at the same time as anything else \u2014 there is one browser driving Tramada.'
+          : 'BPAY is not loaded, so this reconciles against the statement page BPAY already ' +
+            'created for ' + when + '. If BPAY has not run for that date yet, the run stops and ' +
+            'says so rather than creating an empty statement.') +
         '</div>');
     }
 
@@ -1688,15 +1702,18 @@ header.top { display: none !important }
       '</tr></thead><tbody>' + body + '</tbody></table></div>';
   }
 
-  // IPSI has no statement page to share — recon-core.REPORTS.ipsi carries no
-  // recPayType, which is exactly what a combined run is keyed on. Loaded
-  // alongside anything else it is not a second report to combine, it is a
-  // run with nowhere to send half its rows. A plain function, not a value
-  // cached at load time, because it has to answer the same way whether
-  // `syncActive` asks it before a render or `renderSource` asks it during one.
-  const ipsiCombo = () => { const on = loaded(); return on.includes('ipsi') && on.length > 1; };
+  /* IPSI NO LONGER BLOCKS A COMBINED RUN. Asked for 24-Sep-2026: if every
+     report is uploaded and Start run is pressed, the agent should SEQUENCE
+     them itself — BPAY, then Mint and TravelPay, then IPSI — rather than
+     refusing until somebody uploads them one at a time.
 
-  /* DVC RUNS ALONE TOO, and for a stronger reason than IPSI's. It opens no
+     It still has no statement page to share (recon-core.REPORTS.ipsi carries
+     no recPayType), which is why it cannot be matched against that page. That
+     is a reason to give it its own phase, which `runCombinedReconciliation`
+     does, not a reason to refuse the run. Nothing is truly parallel either
+     way: there is one browser driving Tramada, so a run is a sequence. */
+
+  /* DVC RUNS ALONE. It opens no
      browser at all — it matches two spreadsheets against each other — so there
      is nothing for it to go before or after on a shared statement page, and
      `runCombinedReconciliation` refuses a report it cannot place rather than
@@ -1747,7 +1764,6 @@ header.top { display: none !important }
      said it instead. Shared by renderSource's initial paint and
      syncIpsiTotal's per-keystroke repaint so the two never disagree. */
   function ipsiNuveiWarn() {
-    if (ipsiCombo()) return 'IPSI runs alone — remove the other loaded report before starting this one.';
     if (source.ipsi && !ipsiNuvei) return 'The NUVEI amount is needed before a run.';
     return ipsiTotalMismatch() || '';
   }
@@ -1836,7 +1852,10 @@ header.top { display: none !important }
 
   function syncActive() {
     const on = loaded();
-    const invalidCombo = ipsiCombo() || dvcCombo();
+    /* DVC ONLY. IPSI used to be refused here too; it is sequenced now, see the
+       note above dvcCombo. DVC still cannot join a run: it opens no browser at
+       all, so there is nothing for it to go before or after. */
+    const invalidCombo = dvcCombo();
     // DVC needs both of its files. A run with only the Westpac report matches
     // nothing and reports a correct file as entirely unreconciled.
     // Both DVC files, or no run. The payment has its own button and its own gate.
