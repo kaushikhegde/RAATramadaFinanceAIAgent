@@ -19,6 +19,7 @@
  * figure Tramada is showing. Typing both invites them to disagree.
  *
  *   node tools/make-tokio-live-fixture.js
+ *   node tools/make-tokio-live-fixture.js --out demo-tokio
  */
 
 const fs = require("fs");
@@ -43,7 +44,15 @@ const LIVE = [
   { policy: "20046798", booking: "313",   payable: 302.01, kind: "br07" },
 ];
 
-const OUT = path.join(__dirname, "..", "csv_uploads");
+/* --out lets a demo write somewhere clean, so an upload is a genuine
+   first run rather than re-reading whatever csv_uploads already holds. */
+const outArg = (() => {
+  const i = process.argv.indexOf("--out");
+  return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : null;
+})();
+const OUT = outArg
+  ? path.resolve(process.cwd(), outArg)
+  : path.join(__dirname, "..", "csv_uploads");
 const dmy = (d) => `${String(d.getDate()).padStart(2, "0")}-${String(d.getMonth() + 1).padStart(2, "0")}-${d.getFullYear()}`;
 const money = (n) => n.toFixed(2);
 const csv = (rows) => {
@@ -126,6 +135,7 @@ const files = [
   ["tokio-tramada-costing-report.csv", costing],
   ["tokio-rcc-report.csv", rcc],
 ];
+console.log(`\n  → ${OUT}\n`);
 for (const [name, rows] of files) {
   fs.writeFileSync(path.join(OUT, name), csv(rows));
   console.log(`  ${name.padEnd(36)} ${rows.length} row(s)`);
