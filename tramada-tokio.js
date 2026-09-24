@@ -363,6 +363,28 @@ async function firstPresent(page, selectors, { timeout = 10000, what = "field" }
   );
 }
 
+/* THE A COLUMN'S CHECKBOX, MEASURED 24-Sep-2026.
+ *
+ * A row on finance-creditor-payment.htm carries THREE inputs, and the one a
+ * person ticks is the LAST of them:
+ *
+ *   isForAutoBspPayment_<segId>   checkbox, inside <td class="hidden">
+ *   allocationAmount_<segId>      text, DISABLED and READONLY — Tramada
+ *                                 fills it when the tick is accepted
+ *   segmentsToAllocate            checkbox, value = <segId>   ← column A
+ *
+ * `tr.querySelector('input[type=checkbox]')` returns the FIRST — the hidden
+ * BSP one. Playwright's check() refuses an invisible element, the forced
+ * click that followed did nothing, and the read-back then reported the row
+ * as one Tramada "would not keep ticked". Three wrong theories came out of
+ * that single mistake.
+ *
+ * Every row shares the id `segmentsToAllocate`, so it is addressed by NAME
+ * within the row, never by that id — the same trap as the IPSI allocation
+ * grid.
+ */
+const ALLOCATE_TICK = 'input[type="checkbox"][name="segmentsToAllocate"]';
+
 /* Candidates, most-likely first. Replace with the probe's output. */
 const PAYMENT = Object.freeze({
   transactionType: ["#transactionTypeCode", "#paymenttransactionTypeCode", "#transactionType"],
@@ -502,7 +524,14 @@ async function readTransactionPage(page) {
 
     const rows = [];
     Array.from(table.querySelectorAll("tr")).forEach((tr, index) => {
-      const box = tr.querySelector('input[type="checkbox"]');
+      /* The A column, not the hidden BSP checkbox that comes first in the
+         row. See ALLOCATE_TICK. Falls back to the last checkbox, then to
+         any, so a differently-shaped grid still reads rather than vanishing. */
+      const boxes = Array.from(tr.querySelectorAll('input[type="checkbox"]'));
+      const box =
+        tr.querySelector('input[type="checkbox"][name="segmentsToAllocate"]') ||
+        boxes[boxes.length - 1] ||
+        null;
       if (!box) return;
       const cells = Array.from(tr.querySelectorAll("td")).map((td) => norm(td.textContent));
       if (cells.length <= iRef) return;
@@ -684,7 +713,10 @@ async function tickMatchingRows(page, travelRows, { onStep = () => {} } = {}) {
     }
 
     const line = verdict.line;
-    const box = page.locator(`[data-tokio-row="${line.handle}"] input[type="checkbox"]`).first();
+    let box = page.locator(`[data-tokio-row="${line.handle}"] ${ALLOCATE_TICK}`).first();
+    if (!(await box.count().catch(() => 0))) {
+      box = page.locator(`[data-tokio-row="${line.handle}"] input[type="checkbox"]`).last();
+    }
     if (!(await box.count())) {
       results.push({ policy: key, reference: line.reference, ticked: false, remark: "checkbox not found on the row" });
       continue;
@@ -707,24 +739,21 @@ async function tickMatchingRows(page, travelRows, { onStep = () => {} } = {}) {
        nothing at all and fails silently — which is what the second attempt
        was doing. readTransactionPage re-tags by row index, so re-reading
        first is what makes a fresh, attached locator possible. */
-    const tickOnce = async (fillAllocate) => {
+    const tickOnce = async () => {
       await readTransactionPage(page); // re-tag after any re-render
       const cell = page.locator(`[data-tokio-row="${line.handle}"]`);
       if (!(await cell.count().catch(() => 0))) return null;
 
-      /* "Segments To Allocate" — the tick allocates a payment ACROSS
-         segments, and Tramada was leaving Allocate empty and dropping the
-         tick. Where the amount has to be stated, state it: the figure is
-         Creditor Payable, the row's own number, never one of ours. */
-      if (fillAllocate) {
-        const amountBox = cell.locator("input[type='text'], input:not([type])").first();
-        if (await amountBox.count().catch(() => 0)) {
-          await amountBox.fill(String(line.amount)).catch(() => {});
-          await sleep(200);
-        }
-      }
+      /* allocationAmount_<segId> is DISABLED and READONLY — measured. It is
+         Tramada's to fill when it accepts the tick, never ours to type, and
+         an empty one is a symptom rather than a cause. */
 
-      const fresh = cell.locator("input[type='checkbox']").first();
+      // By name where Tramada gives one; otherwise the LAST checkbox in the
+      // row, which is where column A sits. Never the first — that is hidden.
+      let fresh = cell.locator(ALLOCATE_TICK).first();
+      if (!(await fresh.count().catch(() => 0))) {
+        fresh = cell.locator('input[type="checkbox"]').last();
+      }
       if (!(await fresh.count().catch(() => 0))) return null;
       await fresh.check().catch(async () => {
         await fresh.click({ force: true }).catch(() => {});
@@ -734,18 +763,14 @@ async function tickMatchingRows(page, travelRows, { onStep = () => {} } = {}) {
       return findSameLine(seen.rows, line);
     };
 
-    let now = await tickOnce(false);
+    let now = await tickOnce();
     if (!now || !now.ticked) {
       onStep({
         step: "re-ticking",
         detail: `${line.reference} did not hold on the first click` +
-          (now && now.allocate != null ? ` (Allocate reads ${JSON.stringify(now.allocate)})` : "") +
-          " — retrying, and stating the amount this time",
+          (now && now.allocate != null ? ` (Allocate reads ${JSON.stringify(now.allocate)})` : ""),
       });
-      // Second attempt states the Allocate amount; third is a plain retry in
-      // case the row simply needed longer.
-      now = await tickOnce(true);
-      if (!now || !now.ticked) now = await tickOnce(false);
+      now = await tickOnce();
     }
     if (!now || !now.ticked) {
       results.push({

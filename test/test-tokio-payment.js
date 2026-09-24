@@ -103,6 +103,7 @@ function fakePage(html) {
         async count() { return list.length; },
         first() { return wrap(list.slice(0, 1)); },
         nth(i) { return wrap(list.slice(i, i + 1)); },
+        last() { return wrap(list.slice(-1)); },
         // Playwright's locator.filter({ hasText }) — the creditor picker uses it.
         filter(opts) {
           const t = opts && (opts.hasText != null ? opts.hasText : opts.has_text);
@@ -168,12 +169,38 @@ function fakePage(html) {
 
 /** The results grid, shaped the way step 10 leaves it: sorted by Reference. */
 function grid(rows) {
+  /* THE REAL ROW, measured off finance-creditor-payment.htm 24-Sep-2026.
+     Column order and the hidden cells are reproduced because both matter:
+     the tick a person makes is the LAST input in the row, and the FIRST
+     checkbox is a hidden BSP one. The old stub had a single checkbox, so
+     code that grabbed the first passed every offline test and failed on
+     every live run. A stub simpler than the page it stands for tests
+     nothing. */
   return `<table>
-    <tr><th>A</th><th>Booking No.</th><th>Reference</th><th>Seg. Type</th><th>Creditor Payable</th></tr>
-    ${rows.map((r) => `<tr>
-      <td><input type="checkbox" id="selected"></td>
-      <td>${r.booking || ""}</td><td>${r.reference}</td><td>INS</td><td>${r.amount}</td>
-    </tr>`).join("")}
+    <tr>
+      <th>D</th><th>R</th><th>Seg. Type</th><th>Booking No.</th><th>Reference</th>
+      <th>Issue/Conf. Date</th><th class="hidden">id</th><th class="hidden">bsp</th>
+      <th>Creditor Nett</th><th>Creditor Paid</th><th>Creditor Payable</th>
+      <th>Allocate</th><th>A</th>
+    </tr>
+    ${rows.map((r, i) => {
+      const seg = 82400 + i;
+      return `<tr>
+      <td><a href="#" title="${seg}">*</a></td>
+      <td><a href="#">R</a></td>
+      <td>INS</td>
+      <td>${r.booking || ""}</td>
+      <td class="col-wrap">${r.reference}</td>
+      <td>23-09-2026</td>
+      <td class="hidden">${89400 + i}</td>
+      <td class="hidden"><input type="checkbox" name="isForAutoBspPayment_${seg}" id="isForAutoBspPayment_${seg}"></td>
+      <td>${r.amount}</td>
+      <td>0.00</td>
+      <td>${r.amount}</td>
+      <td><input type="text" name="allocationAmount_${seg}" id="allocationAmount_${seg}" disabled readonly></td>
+      <td><input type="checkbox" name="segmentsToAllocate" id="segmentsToAllocate" value="${seg}"></td>
+    </tr>`;
+    }).join("")}
   </table>`;
 }
 
@@ -411,7 +438,16 @@ const travel = (policy, nett) => ({
     const { results } = await tk.tickMatchingRows(page, [travel("21087245", 700)]);
     assert.strictEqual(results.length, 1);
     assert.strictEqual(results[0].ticked, true);
-    assert.strictEqual(page.document.querySelector('input[type="checkbox"]').checked, true);
+
+    /* THE A COLUMN, and only it. The first checkbox in the row is a HIDDEN
+       isForAutoBspPayment_<segId>; ticking that instead is what made every
+       live run report a correct match as a row Tramada "would not keep
+       ticked". Asserting on the named box is what makes that impossible to
+       reintroduce. */
+    const a = page.document.querySelector('input[name="segmentsToAllocate"]');
+    assert.strictEqual(a.checked, true, "column A must be ticked");
+    const hidden = page.document.querySelector('input[name^="isForAutoBspPayment"]');
+    assert.strictEqual(hidden.checked, false, "the hidden BSP checkbox must be left alone");
   });
 
   await check("BR13 — a cent of rounding is inside tolerance", async () => {
@@ -439,9 +475,16 @@ const travel = (policy, nett) => ({
     assert.strictEqual(results[0].ticked, true);
     assert.strictEqual(results[0].amount, 700);
 
-    const boxes = Array.from(page.document.querySelectorAll('input[type="checkbox"]'));
-    assert.strictEqual(boxes[0].checked, false, "the 150.00 line must be left alone");
-    assert.strictEqual(boxes[1].checked, true);
+    // Column A on each row — not the hidden BSP boxes that also match
+    // input[type=checkbox] and come first.
+    const a = Array.from(page.document.querySelectorAll('input[name="segmentsToAllocate"]'));
+    assert.strictEqual(a.length, 2);
+    assert.strictEqual(a[0].checked, false, "the 150.00 line must be left alone");
+    assert.strictEqual(a[1].checked, true);
+    assert.ok(
+      Array.from(page.document.querySelectorAll('input[name^="isForAutoBspPayment"]')).every((b) => !b.checked),
+      "no hidden BSP checkbox should have been touched"
+    );
   });
 
   await check("BR15 — a policy absent from this page is left for a later page", async () => {
@@ -535,7 +578,9 @@ const travel = (policy, nett) => ({
       { reference: "21087245", amount: "700.00" },
       { reference: "21099988", amount: "250.50" },
     ]));
-    const boxes = Array.from(page.document.querySelectorAll('input[type="checkbox"]'));
+    // Column A on each row — the hidden BSP boxes also match
+    // input[type=checkbox] and come first in the row.
+    const boxes = Array.from(page.document.querySelectorAll('input[name="segmentsToAllocate"]'));
     // The first row refuses to hold its tick, however often it is clicked.
     Object.defineProperty(boxes[0], "checked", { get: () => false, set: () => {}, configurable: true });
 
@@ -555,7 +600,7 @@ const travel = (policy, nett) => ({
 
   await check("a tick that needs a second click is retried, not abandoned", async () => {
     const page = fakePage(grid([{ reference: "21087245", amount: "700.00" }]));
-    const box = page.document.querySelector('input[type="checkbox"]');
+    const box = page.document.querySelector('input[name="segmentsToAllocate"]');
     let clicks = 0;
     let held = false;
     Object.defineProperty(box, "checked", {
