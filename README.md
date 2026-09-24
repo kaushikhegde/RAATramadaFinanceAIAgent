@@ -221,10 +221,12 @@ Tramada**, with no approval click:
    confident now and saves it again, so it never makes a second one. When
    nothing is flagged any more, the email says *ready to issue*.
 4. Email the reconciliation, with the updated spreadsheet attached (step 18),
-   to `DVC_EMAIL_TO`. Behind the company proxy nothing can leave, so it is
-   written to the **outbox**, `/outbox` on the server, as a real `.eml`. Graph
-   and SMTP are there for when a network lets them out (`docs/email.md`). There is no default
-   recipient, so a sandbox run cannot mail TAccounts@raa.com.au by accident.
+   to `DVC_EMAIL_TO`, over **Microsoft Graph** or **Resend**, whichever `.env`
+   configures (`docs/email.md`); neither needs SMTP, which the company proxy
+   blocks. There is no default recipient, so a sandbox run cannot mail
+   TAccounts@raa.com.au by accident. With neither configured, the run still
+   reconciles and saves its Tramada session — it just says the email was not
+   sent, and why.
 
 **The agent never presses Issue.** Step 17 is Travel Accounts': they open the
 session, check it, tick Round Remaining if the email says to, and Issue. The

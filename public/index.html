@@ -3736,17 +3736,10 @@ function askMarkStale(){
     const r = dvcResult;
     const box = (body) => '<div style="margin-top:10px;padding:10px;border:1px solid var(--line);' +
       'border-radius:6px">' + body + '</div>';
-    /* Every email is in the outbox whatever happened to it — captured-only
-       (MAIL_TRANSPORT=outbox, which is how this runs behind the company proxy),
-       sent, or failed — so the line always links there. */
-    const outboxLink = ' <a href="/outbox" target="_blank" rel="noopener">Open the outbox</a>';
     const emailLine = r.email
       ? '<div class="muted" style="margin-top:6px">' + (r.email.sent
-          ? '✉ Emailed to ' + esc((r.email.to || []).join(', ')) + '.' + outboxLink
-          : r.email.captured
-            ? '✉ Email to the accounts team written to the outbox (not sent).' + outboxLink
-            : '<span style="color:var(--err)">✉ Not emailed — ' + esc(r.email.why || 'unknown') + '.</span>' +
-              outboxLink) +
+          ? '✉ Emailed to ' + esc((r.email.to || []).join(', ')) + '.'
+          : '<span style="color:var(--err)">✉ Not emailed — ' + esc(r.email.why || 'unknown') + '.</span>') +
         '</div>'
       : '';
     const list = (xs) => xs && xs.length

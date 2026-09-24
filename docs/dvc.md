@@ -95,7 +95,7 @@ screen, up to Save Session) and step 18 (the email) are:
 | `tramada-issue-payments.js` | the screen — chooser, search form, results grid, buttons. Shared with the Tokio Marine flow, which drives the same form for a different payment category. |
 | `tramada-dvc.js` | `runDvcPayment()` — steps 12 to 16 in order. Pages and clicks only. Never presses Issue. |
 | `recon-core.js` | every decision: `dvcTramadaGate` (is Tramada worth opening), `planDvcPayment` (which rows may be ticked), `decideDvcCommit` (Session or nothing), `dvcEmail` / `dvcReportCsv` (step 18's email and attachment), `resolveSelectOption`, `assertCardLabel`. |
-| `mailer.js` | step 18's delivery — SMTP via nodemailer, configured from `.env`. |
+| `mailer.js` | step 18's delivery — Microsoft Graph or Resend, both over HTTPS, configured from `.env`. |
 | `tramada-agency-cc.js`, `tools/make-dvc-bookings.js` | sandbox fixtures: bookings the Issue Payment grid actually lists. `npm run fixtures:dvc:tramada` |
 | `test/test-dvc-payment.js` | all of the above, offline. `npm run test:dvc:payment` |
 | `tools/probe-dvc-payment.js` | read-only. Opens the screen for this category and prints what is really there. `npm run probe:dvc` |

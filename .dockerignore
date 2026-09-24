@@ -20,4 +20,3 @@ created-bookings-*.json
 !README.md
 
 .graph-token-cache.json
-outbox

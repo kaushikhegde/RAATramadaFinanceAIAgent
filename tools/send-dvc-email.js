@@ -11,12 +11,12 @@
  * message that arrives here is the message a run would send, byte for byte,
  * apart from the Tramada half, which it did not do and says so.
  *
- * Why it exists: the first real test of an SMTP setting should not be the end
+ * Why it exists: the first real test of a mail setting should not be the end
  * of a run that has just saved a Payment Session. A relay that refuses the
- * login is found here, in two seconds, with nothing else riding on it.
+ * key or the login is found here, in two seconds, with nothing else riding on it.
  *
  * Sends to DVC_EMAIL_TO only — there is no default recipient (see mailer.js),
- * through Graph or SMTP, whichever .env configures (docs/email.md).
+ * through Graph or Resend, whichever .env configures (docs/email.md).
  */
 require("dotenv").config();
 const fs = require("fs");
@@ -74,20 +74,15 @@ function grid(file) {
     return;
   }
   const c = mailer.config();
-  if (!c.ready && c.transport !== "outbox") {
+  if (!c.ready) {
     console.error(`  Not sent — set ${c.missing.join(", ")} in .env (see .env.example).\n`);
     process.exit(1);
   }
   const res = await mailer.send(message);
-  if (res.captured) {
-    console.log(`  ✓ Captured in the outbox, not sent (MAIL_TRANSPORT=outbox): ${res.outboxId}\n` +
-      "    See it at http://localhost:<PORT>/outbox, or open the .eml in outbox/.\n");
-    return;
-  }
   if (!res.sent) {
     console.error(`  Not sent — ${res.why}\n`);
     process.exit(1);
   }
   console.log(`  ✓ Sent to ${res.to.join(", ")}` + (res.from ? ` from ${res.from}` : "") +
-    ` via ${res.via === "graph" ? "Microsoft Graph" : "SMTP"}.\n`);
+    ` via ${res.via === "graph" ? "Microsoft Graph" : "Resend"}.\n`);
 })().catch((err) => { console.error(`\n  ${err.message}\n`); process.exit(1); });

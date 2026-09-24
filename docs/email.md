@@ -1,4 +1,4 @@
-# The DVC emails — Microsoft Graph setup
+# The DVC emails — Microsoft Graph and Resend setup
 
 Every DVC run emails the accounts team (docs/dvc.md step 18):
 
@@ -6,35 +6,43 @@ Every DVC run emails the accounts team (docs/dvc.md step 18):
 - **ready to issue**, or **session saved — check before issuing**: the session is saved in Tramada;
 - **not entered**: the spreadsheets reconciled, but the Tramada run stopped, with the reason.
 
-## Right now: the outbox (`MAIL_TRANSPORT=outbox`)
+The company proxy blocks SMTP (port 587) entirely, so this project never uses
+it (measured 23-09-2026). Set `MAIL_TRANSPORT=graph` (or leave it unset with
+`GRAPH_CLIENT_ID` set) to send through **Microsoft Graph over HTTPS**, or
+`MAIL_TRANSPORT=resend` (or leave it unset with `RESEND_API_KEY` set and no
+`GRAPH_CLIENT_ID`) for **Resend over HTTPS**. Both need a network that lets
+them out; neither needs SMTP. With neither configured, `mailer.send` never
+throws — it returns `{ sent: false, why: "email is not configured — set …" }`,
+naming exactly what is missing, and the run still reconciles and saves its
+Tramada session regardless.
 
-The company proxy blocks both SMTP (port 587) and the Microsoft sign-in that
-Graph needs, so from this machine **no email can leave** (measured 23-09-2026).
-Every email is therefore written to the **outbox** instead:
+## The fast way: Resend
 
-- `outbox/<id>.eml` is the whole email, attachment included. It opens in
-  Outlook.
-- `outbox/<id>.json` records what happened to it: captured, sent, or failed and
-  why.
-- **`http://localhost:<PORT>/outbox`** on the running server lists them newest
-  first. Each can be read in place, downloaded as `.eml`, or have its
-  spreadsheet downloaded. The dashboard's DVC card links there after every run.
+No app registration, no device sign-in — one API key. RAA's Microsoft 365
+tenant is still the destination for step 18's real inbox, but Resend is the
+quickest way to prove the network, the message shape and the attachment work
+end to end before setting up Graph.
 
-A copy lands in the outbox even when a real transport is configured and the
-send works, or fails. So "did the run alert the accounts team, and what did it
-say?" is always answerable from one place.
+1. Sign up at <https://resend.com> and create an **API key** (Dashboard →
+   API Keys). Free tier is enough for step 18's volume.
+2. Put it in `.env`:
+   ```
+   RESEND_API_KEY=re_...
+   DVC_EMAIL_TO=you@example.com
+   ```
+   Leave `MAIL_FROM` unset at first — it defaults to Resend's shared sandbox
+   address `onboarding@resend.dev`, which delivers only to the address that
+   owns the API key (Resend's own account holder), so nothing can be sent
+   anywhere it should not be by accident. Once a sending domain is verified
+   in Resend (Dashboard → Domains), set `MAIL_FROM` to an address on it and
+   Resend will deliver to any recipient.
+3. `npm run email:dvc` (see below) sends the fixture reconciliation to
+   `DVC_EMAIL_TO` for real, over Resend.
 
-`npm run email:dvc` captures one from the fixture files; `-- --westpac … --tramada … --date …`
-takes any pair. With `RECON_STORE_DIR` set (Docker), the outbox is
-`$RECON_STORE_DIR/outbox`, on the volume. `MAIL_OUTBOX_DIR` overrides both.
+`GRAPH_CLIENT_ID` takes precedence when both are set — Resend is the
+fallback, not the override.
 
-## Later: really sending
-
-Set `MAIL_TRANSPORT=graph` (or remove it with `GRAPH_CLIENT_ID` set) to send
-through **Microsoft Graph over HTTPS**, or `MAIL_TRANSPORT=smtp` for SMTP. Both
-need a network that lets them out. The rest of this page is the Graph setup.
-
-## One-time setup (about five minutes)
+## One-time setup for Microsoft Graph (about five minutes)
 
 ### 1. Register an app in Microsoft Entra
 
@@ -64,7 +72,7 @@ GRAPH_TENANT=consumers           # personal Outlook.com; RAA: their tenant id or
 DVC_EMAIL_TO=cruiseControl4523@outlook.com
 ```
 
-`GRAPH_CLIENT_ID` takes precedence over any `SMTP_*` settings.
+`GRAPH_CLIENT_ID` takes precedence over any `RESEND_*` settings.
 
 ### 3. Sign the mailbox in, once
 
@@ -103,6 +111,10 @@ does not restart on a `.env` change.
 | `the saved Microsoft sign-in has expired or been revoked` | run it again: the password changed, or the refresh token was revoked |
 | `Microsoft Graph refused the email (HTTP 403 …)` | `Mail.Send` is missing from the app's permissions, or not consented |
 | `Microsoft Graph refused the email (HTTP 400 …)` | the message itself; the body shape is pinned in `test/test-dvc-payment.js` |
+| `Resend refused the email (HTTP 401 …)` | `RESEND_API_KEY` is wrong or revoked |
+| `Resend refused the email (HTTP 403 …)` | `MAIL_FROM` is not on a domain verified in Resend, and it is not the sandbox `onboarding@resend.dev` address either |
+| `Resend refused the email (HTTP 422 …)` | the message itself; the body shape is pinned in `test/test-dvc-payment.js` |
+| `Resend did not answer within 20 seconds` / `could not reach Resend` | the network, not the API key — Resend is plain HTTPS on 443 |
 | `email is not configured — set …` | the named variables are missing from `.env` |
 
 A lost email never fails a run. By the time it is sent, the reconciliation is

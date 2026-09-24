@@ -26,8 +26,8 @@ let pass = 0, fail = 0;
 /* The tally, from one place. The jsdom block at the end finishes
    asynchronously, so "print the totals and exit" cannot simply be the last
    statement in the file. */
-/* Checks that have to await something (the outbox writes files) push their
-   promise here; the tally waits for them, so none can be skipped by exiting. */
+/* Checks that have to await something (a mailer send, the jsdom block) push
+   their promise here; the tally waits for them, so none can be skipped by exiting. */
 const pending = [];
 function finish() {
   Promise.all(pending).catch((err) => { fail++; console.log(`  ✗ an async check threw: ${err && err.stack}`); })
@@ -574,24 +574,23 @@ console.log("\nmailer.js — configuration and delivery, offline");
   const mailer = require("../mailer");
   /* NO DEFAULT RECIPIENT. A sandbox run must never mail TAccounts@raa.com.au
      because somebody forgot a variable. */
-  /* NOTHING SET IS THE OUTBOX, which sends nothing and so needs nothing. A
-     real transport chosen by name still says what it is missing. */
-  const bare = mailer.config({ MAIL_TRANSPORT: "smtp" });
-  check("SMTP chosen with nothing set is not ready", bare.ready, false);
-  check("...and names what is missing", bare.missing, ["DVC_EMAIL_TO", "SMTP_HOST", "MAIL_FROM (or SMTP_USER)"]);
-  const half = mailer.config({ SMTP_HOST: "smtp.example", SMTP_USER: "a@b", DVC_EMAIL_TO: "x@y" });
-  check("a user with no password is named, not discovered at the relay", half.missing, ["SMTP_PASS"]);
-  const full = mailer.config({ SMTP_HOST: "smtp.example", SMTP_USER: "a@b", SMTP_PASS: "p",
-    DVC_EMAIL_TO: "x@y; z@w" });
-  check("a full set is ready, with both recipients", [full.ready, full.to, full.from, full.port],
-    [true, ["x@y", "z@w"], "a@b", 587]);
+  // A transport chosen by name, nothing else set, says what it is missing.
+  const bare = mailer.config({ MAIL_TRANSPORT: "resend" });
+  check("Resend chosen with nothing set is not ready", bare.ready, false);
+  check("...and names what is missing", bare.missing, ["DVC_EMAIL_TO", "RESEND_API_KEY"]);
+  const full = mailer.config({ RESEND_API_KEY: "re_test", DVC_EMAIL_TO: "x@y; z@w" });
+  check("an API key and a recipient are ready, with both recipients, and Resend's sandbox from address by default",
+    [full.ready, full.to, full.from], [true, ["x@y", "z@w"], "onboarding@resend.dev"]);
+  check("MAIL_FROM overrides the sandbox default",
+    mailer.config({ RESEND_API_KEY: "re_test", DVC_EMAIL_TO: "x@y", MAIL_FROM: "dvc@raa.com.au" }).from,
+    "dvc@raa.com.au");
 
   /* MICROSOFT GRAPH (23-09-2026) — this machine's network blocks SMTP on 587,
      so the default road out is HTTPS. A client id is all it needs from .env;
      the sign-in itself lives in the token cache, never a password. */
   const graph = mailer.config({ GRAPH_CLIENT_ID: "00000000-1111-2222-3333-444444444444", DVC_EMAIL_TO: "x@y",
-    SMTP_HOST: "smtp.example" });
-  check("a Graph client id wins over SMTP, and needs no password", [graph.transport, graph.ready, graph.graphTenant],
+    RESEND_API_KEY: "re_test" });
+  check("a Graph client id wins over Resend, and needs no password", [graph.transport, graph.ready, graph.graphTenant],
     ["graph", true, "consumers"]);
   check("...and a tenant can be named for a Microsoft 365 organisation",
     mailer.config({ GRAPH_CLIENT_ID: "x", GRAPH_TENANT: "raa.com.au", DVC_EMAIL_TO: "x@y" }).graphTenant, "raa.com.au");
@@ -615,39 +614,30 @@ console.log("\nmailer.js — configuration and delivery, offline");
     built.attachment.content);
   check("and it is kept in Sent Items", body.saveToSentItems, true);
 
-  /* THE OUTBOX (23-09-2026) — the company proxy blocks every way out, so each
-     email is also written where it can be seen: a real .eml, a .json saying
-     what happened, and the attachment. MAIL_TRANSPORT=outbox captures only. */
-  const os = require("os");
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dvc-outbox-"));
-  const env = { MAIL_TRANSPORT: "outbox", MAIL_OUTBOX_DIR: dir, DVC_EMAIL_TO: "accounts@example.test",
-    SMTP_HOST: "smtp.example" };
-  check("MAIL_TRANSPORT=outbox wins over a configured SMTP server", mailer.config(env).transport, "outbox");
-  check("...and needs nothing else to be ready", mailer.config({ MAIL_TRANSPORT: "outbox" }).ready, true);
-  check("nothing configured at all falls back to the outbox, not to silence", mailer.config({}).transport, "outbox");
+  /* RESEND'S OWN BODY SHAPE — the HTTPS peer of graphMessage, same reason: a
+     malformed request is a bare 400 from Resend too, and it carries the
+     sender explicitly, since Resend (unlike Graph) has no signed-in mailbox
+     to infer one from. */
+  const rbody = mailer.resendMessage(built, ["a@b", "c@d"], "dvc@raa.com.au");
+  check("the recipients and sender are plain addresses, not envelope objects",
+    [rbody.to, rbody.from], [["a@b", "c@d"], "dvc@raa.com.au"]);
+  check("the body is the HTML email", rbody.html, built.html);
+  const ratt = rbody.attachments[0];
+  check("the spreadsheet is a base64 attachment", ratt.filename, "dvc-reconciliation-2026-09-04.csv");
+  check("...that decodes back to the CSV exactly", Buffer.from(ratt.content, "base64").toString("utf8"),
+    built.attachment.content);
+
+  /* NOT CONFIGURED IS A REASON, NOT AN ERROR — `send` never throws even with
+     nothing set. The reconciliation and any Tramada session are already done
+     by the time step 18 runs, and a lost email must not fail work that is
+     complete (the same rule the run store keeps, §6b). */
+  check("nothing configured at all still names something to fix, not silence",
+    mailer.config({}).missing, ["DVC_EMAIL_TO", "RESEND_API_KEY"]);
   pending.push((async () => {
-    const res = await mailer.send(built, { env });
-    check("a captured email is not claimed as sent", [res.sent, res.captured, res.via], [false, true, "outbox"]);
-    const list = mailer.listOutbox(env);
-    check("it is listed in the outbox", list.map((m) => [m.subject, m.via, m.sent]), [[built.subject, "outbox", false]]);
-    const eml = fs.readFileSync(mailer.outboxFile(res.outboxId, "eml", env), "utf8");
-    /* The subject's em dash is MIME-encoded in the header (=?UTF-8?Q?…?=), as
-       every mail client expects — so the header is checked for being there,
-       and the subject itself is read back off the .json. */
-    ok("the .eml is a real email to the accounts team, with a subject",
-      /^To: accounts@example\.test$/m.test(eml) && /^Subject: =\?UTF-8\?Q\?AI_Agent_DVC_reconciliation/m.test(eml),
-      eml.slice(0, 400));
-    ok("...carrying the spreadsheet", /filename=dvc-reconciliation-2026-09-04\.csv/.test(eml.replace(/"/g, "")));
-    check("the attachment is kept byte for byte",
-      fs.readFileSync(mailer.outboxFile(res.outboxId, "attachment", env), "utf8"), built.attachment.content);
-    /* An id is checked against its own shape before any path is built. */
-    check("a crafted id reads nothing", [mailer.outboxFile("../../.env", "eml", env),
-      mailer.outboxFile(res.outboxId, "js", env)], [null, null]);
-    // A real send that FAILS is kept too, marked failed, with the reason.
-    const failed = await mailer.send(built, { env: { ...env, MAIL_TRANSPORT: "smtp", SMTP_HOST: "" } });
-    check("a send that could not happen is kept, marked not sent",
-      [failed.sent, mailer.listOutbox(env).length], [false, 2]);
-    fs.rmSync(dir, { recursive: true, force: true });
+    const res = await mailer.send(built, { env: {} });
+    check("an unconfigured send is reported, never thrown", [res.sent, res.skipped],
+      [false, true]);
+    ok("...and names what is missing", /DVC_EMAIL_TO/.test(res.why) && /RESEND_API_KEY/.test(res.why), res.why);
   })());
 }
 console.log("\nwhat changed since the last upload of this day");
