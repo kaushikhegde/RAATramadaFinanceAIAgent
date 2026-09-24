@@ -269,7 +269,40 @@ accept an override. Worth one sentence of confirmation before go-live.
 
 ---
 
-## The real answer: nothing is creditor-payable in this sandbox, for anyone
+## RAA's own example booking does not appear either (24-Sep-2026)
+
+Megan gave booking **13817** as the one she did it on. Its Tokio segment is
+`82457`, and it is set up exactly as ours:
+
+| | booking 13817 (Megan's) | booking 15875 (ours) |
+|---|---|---|
+| Payment Type | `PRE_PAID` | `PRE_PAID` |
+| Creditor | `[TOKIOMARINE] Tokio Marine` | same |
+| Invoice | `I.0000010835`, CI Invoice, $250.00 | `I.0000010836`, CI Invoice, $100.00 |
+| Client receipt | **none** | `R.0000009958`, $100 allocated |
+| On Issue Payments | **no** | **no** |
+
+Searched all creditors, 01-09-2026 → 30-09-2026 (covering her segment's
+23-09-2026 creation), branch cleared: no grid, no rows, and `13817` appears
+nowhere on the page.
+
+So the booking RAA points to as working does not show on that screen for our
+login either. Two readings, and only RAA can tell them apart:
+
+1. there is a step after the invoice that is habitual enough not to have made
+   it into the notes; or
+2. it is a **permissions / branch difference between logins**. We are signed
+   in as `khegde`, whose home branch is `ADL`, and Level 1 Branch
+   auto-populates to `[ADL] RAA Adelaide` on that form every time. Clearing
+   the dropdown may not clear the underlying entitlement.
+
+The second is worth testing first, because it costs RAA one screenshot: if
+Megan opens Issue Payments on her own login, picks Tokio Marine and sees
+booking 13817 listed, the difference is us, not the data.
+
+---
+
+## Earlier: nothing is creditor-payable in this sandbox, for anyone
 
 Measured 24-Sep-2026. Three searches, widening from our booking to the whole
 environment, and the last one settles it.

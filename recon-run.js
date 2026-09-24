@@ -1889,7 +1889,25 @@ async function runCombinedReconciliation(o = {}) {
      report that ran the wrong automation and then blamed the data. It gets its
      own flow now, in the same run. */
   const onThePage = order.filter((k) => core.REPORTS[k].recPayType);
-  const ownFlow = order.filter((k) => !core.REPORTS[k].recPayType);
+  const ownFlow = order.filter((k) => core.REPORTS[k].issuesReceipt);
+  /* A REPORT THAT FITS NEITHER BUCKET STOPS THE RUN RATHER THAN BEING GUESSED
+     AT. `ownFlow` used to be "everything with no recPayType", which was only
+     ever a description of IPSI — the DVC report has no recPayType either, and
+     under the old line a DVC file would have been handed to
+     `runIpsiReconciliation` and matched against Tramada's Finance Receipts
+     screens. That is the same wrong-automation-then-blame-the-data bug the IPSI
+     split was made to fix, so the buckets are named by what a report DOES and
+     anything unplaced refuses out loud. DVC is `offline: true`: it reconciles
+     two spreadsheets against each other and never opens a browser, so it has no
+     place in a run that exists to drive one. */
+  const unplaced = order.filter((k) => !onThePage.includes(k) && !ownFlow.includes(k));
+  if (unplaced.length) {
+    throw new Error(
+      `${unplaced.map((k) => core.REPORTS[k].title).join(", ")} cannot run alongside another report — ` +
+      `${unplaced.length === 1 ? "it reconciles" : "they reconcile"} without a browser and ` +
+      `${unplaced.length === 1 ? "has" : "have"} no statement page to share. Run it on its own.`
+    );
+  }
 
   say(order.map((k) => `${rowsOf(k).length} ${core.REPORTS[k].title}`).join(" and ") + ". " +
     (onThePage.length ? `${onThePage.map((k) => core.REPORTS[k].title).join(", ")} on one statement page` : "") +

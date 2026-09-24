@@ -10,49 +10,22 @@
  * BR16 and BR18: it never clicks Issue. That is Travel Accounts' to do, after
  * they have resolved the exceptions and entered the payment total.
  *
- * Every selector here was measured on 18-Sep-2026 and is written down in
- * docs/tokio-marine.md. The decisions — which line matches, what the labels
- * read — are tokio-core.js, which is pure and tested.
+ * THE SCREEN ITSELF IS `tramada-issue-payments.js`. DVC drives the same form
+ * for a different payment category (docs/dvc.md steps 12-17), and the selectors
+ * were measured once — 18-09-2026, written up in docs/tokio-marine.md — so they
+ * live in one file rather than two that drift. What stays here is the part that
+ * is about Tokio: which creditor, which dates, which sort order. The decisions
+ * are tokio-core.js, which is pure and tested.
  */
 
 require("dotenv").config();
-const { chromium } = require("playwright");
 const core = require("./tokio-core");
+const screen = require("./tramada-issue-payments");
 
-const TRAMADA_BASE_URL =
-  process.env.TRAMADA_URL || "https://asp.tramada.com.au/ttms/raatravelsandbox";
-const CDP_HOST = process.env.CDP_HOST || "127.0.0.1";
-const CDP_PORT = parseInt(process.env.CDP_PORT || "9222", 10);
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-/* Measured 18-Sep-2026 — finance/finance-payments-issue.htm. The two date
-   fields are named "…TransactionDate" although their labels read "Segment
-   Created Date"; going by the label finds nothing. */
-const SEARCH = Object.freeze({
-  paymentType: "#paymentType",
-  bankAccount: "#agencyBankAccount",
-  creditor: "#creditor",
-  level1Branch: "#level1Branch",
-  fromCreated: "#fromTransactionDate",
-  toCreated: "#toTransactionDate",
-  sortBy: "#sortBy",
-  sortOrder: "#sortOrder",
-  go: "#goButton",
-});
-
-const CHOOSER = Object.freeze({
-  issueRadio: "#form_selection_issue",
-  continue: "#form_continueButton",
-});
-
-/** dd-mm-yyyy, the format every other Tramada date field in this project uses. */
-function tramadaDate(d) {
-  const x = d instanceof Date ? d : new Date(d);
-  if (Number.isNaN(x.getTime())) throw new Error("tramadaDate needs a date");
-  const p = (n) => String(n).padStart(2, "0");
-  return `${p(x.getDate())}-${p(x.getMonth() + 1)}-${x.getFullYear()}`;
-}
+const {
+  TRAMADA_BASE_URL, SEARCH, CHOOSER, sleep, tramadaDate,
+  openBrowser, assertSignedIn, openIssuePayments, optionsOf, pick,
+} = screen;
 
 /** Step 10 — "From Segment Created Date to be 1st of the previous month". */
 function firstOfPreviousMonth(today = new Date()) {
@@ -64,84 +37,6 @@ function fourWeeksOut(today = new Date()) {
   const d = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   d.setDate(d.getDate() + 28);
   return d;
-}
-
-/* ------------------------------------------------------------- the browser */
-
-async function openBrowser(onProgress = () => {}) {
-  onProgress(5, `Connecting to CDP Chrome at ${CDP_HOST}:${CDP_PORT}...`);
-  try {
-    return await chromium.connectOverCDP(`http://${CDP_HOST}:${CDP_PORT}`);
-  } catch (err) {
-    throw new Error(
-      `Could not reach the browser on ${CDP_HOST}:${CDP_PORT}. Start it with ` +
-        `"npm run start:chrome" and sign into Tramada there. (${err.message})`
-    );
-  }
-}
-
-async function assertSignedIn(page) {
-  if (/login/i.test(await page.title())) {
-    throw new Error(
-      "That browser is signed out of Tramada. Sign in there and run again — " +
-        "this run never types a credential (CLAUDE.md §5)."
-    );
-  }
-}
-
-/* ----------------------------------------------------------- steps 9 and 10 */
-
-/**
- * Step 9. The chooser is two radios and a Continue.
- *
- * The radio needs a REAL click: setting `.checked` from script did not stick,
- * and Continue with it unset returns the same chooser page looking like
- * nothing happened.
- */
-async function openIssuePayments(page, onProgress = () => {}) {
-  onProgress(15, "Finance → Payments → Issue Payment...");
-  await page.goto(`${TRAMADA_BASE_URL}/finance/finance-payments.htm`, {
-    waitUntil: "domcontentloaded",
-  });
-  await assertSignedIn(page);
-
-  await page.waitForSelector(CHOOSER.issueRadio, { timeout: 15000 });
-  await page.click(CHOOSER.issueRadio);
-
-  const picked = await page.isChecked(CHOOSER.issueRadio).catch(() => false);
-  if (!picked) {
-    throw new Error(
-      'Could not select "Issue Payment" on the Finance Payments chooser. ' +
-        "Continuing from here would silently search instead of issuing."
-    );
-  }
-
-  await Promise.all([
-    page.waitForLoadState("domcontentloaded"),
-    page.click(CHOOSER.continue),
-  ]);
-  await page.waitForSelector(SEARCH.paymentType, { timeout: 20000 });
-
-  if (!/finance-payments-issue/i.test(page.url())) {
-    throw new Error(`Expected the Issue Payments screen, landed on ${page.url()}`);
-  }
-}
-
-/** Set a select by option VALUE, and say what was on offer when it will not take. */
-async function pick(page, selector, value, label) {
-  const ok = await page
-    .selectOption(selector, value)
-    .then(() => true)
-    .catch(() => false);
-  if (!ok) {
-    const offered = await page
-      .$$eval(selector + " option", (os) => os.map((o) => `${o.value}=${o.text.trim()}`))
-      .catch(() => []);
-    throw new Error(
-      `Could not set ${label} (${selector}) to "${value}". Offered: ${offered.join(" | ")}`
-    );
-  }
-  await sleep(200);
 }
 
 /**
@@ -190,7 +85,7 @@ async function searchCreditorPayments(page, opts = {}, onProgress = () => {}) {
 
   /* CREDITOR CODE IS AN AUTOCOMPLETE, AND THE TYPED TEXT IS NOT A CODE.
    *
-   * Measured 18-Sep-2026: typing "Tokio" and pressing Go returns
+   * Measured 18-09-2026: typing "Tokio" and pressing Go returns
    * "Creditor Code is invalid" — the field has to hold the resolved entry the
    * dropdown offers, not what was typed. The suggestion list lives in
    *
@@ -959,15 +854,19 @@ async function runTokioReconciliation({
 }
 
 module.exports = {
+  // The screen, re-exported so a caller (and test/test-tokio-dates.js) still
+  // has one place to reach for it.
   TRAMADA_BASE_URL,
   SEARCH,
   CHOOSER,
   tramadaDate,
-  firstOfPreviousMonth,
-  fourWeeksOut,
   openBrowser,
   assertSignedIn,
   openIssuePayments,
+  optionsOf,
+  // Tokio's own.
+  firstOfPreviousMonth,
+  fourWeeksOut,
   searchCreditorPayments,
   // Steps 11-14
   PAYMENT,

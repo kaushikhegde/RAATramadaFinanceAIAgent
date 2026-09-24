@@ -40,6 +40,16 @@ const xlsxWrite = require("./xlsx-write");
 const store = require("./run-store");
 const { runReconciliation, runMintReconciliation, runCombinedReconciliation, runTramadaLogin } = require("./recon-run");
 const { runIpsiReconciliation } = require("./tramada-ipsi");
+// docs/dvc.md steps 12-16. Separate from the reconciliation above it: the
+// matching is offline and the session drives the shared browser, and only the
+// second of those needs the run lock.
+const { runDvcPayment } = require("./tramada-dvc");
+// Step 18 — the email to Travel Accounts.
+const mailer = require("./mailer");
+/* BR12's Issue Payment card as Tramada's own dropdown spells it (four dots,
+   hyphens — measured 22-09-2026). A masked LABEL: the BIN and last four that
+   Tramada already shows everyone, never a card number (§4). */
+const DVC_CARD_DEFAULT = "555003....0457 CA - A - Westpac DVC VCC";
 const paymentsChat = require("./payments-chat");
 const tokioCore = require("./tokio-core");
 const tramadaTokio = require("./tramada-tokio");
@@ -491,6 +501,72 @@ app.post("/api/tokio/email", express.json({ limit: "48mb" }), async (req, res) =
   }
 });
 
+/* ── the outbox: every email the DVC run wrote ───────────────────────────── */
+
+/**
+ * `/outbox` — every email the agent was asked to send, whether it went, failed
+ * or was only captured (MAIL_TRANSPORT=outbox). The company proxy blocks mail
+ * from this machine entirely (23-09-2026), so this page is where "did the run
+ * alert the accounts team, and what did it say?" is answered.
+ *
+ * Behind the same sign-in as everything else (`requireAuth` above). The ids are
+ * checked against their own shape in mailer.outboxFile before any path is
+ * built, so a crafted id cannot read anything outside the outbox.
+ */
+app.get("/outbox", (req, res) => {
+  const esc = (t) => String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const mails = mailer.listOutbox();
+  const c = mailer.config();
+  const badge = (m) => m.sent ? `<span class="b ok">sent via ${esc(m.via)}</span>`
+    : m.via === "outbox" ? '<span class="b cap">captured — not sent</span>'
+    : `<span class="b err">not sent</span>`;
+  const items = mails.map((m) => `
+    <details${mails[0] === m ? " open" : ""}>
+      <summary>${badge(m)} <b>${esc(m.subject)}</b>
+        <span class="muted">${esc(new Date(m.at).toLocaleString("en-AU"))} · to ${esc((m.to || []).join(", ") || "(DVC_EMAIL_TO not set)")}</span></summary>
+      ${m.why ? `<p class="muted">${esc(m.why)}</p>` : ""}
+      <p><a href="/outbox/${encodeURIComponent(m.id)}.eml">Download .eml</a>
+        ${m.attachment ? ` · <a href="/outbox/${encodeURIComponent(m.id)}/attachment">${esc(m.attachment.filename)}</a>` : ""}</p>
+      <div class="mail">${m.html || `<pre>${esc(m.text)}</pre>`}</div>
+    </details>`).join("");
+  res.type("html").send(`<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>DVC outbox</title>
+<style>
+  :root{--bg:#f6f7fb;--fg:#1d2433;--muted:#667085;--line:#d5dbe6;--card:#fff}
+  @media (prefers-color-scheme:dark){:root{--bg:#12151c;--fg:#e6e9ef;--muted:#98a2b3;--line:#2c3342;--card:#1a1f29}}
+  body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:14px/1.5 "Segoe UI",Arial,sans-serif}
+  main{max-width:980px;margin:0 auto}
+  details{background:var(--card);border:1px solid var(--line);border-radius:8px;margin:10px 0;padding:10px 14px}
+  summary{cursor:pointer} .muted{color:var(--muted)} .mail{border-top:1px solid var(--line);margin-top:8px;padding-top:8px;overflow-x:auto}
+  .b{font-size:12px;padding:1px 8px;border-radius:10px;margin-right:6px} .ok{background:#dcfae6;color:#067647}
+  .cap{background:#e0eaff;color:#3538cd} .err{background:#fee4e2;color:#b42318} a{color:#3538cd}
+</style></head><body><main>
+<h1>DVC outbox</h1>
+<p class="muted">Every email the DVC run was asked to send, newest first. Mode: <b>${esc(c.transport)}</b>
+${c.transport === "outbox" ? "— emails are captured here and not sent." : ""}
+Stored in <code>${esc(c.outboxDir)}</code>.</p>
+${items || '<p class="muted">Nothing yet. Run a DVC reconciliation, or <code>npm run email:dvc</code>.</p>'}
+</main></body></html>`);
+});
+
+app.get("/outbox/:id.eml", (req, res) => {
+  const file = mailer.outboxFile(req.params.id, "eml");
+  if (!file) return res.status(404).send("no such email");
+  res.setHeader("Content-Type", "message/rfc822");
+  res.setHeader("Content-Disposition", `attachment; filename="${req.params.id}.eml"`);
+  res.send(fs.readFileSync(file));
+});
+
+app.get("/outbox/:id/attachment", (req, res) => {
+  const meta = mailer.outboxFile(req.params.id, "json");
+  const file = mailer.outboxFile(req.params.id, "attachment");
+  if (!meta || !file) return res.status(404).send("that email has no attachment");
+  const att = JSON.parse(fs.readFileSync(meta, "utf8")).attachment || {};
+  res.setHeader("Content-Type", att.contentType || "application/octet-stream");
+  res.setHeader("Content-Disposition", `attachment; filename="${String(att.filename || "attachment").replace(/"/g, "")}"`);
+  res.send(fs.readFileSync(file));
+});
 
 /* ── the working file ────────────────────────────────────────────────────── */
 
@@ -833,7 +909,16 @@ function handleReconParse(session, msg) {
      distinction nobody outside this file could have predicted, on a file the
      guide only ever calls "a spreadsheet". */
   const source = reconCore.REPORTS[msg.source] ? msg.source : "mint";
-  const reply = (extra) => send(session, { type: "recon_parsed", source, name, ...extra });
+  /* WHICH HALF OF A TWO-FILE REPORT THIS IS. DVC uploads the Westpac DVC report
+     and Tramada's Agency CC Reimbursement export onto one card, and they have
+     different columns entirely — reading one with the other's parser gives
+     "the sheet has no column for: transaction amount (aud)" about a file that
+     is perfectly well formed. The page says which slot it dropped the file in;
+     nothing here guesses from the headings, because the two files are one
+     revision away from sharing one. */
+  const pairs = reconCore.REPORTS[source].pairs;
+  const part = pairs && pairs[msg.part] ? msg.part : (pairs ? Object.keys(pairs)[0] : "");
+  const reply = (extra) => send(session, { type: "recon_parsed", source, part, name, ...extra });
 
   // ~8 MB of base64 is ~6 MB of file. A daily settlement is tens of kilobytes.
   if (!msg.base64 || String(msg.base64).length > 8 * 1024 * 1024) {
@@ -846,7 +931,11 @@ function handleReconParse(session, msg) {
     // Kept before it is parsed. The bytes are the only thing that settles a
     // disputed figure three weeks later, and they are already here — asking the
     // page to send them a second time would be sending the same file twice.
-    keep(session, source, name, buf);
+    /* Kept under the SLOT, not just the report. A DVC run has two files and the
+       archive has to be able to say which of them was which weeks later — one
+       key for both would have the Tramada export quietly overwrite the Westpac
+       report on the run record (§6b: keep the bytes). */
+    keep(session, part ? `${source}:${part}` : source, name, buf);
     // A zip starts "PK". That is the file's own container saying what it is —
     // not a guess from its name or its contents.
     const isZip = buf.length > 1 && buf[0] === 0x50 && buf[1] === 0x4b;
@@ -855,8 +944,10 @@ function handleReconParse(session, msg) {
       bpay: reconCore.parseReconRows,
       travelpay: reconCore.parseTravelPayRows,
       ipsi: reconCore.parseIpsiRows,
-    }[source] || reconCore.parseMintRows;
-    const { rows, problems, settlement, columns } = parse(sheet.headers, sheet.rows);
+      "dvc:westpac": reconCore.parseDvcRows,
+      "dvc:tramada": reconCore.parseTramadaCcRows,
+    }[part ? `${source}:${part}` : source] || reconCore.parseMintRows;
+    const { rows, problems, settlement, columns, missingColumns } = parse(sheet.headers, sheet.rows);
 
     /* `columns` is the file's own headings, in its own order. It goes back to
        the page so the inbox can show the spreadsheet as Finance wrote it, and
@@ -871,6 +962,11 @@ function handleReconParse(session, msg) {
        reason the run itself doesn't already handle. */
     reply({
       rows, problems, settlement, columns: columns || sheet.headers,
+      /* BR01's roll call. Reported rather than enforced: a DVC report with no
+         Segment Type column still reconciles on booking number and amount, it
+         just runs without step 5's sense check — and the card has to be able to
+         say so rather than the run quietly being less sure than it looks. */
+      missingColumns: missingColumns || [],
       format: isZip ? "xlsx" : "csv",
       headers: sheet.headers, sheetRows: sheet.rows.length,
     });
@@ -1023,6 +1119,14 @@ async function handleReconRun(session, msg) {
      rather than doing the most dangerous available thing. */
   const report = reconCore.REPORTS[msg.source];
   if (report && report.issuesReceipt) return handleIpsiRun(session, msg);
+  /* OFFLINE FIRST, and before the `!report.files` line below. DVC files nothing
+     either, so it would otherwise fall into `handleMintRun` — which opens a
+     browser, creates or finds a bank statement page and matches every row
+     against it. A DVC card line can never be on that page: the money moved on a
+     virtual card and the reconciliation is against Tramada's own export, not
+     against a statement. It would have reported an entire correct file as
+     unreconciled, having taken the browser for several minutes to do it. */
+  if (report && report.offline) return handleDvcRun(session, msg);
   if (report && !report.files) return handleMintRun(session, msg);
 
   const { rows, problems } = reconCore.parseReconCsv(csvOf(msg.rows));
@@ -1154,6 +1258,20 @@ async function handleCombinedRun(session, msg) {
     send(session, { type: "recon_done", error: "none of those reports had anything that could be run" });
     return;
   }
+  /* AN OFFLINE REPORT HAS NO PLACE IN A COMBINED RUN, and this is said before
+     the run record is opened rather than after. `runCombinedReconciliation`
+     refuses it too — before it files anything — but a run recorded, started and
+     then abandoned reads on the overview as a reconciliation that failed, when
+     nothing was ever attempted. DVC also needs its second file, which this
+     frame has no room for. */
+  const offline = Object.keys(byReport).filter((k) =>
+    byReport[k].length && reconCore.REPORTS[k] && reconCore.REPORTS[k].offline);
+  if (offline.length) {
+    send(session, { type: "recon_done",
+      error: `${offline.map((k) => reconCore.REPORTS[k].title).join(", ")} cannot run alongside ` +
+        "another report — it reconciles two spreadsheets and has no statement page to share. Run it on its own." });
+    return;
+  }
   if (runLock.heldBy()) {
     send(session, { type: "recon_progress", message: `${runLock.heldBy()} is running a reconciliation — this one was not started.`, ok: false });
     return;
@@ -1276,6 +1394,370 @@ async function handleIpsiRun(session, msg) {
   }
 }
 
+/**
+ * DVC: two spreadsheets against each other, then the Payment Session.
+ *
+ * The Westpac DVC report and Tramada's own Agency CC Reimbursement export are
+ * both uploaded, `reconcileDvc` matches them, and the answer is arithmetic. So:
+ *
+ *   - THE MATCHING TAKES NO RUN LOCK. The lock exists because there is one
+ *     shared Chrome and a second flow closes the first one's page mid-run with
+ *     real receipts already filed (CLAUDE.md §6). Matching two spreadsheets
+ *     touches no browser; only the Tramada half after it takes the lock
+ *     (`dvcPaymentPhase`).
+ *   - WHEN THE SPREADSHEETS RECONCILE WITH NO ERRORS it goes straight on to
+ *     steps 12-16 and saves the session; otherwise it only emails the errors.
+ *     Either way it emails (step 18). It never presses Issue.
+ *
+ * What it does do is record the run like every other one (§6b) — the verdicts
+ * are what Travel Accounts works from, and "what the agent decided on the 4th"
+ * is exactly the thing somebody asks about three weeks later.
+ */
+async function handleDvcRun(session, msg) {
+  const uploaded = Array.isArray(msg.rows) ? msg.rows : [];
+  const costings = Array.isArray(msg.tramadaRows) ? msg.tramadaRows : [];
+  const say = (message, ok) => send(session, { type: "recon_progress", message, ok });
+
+  if (!uploaded.length) {
+    send(session, { type: "recon_done", error: "nothing in that Westpac DVC report could be checked" });
+    return;
+  }
+  /* BOTH FILES, OR NOTHING. With only the Westpac side every line comes back
+     "Booking number not found" — a full screen of red about a report that is
+     perfectly correct, describing a file nobody uploaded. The card refuses
+     first; this is the gate a run cannot be talked past. */
+  if (!costings.length) {
+    send(session, { type: "recon_done",
+      error: "the Tramada Agency CC Reimbursement export is missing — a DVC run needs both files, " +
+        "or every line reads as a booking that is not in Tramada" });
+    return;
+  }
+
+  /* Step 1 / BR02 — one business day. The client's own spreadsheet stacks a
+     month of daily reports in one tab, because that is what dropping each day's
+     CSV into it produces; reconciling all of it would match August's cards
+     against a Tramada export pulled for one day. Excluded rows are named, never
+     silently dropped. */
+  const { rows, excluded } = reconCore.filterDvcSettlementDate(uploaded, msg.statementDate);
+  if (excluded.length) {
+    say(`${excluded.length} line${excluded.length === 1 ? "" : "s"} in the report settled on another ` +
+      `day and ${excluded.length === 1 ? "was" : "were"} left out of this run.`, true);
+  }
+  if (!rows.length) {
+    send(session, { type: "recon_done", error: `none of the report's lines settled on ${msg.statementDate}` });
+    return;
+  }
+
+  const run = openRun(session, "dvc", msg, rows.map((r) => ({ ...r, src: "dvc" })));
+  const cb = callbacks(session, run);
+  /* WHAT CHANGED SINCE LAST TIME. The same settlement date arrives more than
+     once by design — reconcile, flag, somebody fixes something, re-upload — and
+     until now nothing said what was different. Said first, before the verdicts,
+     because it is the context everything below it should be read in. */
+  const diff = dvcUploadDiff(msg.statementDate, rows, run && run.id);
+  if (diff) {
+    cb.onProgress(diff.same
+      ? `This file is identical to ${diff.label}.`
+      : `${diff.summary} compared with ${diff.label}` +
+        (diff.changed.length
+          ? `: ${diff.changed.slice(0, 5).map((c) => `${c.what} (${c.fields.map((f) => f.label).join(", ")})`).join("; ")}` +
+            (diff.changed.length > 5 ? `, and ${diff.changed.length - 5} more` : "")
+          : "") + ".",
+      diff.same);
+  }
+  try {
+    cb.onProgress(`${rows.length} DVC line${rows.length === 1 ? "" : "s"} against ` +
+      `${costings.length} Tramada costing${costings.length === 1 ? "" : "s"}, matched on booking number ` +
+      `and amount within ${reconCore.DVC_TOLERANCE_CENTS} cents (BR03, BR04).`);
+
+    const out = reconCore.reconcileDvc(rows, costings);
+
+    /* Each verdict to the page AND to disk as it is known, not in one lump at
+       the end (§6b). It is fast enough here that the distinction looks academic
+       — but the store write is the thing Travel Accounts reads tomorrow, and a
+       process that dies between the match and the save should still leave
+       behind what it had decided. */
+    for (const row of out.rows) {
+      cb.onRow(row.n, {
+        matched: row.matched,
+        matchedOn: row.matchedOn,
+        // The column Finance reads: the vocabulary term, then BR05's breakdown.
+        remark: reconCore.dvcRemarksCell(row),
+        why: row.why,
+        tramadaLines: row.tramadaLines,
+        tramadaAmounts: row.tramadaAmounts,
+        /* "Reconciled" is the DOCUMENT'S OWN WORD for this, and it is the right
+           one: step 18 asks the report to "distinguish reconciled lines from
+           lines requiring verification", and steps 4-11 are the reconciliation.
+           The Tramada half (steps 12-16) is a separate thing and is reported
+           on its own line, and the card's finished message says "matched"
+           rather than "reconciled in Tramada".
+
+           A matched line carrying a remark is still Reconciled here: what puts
+           it in front of a person is the remark itself (`NEEDS_ACTION`), not a
+           third verdict that every chip and filter on the screen would then
+           have to learn. There is no Allocation — this run allocates nothing,
+           and "Pending" forever is a promise nothing is coming good on. */
+        reconciliation: row.matched ? "Reconciled" : "Not reconciled",
+      });
+    }
+
+    // Step 15 / BR04 — what the report adds up to against what a person read
+    // off it. Checked and reported; it does not stop the session (step 16 saves
+    // it with errors), and the email names it.
+    const total = reconCore.checkDvcTotal(rows, msg.transactionTotal);
+    if (total.checked) cb.onProgress(`BR04: ${total.reason}`, total.ok);
+
+    const s = out.summary;
+    /* THE COSTINGS NOTHING PAID, BY BOOKING. Not an error on its own — the
+       Tramada range is two days wider than the report (BR13) — but step 19
+       sends a person looking for exactly these, and a bare count sends them
+       back to the spreadsheet to work out which. Named while the list is short
+       enough to read; past that the count is the honest summary. */
+    /* NOT THE COSTINGS A FLAGGED LINE WAS CHECKED AGAINST. A hotel charged
+       $150.00 against its $420.00 costing leaves that costing unclaimed too,
+       and naming it here as a harmless leftover read as "nothing to see" about
+       the one costing a person has to look at (screenshot, 23-09-2026). */
+    const flagged = new Set(out.rows.filter((r) => !r.matched || r.remark)
+      .map((r) => r.bookingKey || r.bookingNo).filter(Boolean));
+    const left = out.unmatchedTramada.filter((t) => !flagged.has(t.bookingKey || t.bookingNo));
+    const bookings = [...new Set(left.map((t) => t.bookingNo).filter(Boolean))];
+    cb.onProgress(
+      `${s.matched} of ${s.total} matched cleanly` +
+      (s.matchedForReview ? `, ${s.matchedForReview} matched but flagged for a person` : "") +
+      (s.unmatched ? `, ${s.unmatched} not matched` : "") +
+      (left.length
+        ? `. ${left.length} Tramada costing${left.length === 1 ? "" : "s"} nothing on the report paid` +
+          (bookings.length && bookings.length <= 8 ? ` (booking${bookings.length === 1 ? "" : "s"} ${bookings.join(", ")}).` : ".")
+        : "."),
+      s.unmatched === 0);
+    /* RAA's DRAWING (23-09-2026). Spreadsheet errors → email, nothing in
+       Tramada; the person fixes the Westpac report and re-uploads. No errors →
+       straight on into Tramada with no click in between: tick, save the
+       session even if Tramada raises something, and email the accounts team
+       the state of the session. The agent never presses Issue.
+
+       The verdicts above are already on the page and in the store, so nothing
+       that happens in the browser can take the reconciliation away. */
+    const payment = await dvcPaymentPhase(session, run, msg, { out, total, cb });
+
+    // Step 18 — whatever happened in Tramada, Travel Accounts hears about it.
+    const email = await dvcSendEmail(msg, { out, total, payment, run });
+    cb.onProgress(email.sent
+      ? `Emailed the reconciliation to ${email.to.join(", ")} (step 18). A copy is in the outbox: /outbox`
+      : email.captured
+        ? "The email to the accounts team was written to the outbox, not sent (MAIL_TRANSPORT=outbox) — " +
+          "see /outbox."
+        : `The reconciliation email was not sent — ${email.why}. The copy it tried to send is in /outbox.`,
+      !!(email.sent || email.captured));
+
+    closeRun(run, { summary: s, committed: sessionCommitted(payment, msg) });
+    send(session, {
+      type: "recon_done",
+      summary: s,
+      runId: run && run.id,
+      unmatchedTramada: out.unmatchedTramada,
+      total,
+      sessionLabel: reconCore.dvcSessionLabel(msg.statementDate),
+      payment: paymentForPage(payment, msg),
+      email: { sent: !!email.sent, captured: !!email.captured, to: email.to || [], why: email.why || "",
+        outboxId: email.outboxId || "" },
+      uploadDiff: diff,
+    });
+  } catch (err) {
+    const why = reconCore.tidyError(err.message);
+    closeRun(run, null, why);
+    send(session, { type: "recon_done", error: why, runId: run && run.id });
+  }
+}
+
+/**
+ * docs/dvc.md steps 12 to 16 — the Tramada half, straight after the matching.
+ *
+ * SEPARATE FROM THE RECONCILIATION ABOVE IT, AND DELIBERATELY SO.
+ *
+ *   - IT TAKES THE RUN LOCK; the reconciliation does not. `runDvcPayment`
+ *     closes the shared CDP browser in its `finally`, and a second flow running
+ *     alongside would close the first one's page mid-run (§6).
+ *   - IT NEVER SINKS THE RUN. The reconciliation's verdicts are already on the
+ *     page and already in the store, written as each was known (§6b). A
+ *     Tramada screen that has changed shape is a reason to lose the session,
+ *     not a reason to throw away a correct reconciliation of sixty lines.
+ *   - IT REPORTS WHAT IT DID, NOT WHAT IT MEANT TO. Whatever comes back says
+ *     whether the session was saved, and a failure says how far it got — the
+ *     page is left open on purpose so it can be looked at.
+ */
+async function dvcPaymentPhase(session, run, msg, { out, total, cb }) {
+  /* SPREADSHEETS FIRST (RAA's drawing, 23-09-2026). Errors between the two
+     files go to a person by email, and the Tramada reimbursement starts on the
+     run that comes back clean — so a day with errors never opens a browser. */
+  const gate = reconCore.dvcTramadaGate(out.summary, total);
+  if (!gate.open) {
+    cb.onProgress(`Steps 12-16 were not run: ${gate.why}. Nothing has been entered into Tramada.`, false);
+    return { skipped: true, why: gate.why, blockers: gate.blockers || [] };
+  }
+  /* A DAY THAT ALREADY HAS A SESSION IS NOT REFUSED HERE ANY MORE (RAA,
+     23-09-2026). `runDvcPayment` finds it on Tramada's own Payment Sessions
+     list, reopens it, re-checks it and saves it again. This used to ask the
+     run store instead, which said "DVC 24/09/2026" was saved after it had been
+     cancelled in Tramada — and refused a re-run that had real work to do. */
+  /* BR12's card, as the label Tramada shows in its own dropdown. SERVER
+     CONFIGURATION, not a dashboard field (RAA, 23-09-2026): it is the same card
+     every day and nobody at the screen should have to see or type it. Never a
+     card number — `core.assertCardLabel` refuses one before the browser opens,
+     because this server's socket has no redaction on it (§4). The fallback is
+     the label measured live on raatravelsandbox 22-09-2026. */
+  const creditCard = String(process.env.DVC_CARD || DVC_CARD_DEFAULT).trim();
+  if (runLock.heldBy()) {
+    const why = `${runLock.heldBy()} is running a reconciliation, so the browser is busy`;
+    cb.onProgress(`The Issue Payment steps were skipped — ${why}. The matching above is finished and ` +
+      "saved; upload the same two files again when it is free.", false);
+    return { skipped: true, why };
+  }
+  runLock.take(session);
+  try {
+    cb.onProgress(`Entering the Agency CC Reimbursement for ${msg.statementDate}: ${gate.why}` +
+      (msg.dryRun ? " (dry run — the session will not be saved)." : "."), true);
+    return await runDvcPayment({
+      auth: await tramadaAuthFor(session),
+      statementDate: msg.statementDate,
+      creditCard,
+      dvcRows: out.rows,
+      dvcSummary: out.summary,
+      unmatchedTramada: out.unmatchedTramada,
+      totalCheck: total,
+      /* DRY RUN MEANS HERE WHAT IT MEANS EVERYWHERE ELSE: everything happens
+         except the click that makes it permanent — here, Session. It is the
+         toolbar's own dry run, read when Start was pressed. */
+      dryRun: !!msg.dryRun,
+      callbacks: cb,
+    });
+  } catch (err) {
+    const why = reconCore.tidyError(err.message);
+    cb.onProgress(`The Issue Payment step stopped: ${why} The reconciliation above is finished and ` +
+      "saved, and the Tramada page has been left open so it can be looked at.", false);
+    return { error: why };
+  } finally {
+    runLock.release();
+  }
+}
+
+/**
+ * What the page is told about the Tramada half — small, and nothing the page
+ * has to work out for itself. The grid and plan stay on the server; the card
+ * only needs to say whether the session is saved, what is in it, and what is
+ * still for a person.
+ */
+function paymentForPage(payment, msg) {
+  const p = payment || {};
+  const c = p.commit || null;
+  return {
+    statementDate: msg.statementDate,
+    sessionLabel: reconCore.dvcSessionLabel(msg.statementDate),
+    saved: !!p.saved,
+    confirmed: !!(p.session && p.session.confirmed),
+    skipped: !!p.skipped,
+    reopened: !!p.reopened,
+    error: p.error || "",
+    why: p.why || (c && c.why) || "",
+    held: (c && c.held) || "",
+    complete: !!(c && c.complete),
+    ticked: (c && c.ticked) || 0,
+    amount: c ? reconCore.money(c.paidCents || 0) : "",
+    errors: (c && c.errors) || [],
+    blockers: p.blockers || [],
+    roundRemaining: !!(c && c.roundRemaining),
+  };
+}
+
+/**
+ * Step 18. Built by `reconCore.dvcEmail` (tested offline), delivered by
+ * mailer.js, and it never throws — a mail server that is down is a reason to
+ * lose the email, not a reason to fail a run that may have saved a session.
+ */
+async function dvcSendEmail(msg, { out, total, payment, run }) {
+  try {
+    const message = reconCore.dvcEmail({
+      statementDate: msg.statementDate,
+      summary: out.summary,
+      rows: out.rows,
+      unmatchedTramada: out.unmatchedTramada,
+      totalCheck: total,
+      payment,
+      columns: Array.isArray(msg.columns) ? msg.columns : [],
+      runId: run && run.id,
+      dryRun: !!msg.dryRun,
+    });
+    return await mailer.send(message);
+  } catch (err) {
+    return { sent: false, why: reconCore.tidyError(err.message) };
+  }
+}
+
+/**
+ * What the store keeps about a saved session — the record of what each run
+ * did. It no longer decides anything: whether a session exists is read off
+ * Tramada (see `tramada-dvc.findSavedSessions`).
+ *
+ * NOT UNDER `ticked`. The overview's "transactions committed" adds up
+ * `committed.ticked` across runs, and it means ticks on a COMMITTED bank
+ * statement page — a session nobody has Issued yet is not that, and counting it
+ * would put a figure on the dashboard saying something that did not happen.
+ */
+function sessionCommitted(payment, msg) {
+  if (!payment || !payment.saved || !payment.commit) return null;
+  const c = payment.commit;
+  return {
+    session: true,
+    label: c.sessionLabel || reconCore.dvcSessionLabel(msg.statementDate),
+    sessionTicked: c.ticked || 0,
+    paidCents: c.paidCents || 0,
+    complete: !!c.complete,
+    confirmed: !!(payment.session && payment.session.confirmed),
+    reopened: !!payment.reopened,
+  };
+}
+
+/**
+ * What changed since the last upload of this same day.
+ *
+ * The DVC process is reconcile, flag, a person fixes something, re-upload,
+ * re-run — so the same settlement date arrives more than once by design, and
+ * until now nothing said what was DIFFERENT the second time. An edit to the
+ * bank's own report was invisible.
+ *
+ * Reported, never enforced. A changed line is not wrong: it is usually exactly
+ * the fix somebody was asked to make. What matters is that it is on the record
+ * and on the screen rather than only in somebody's memory of what they typed.
+ */
+function dvcUploadDiff(statementDate, rows, exceptRunId) {
+  if (!statementDate || !rows || !rows.length) return null;
+  try {
+    const earlier = store.listRuns()
+      .filter((r) => r.source === "dvc" && r.statementDate === statementDate && r.id !== exceptRunId)
+      .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")))[0];
+    if (!earlier) return null;
+    const full = store.getRun(earlier.id);
+    const before = (full && full.rows) || [];
+    if (!before.length) return null;
+    const diff = reconCore.diffDvcUploads(before, rows);
+    /* The time, as a person reading it would say it — "the 09:14 upload". The
+       date only when it was not today, because "3 lines differ from the 09:14
+       upload" is the sentence RAA asked for and a date in the middle of it is
+       noise on the day that matters most. */
+    const when = new Date(earlier.startedAt || Date.now());
+    const sameDay = when.toDateString() === new Date().toDateString();
+    const label = Number.isNaN(when.getTime())
+      ? "the earlier upload"
+      : `the ${String(when.getHours()).padStart(2, "0")}:${String(when.getMinutes()).padStart(2, "0")} ` +
+        (sameDay ? "upload" : `upload on ${when.toISOString().slice(0, 10)}`);
+    return { ...diff, against: earlier.id, label };
+  } catch (err) {
+    console.error(`  ⚠ could not compare this upload with an earlier one: ${err.message}`);
+    return null;
+  }
+}
+
 /* ── opening and closing the record of a run ─────────────────────────────── */
 
 /**
@@ -1286,11 +1768,38 @@ async function handleIpsiRun(session, msg) {
  * receipts that somebody is waiting on, and it is certainly not a reason to
  * abandon a run half way through with real receipts already filed.
  */
+/**
+ * The uploaded file this run is ABOUT, and — for a two-file report — the other
+ * one hanging off it.
+ *
+ * A DVC run keeps its two files under `dvc:westpac` and `dvc:tramada`, because
+ * one key for both would have the Tramada export overwrite the Westpac report
+ * in `session.files`. The run record still names ONE file, the report the run is
+ * about, and carries the other as `pair` — `file` is a JSONB column, so this
+ * costs no schema and every reader that wants `.name` still gets it.
+ *
+ * Both sets of bytes are already on the `RECON_STORE_DIR` volume either way:
+ * `keep()` stored them as they arrived, which is the thing that settles a
+ * disputed figure weeks later (§6b). This is only about what the run POINTS at.
+ */
+function fileFor(session, source) {
+  const files = session.files || {};
+  const pairs = (reconCore.REPORTS[source] || {}).pairs;
+  if (!pairs) return files[source] || null;
+  const keys = Object.keys(pairs);
+  const main = files[`${source}:${keys[0]}`] || null;
+  const rest = keys.slice(1)
+    .map((k) => (files[`${source}:${k}`] ? { part: k, label: pairs[k], ...files[`${source}:${k}`] } : null))
+    .filter(Boolean);
+  if (!main) return rest[0] || null;
+  return rest.length ? { ...main, part: keys[0], label: pairs[keys[0]], pair: rest } : main;
+}
+
 function openRun(session, source, msg, rows) {
   try {
     const run = store.startRun({
       source,
-      file: (session.files && session.files[source]) || null,
+      file: fileFor(session, source),
       statementDate: msg.statementDate,
       openingBalance: msg.openingBalance,
       closingBalance: msg.closingBalance,
@@ -1364,6 +1873,9 @@ function closeRun(run, out, error) {
       selection: out && out.selection,
       finished: out && out.finished,
       balances: out && out.balances,
+      // A DVC run saves a Payment Session, not a statement page, so it hands in
+      // its own record rather than being read off `finished`.
+      committed: out && out.committed,
       error: error || null,
     });
     if (!error && settlementComplete(run, out)) {

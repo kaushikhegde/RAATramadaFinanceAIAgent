@@ -2428,6 +2428,1750 @@ function summariseIpsi(results) {
   };
 }
 
+/* ── the Dynamic Virtual Card (DVC) reconciliation ───────────────────────── */
+
+/*
+ * DVC IS THE ONE REPORT THAT RECONCILES TWO FILES AGAINST EACH OTHER.
+ *
+ * Every other report here asks "did this row reach the Tramada statement page?"
+ * and needs a browser to answer. DVC asks a different question entirely: the
+ * Westpac DVC report and Tramada's own Agency CC Reimbursement export are both
+ * spreadsheets, and the whole match is arithmetic over the two of them. That is
+ * why the rules below decide everything and nothing here opens a page — the
+ * Tramada Issue Payment half (docs/dvc.md steps 12-16) ticks what this decided,
+ * it does not decide anything itself.
+ *
+ * The rules are docs/dvc.md. BRxx below are its Business Rules table.
+ */
+
+/**
+ * BR04 — five cents per transaction, fifty cents across the whole report.
+ *
+ * "Rounding of 5 cents on each individual transaction is allowable. The DVC
+ * Report Total must match exactly, with 0.50 cent rounding overall allowable."
+ *
+ * The second sentence is read as fifty cents, not half a cent: with 50-60
+ * transactions a day each allowed five cents of its own, a total tolerance of
+ * half a cent could not be met by a report that was entirely correct. Written
+ * down here rather than argued about per call site.
+ */
+const DVC_TOLERANCE_CENTS = 5;
+const DVC_TOTAL_TOLERANCE_CENTS = 50;
+
+/**
+ * BR06 — the foreign merchant fee, as a percentage of the Tramada amount.
+ *
+ * A DVC line that is 3% ABOVE its Tramada costing is a merchant or foreign
+ * exchange fee the card picked up, not a discrepancy for Finance to chase. Any
+ * other difference is a real amount error and is reported as one.
+ */
+const DVC_MERCHANT_FEE_PERCENT = 3;
+
+/*
+ * The Remarks column has a CLOSED vocabulary — same discipline as `REMARKS`.
+ *
+ * Quoted from docs/dvc.md step 11, which is the step that says what a flagged
+ * line is allowed to say: "Booking number not found", "Amount not match",
+ * "Amount + Merchant Fee", "Please check: multiple costings", "Costing not
+ * found". Steps 6 and 7 add the multiple-amounts sentence and step 15 adds the
+ * total one.
+ *
+ * THE DOCUMENT SAYS THE AMOUNT ONE THREE WAYS — "Amount not matched" (step 5),
+ * "Amount does not match" (step 8) and "Amount not match" (step 11). Step 11 is
+ * the list Finance filters on, so step 11 wins and the other two are the same
+ * remark. One vocabulary, or the column cannot be counted.
+ *
+ * `segment` is NOT from the document: step 5 says a failed sense check
+ * "downgrades the match for human review" without naming a phrase. It is
+ * written in the document's own "Please check:" family so it reads as one of
+ * them, and it is flagged here so nobody later mistakes it for a quoted rule.
+ */
+const DVC_REMARKS = {
+  bookingMissing: "Booking number not found",                                    // step 11, BR08
+  amountMismatch: "Amount not match",                                            // step 11, BR06
+  merchantFee: "Amount + Merchant Fee",                                          // step 11, BR06
+  multipleCostings: "Please check: multiple costings",                           // step 11
+  costingMissing: "Costing not found",                                           // step 11
+  multipleAmounts: "Please check: multiple transaction amount found in Tramada", // steps 6 and 7, BR05
+  refundMissing: "Refund not found in Tramada",                                  // step 9, BR07
+  /* BR09 / step 11 — "Part payment and deposit scenarios must always be flagged
+     for human handling; the AI Agent does not adjust amounts." It used to come
+     out as a bare "Amount not match", which told nobody that the row must not
+     be ticked (ticking auto-fills the full costing).
+
+     IT NAMES BOTH POSSIBILITIES, AND PICKS NEITHER (RAA, 23-09-2026). It then
+     read "part payment or deposit", which decided the answer: a card charged
+     $150 against a $420 hotel is a deposit, or it is simply the wrong amount,
+     and nothing in either spreadsheet says which. Only a person who can see
+     the booking and the supplier's invoice can. */
+  partPayment: "Please check: deposit or incorrect amount",
+  total: "Total transaction amount does not match",                              // step 15, BR04
+  // Not quoted from the document — see the note above.
+  segment: "Please check: segment type does not match the costing type",
+};
+
+/**
+ * BR11 — the Tramada export abbreviates the segment type; Westpac spells it.
+ *
+ * Verbatim from the Segment Type Abbreviations table in docs/dvc.md. It is a
+ * lookup and not a "first three letters" rule for a reason: TRANSFER is TFR and
+ * TOUR is TUR, neither of which a truncation produces, and MISCELLANEOUS is
+ * MIS. A clever rule would have matched HOTEL and quietly failed the other
+ * three.
+ */
+const DVC_SEGMENT_ABBREVIATIONS = {
+  HOTEL: "HTL",
+  TRAIN: "TRN",
+  "AIR TICKET": "TKT",
+  CRUISE: "CRU",
+  BUS: "BUS",
+  FERRY: "FER",
+  TOUR: "TUR",
+  MISCELLANEOUS: "MIS",
+  TRANSFER: "TFR",
+  "CAR HIRE": "CAR",
+  PACKAGE: "PKG",
+  INSURANCE: "INS",
+};
+
+/** A Westpac segment type as the Tramada export would abbreviate it, or "". */
+function segmentAbbreviation(segmentType) {
+  const key = String(segmentType == null ? "" : segmentType).trim().toUpperCase().replace(/\s+/g, " ");
+  return DVC_SEGMENT_ABBREVIATIONS[key] || "";
+}
+
+/**
+ * Step 5's sense check: true, false, or NULL FOR NO OPINION.
+ *
+ * Three answers rather than two, and the third is the important one. This check
+ * can only ever downgrade a match to "please look at it" (step 5), so an
+ * abstention costs nothing and a wrong "false" puts a person's afternoon on a
+ * row that was right. It abstains whenever it does not actually know:
+ *
+ *   - a segment type the table above does not name. The client's own August
+ *     export carries `MULTIPLE` on the Westpac side and `COS` on the Tramada
+ *     side, neither of which is in BR11's table. "Not in my table" is not
+ *     evidence of a disagreement.
+ *   - a Tramada costing of PKG. A package is one costing covering several
+ *     segments — the client's booking 130729 carries an HTL line and a PKG line
+ *     against hotel charges on the same card — so PKG legitimately faces any
+ *     Westpac segment type and saying otherwise would flag a large share of the
+ *     correct matches.
+ *   - either side blank.
+ */
+function dvcSegmentAgrees(segmentType, tramadaSegType) {
+  const want = segmentAbbreviation(segmentType);
+  const got = String(tramadaSegType == null ? "" : tramadaSegType).trim().toUpperCase();
+  if (!want || !got) return null;
+  if (want === got) return true;
+  if (got === "PKG") return null;
+  // An abbreviation BR11 never named. Unknown, not wrong.
+  if (!Object.values(DVC_SEGMENT_ABBREVIATIONS).includes(got)) return null;
+  return false;
+}
+
+/**
+ * A date off the Westpac DVC report, as `yyyy-mm-dd`.
+ *
+ * The client's own export writes one column six different ways — `31/07/2026`,
+ * `31.07.2026`, `31-07-2026`, `29.08.26`, `29082026`, and an Excel serial when
+ * the same file arrives as .xlsx. Nobody typed those; they are what a card
+ * request form and a spreadsheet between them produced.
+ *
+ * THE EIGHT-DIGIT CASE IS WHY THIS EXISTS RATHER THAN A CALL TO `serialDate`.
+ * `29082026` is a perfectly good serial as far as `serialDate` is concerned,
+ * and it comes back as a date in the year 81000 — a wrong date, silently, in a
+ * column a person reads. So the no-separator form is tried first and validated,
+ * and only a number short enough to be a real serial (a 2026 date is 46200-odd,
+ * five digits) is offered to `serialDate` at all.
+ *
+ * Day first throughout: this is an Australian card report. `20260829` is NOT
+ * read as a date — as day-first it is day 20 of month 26, which fails
+ * validation — so a file that ever arrives year-first comes back unreadable
+ * rather than off by months. Anything unrecognised is returned untouched, the
+ * same contract as `serialDate`: a date this cannot read is reported, never
+ * reformatted into a wrong one.
+ */
+function dvcDate(v) {
+  const s = String(v == null ? "" : v).trim();
+  if (!s) return "";
+  const noSeparators = s.match(/^(\d{2})(\d{2})(\d{4})$/);
+  if (noSeparators) {
+    const [, d, m, y] = noSeparators;
+    if (Number(m) >= 1 && Number(m) <= 12 && Number(d) >= 1 && Number(d) <= 31) {
+      return `${y}-${m}-${d}`;
+    }
+    return s;
+  }
+  if (/^\d{1,5}(\.\d+)?$/.test(s)) return serialDate(s);
+  return toIsoDate(s) || s;
+}
+
+/**
+ * A booking number reduced to what the two files can be expected to agree on.
+ *
+ * Digits only, leading zeros dropped. BR10: "Westpac currently permits only a
+ * single numeric Tramada booking number field (10 digits, numeric only)", so
+ * the Westpac side is always bare digits while the Tramada export is free to
+ * write `109220` or `0109220` in a cell somebody has formatted as text. Keeping
+ * the raw value on the row and comparing on this is the same split `refKey`
+ * makes: the original is what gets reported, this is only ever the key.
+ *
+ * Empty when there is nothing numeric at all, and an empty key never matches
+ * anything — a blank booking number is BR08's exception, not a wildcard.
+ */
+function dvcBookingKey(v) {
+  const digits = String(v == null ? "" : v).replace(/\D/g, "").replace(/^0+/, "");
+  return digits;
+}
+
+/**
+ * The Westpac DVC report's columns, by header name — BR01.
+ *
+ * Measured on the client's own `DVC_REPORT EXPORT EXAMPLES` workbook, whose
+ * header row reads: ACCOUNT NUMBER, SETTLEMENT DATE, PAX Name, MERCHANT, CARD
+ * REQUEST DATE, BILLING CURRENCY, TRANSACTION AMOUNT (AUD), AGENT INITIALS,
+ * STORE CODE, SUPPLIER NAME, SUPPLIER REF, TRAMADA NUMBER, SEGMENT TYPE, CARD
+ * NUMBER.
+ *
+ * BY NAME, NEVER BY POSITION (§6). The PAX Name column is DELETED BY HAND
+ * before this file is uploaded — docs/dvc.md step 1, a privacy constraint — so
+ * the column count is different on every second file and every index after
+ * position 2 moves. A positional reader would put the merchant in the settlement
+ * date and would look entirely plausible doing it.
+ *
+ * `transactionDate` is CARD REQUEST DATE: that is the date the transaction
+ * happened, and the one step 3 calls "Transaction date". SETTLEMENT DATE is the
+ * day Westpac banked it, which is what the report is pulled by and what
+ * `filterDvcSettlementDate` filters on.
+ */
+const DVC_COLUMNS = {
+  account: ["account number"],
+  settlementDate: ["settlement date"],
+  merchant: ["merchant"],
+  transactionDate: ["card request date", "transaction date"],
+  currency: ["billing currency", "currency"],
+  amount: ["transaction amount (aud)", "transaction amount", "amount"],
+  consultant: ["agent initials", "consultant initials", "consultant"],
+  shop: ["store code", "shop", "store"],
+  supplierName: ["supplier name"],
+  supplierRef: ["supplier ref"],
+  bookingNo: ["tramada number", "tramada booking number", "booking number", "booking no"],
+  segmentType: ["segment type"],
+  cardNumber: ["card number"],
+  remarks: ["remarks"],
+};
+
+/*
+ * The columns BR01 says the report must carry, and what to call them when one
+ * is missing. Card number and supplier reference are deliberately NOT in here:
+ * BR01 lists the card number as required but nothing in the match reads it, and
+ * it says in the same breath that the supplier reference "is populated only on
+ * some lines and must not be treated as mandatory".
+ */
+const DVC_REQUIRED_COLUMNS = {
+  transactionDate: "Transaction date",
+  merchant: "Supplier/merchant",
+  amount: "Transaction amount",
+  bookingNo: "Tramada booking number",
+  segmentType: "Segment type",
+  consultant: "Consultant initials",
+  shop: "Shop",
+};
+
+/**
+ * The Westpac DVC report → rows the reconciliation can match.
+ *
+ * NOTHING IS DROPPED FOR BEING UNMATCHABLE. A line with no booking number is
+ * still a real charge on a real card, and holding it back at upload is the
+ * mistake TravelPay and IPSI both made and both undid — the money was in the
+ * file, the screen showed nothing, and the only clue was a count in a note.
+ * Such a row comes back in `rows` carrying BR08's remark, so the reconciliation
+ * reports it as the exception it is. Only a row whose AMOUNT cannot be read is
+ * held back, because there is then no transaction to speak of.
+ */
+function parseDvcRows(headers, gridRows) {
+  const cols = mapColumns(headers, DVC_COLUMNS);
+  if (cols.amount < 0) {
+    return {
+      rows: [],
+      problems: [{ line: 1, why: `the sheet has no column for: ${DVC_COLUMNS.amount[0]}` }],
+      columns: (headers || []).filter(Boolean),
+      missingColumns: [],
+    };
+  }
+
+  /* BR01's list, checked and REPORTED rather than enforced. A missing Segment
+     Type only turns step 5's sense check off; a missing Consultant column only
+     means the exception report cannot say whose booking it was. Refusing the
+     whole file over either would stop a reconciliation that would otherwise
+     have matched every line on booking number and amount. */
+  const missingColumns = Object.keys(DVC_REQUIRED_COLUMNS)
+    .filter((k) => cols[k] < 0)
+    .map((k) => DVC_REQUIRED_COLUMNS[k]);
+
+  const names = (headers || []).map((h) => String(h == null ? "" : h).trim());
+  const at = (cells, key) => (cols[key] >= 0 && cells[cols[key]] != null ? String(cells[cols[key]]).trim() : "");
+  const rows = [];
+  const problems = [];
+
+  (gridRows || []).forEach((cells, i) => {
+    const kept = {};
+    names.forEach((name, j) => { if (name) kept[name] = cells[j] == null ? "" : String(cells[j]); });
+    const row = {
+      line: i + 2,                       // +1 for the header, +1 for 1-based
+      account: at(cells, "account"),
+      settlementDate: dvcDate(at(cells, "settlementDate")),
+      transactionDate: dvcDate(at(cells, "transactionDate")),
+      merchant: at(cells, "merchant"),
+      currency: at(cells, "currency"),
+      amount: at(cells, "amount"),
+      consultant: at(cells, "consultant"),
+      shop: at(cells, "shop"),
+      supplierName: at(cells, "supplierName"),
+      supplierRef: at(cells, "supplierRef"),
+      bookingNo: at(cells, "bookingNo"),
+      segmentType: at(cells, "segmentType"),
+      cardNumber: at(cells, "cardNumber"),
+      // Everything the file said, under the headings it said it with — this is
+      // what lets the export hand Finance back THEIR spreadsheet (§6b).
+      cells: kept,
+      remark: "",
+      why: "",
+    };
+    row.rawAmount = row.amount;
+    row.amountCents = cents(row.amount);
+    /* A workbook hands back what the float actually holds, so the client's own
+       file carries 136.30000000000001 and 4988.3500000000004. Same fix Mint and
+       TravelPay already make: keep the cents, and show the cents back. */
+    if (row.amountCents != null) row.amount = money(row.amountCents);
+    row.bookingKey = dvcBookingKey(row.bookingNo);
+    // BR07 — refunds are the negative lines, and they are matched exactly like
+    // any other row. Only their sign decides what an unmatched one is called.
+    row.refund = row.amountCents != null && row.amountCents < 0;
+
+    if (row.amountCents == null) {
+      row.remark = DVC_REMARKS.amountMismatch;
+      problems.push({ line: row.line, why: `unreadable amount "${row.rawAmount}"`, row });
+      return;
+    }
+    rows.push(row);
+  });
+
+  return { rows, problems, columns: names.filter(Boolean), missingColumns };
+}
+
+/**
+ * Tramada's Agency CC Reimbursement export, by header name — step 3.
+ *
+ * Measured on the same client workbook, whose header row reads: Seg. Type,
+ * Booking No., "Supplier Reference - Passenger Name - Supplier/Hotel Name",
+ * Segment Date, Balance Due, Supplier Reference No.
+ *
+ * `amount` is BALANCE DUE — the outstanding figure, which is what the DVC card
+ * paid and what step 14's checkbox will fill in. The description column's name
+ * is matched as a PREFIX because it is three field names joined with hyphens
+ * and a report writer is one revision away from joining a fourth.
+ */
+const TRAMADA_CC_COLUMNS = {
+  segType: ["seg. type", "seg type", "segment type", "costing type"],
+  bookingNo: ["booking no.", "booking no", "booking file number", "booking number"],
+  description: ["supplier reference - passenger name", "supplier reference -", "description"],
+  segmentDate: ["segment date", "transaction date"],
+  amount: ["balance due", "amount"],
+  supplierRef: ["supplier reference no"],
+};
+
+/**
+ * The Tramada Agency CC Reimbursement export → rows to match against.
+ *
+ * The description column carries three things joined with " - " and the LAST of
+ * them is the supplier or hotel, which is the only part of it this code reads.
+ * It is read for display, never for matching: BR03 names the booking number and
+ * the amount as the match keys and nothing else, and a supplier name pulled out
+ * of a free-text join is exactly the kind of near-match that reconciles the
+ * wrong costing.
+ *
+ * The passenger names in that column are carried through untouched. They are
+ * not a match key (BR03: "Passenger name is a valid manual match key but is not
+ * available to the AI Agent in the current state") and nothing here splits them
+ * out.
+ */
+function parseTramadaCcRows(headers, gridRows) {
+  const cols = mapColumns(headers, TRAMADA_CC_COLUMNS);
+  const missing = ["bookingNo", "amount"].filter((k) => cols[k] < 0);
+  if (missing.length) {
+    const want = missing.map((k) => TRAMADA_CC_COLUMNS[k][0]).join(", ");
+    return { rows: [], problems: [{ line: 1, why: `the sheet has no column for: ${want}` }], columns: [] };
+  }
+
+  const names = (headers || []).map((h) => String(h == null ? "" : h).trim());
+  const at = (cells, key) => (cols[key] >= 0 && cells[cols[key]] != null ? String(cells[cols[key]]).trim() : "");
+  const rows = [];
+  const problems = [];
+
+  (gridRows || []).forEach((cells, i) => {
+    const row = {
+      line: i + 2,
+      segType: at(cells, "segType").toUpperCase(),
+      bookingNo: at(cells, "bookingNo"),
+      description: at(cells, "description"),
+      // A workbook stores this as a serial (46262 in the client's file); a CSV
+      // export of the same sheet has already formatted it. `dvcDate` covers
+      // both and leaves anything it cannot read alone.
+      segmentDate: dvcDate(at(cells, "segmentDate")),
+      amount: at(cells, "amount"),
+      supplierRef: at(cells, "supplierRef"),
+    };
+    row.rawAmount = row.amount;
+    row.amountCents = cents(row.amount);
+    if (row.amountCents != null) row.amount = money(row.amountCents);
+    row.bookingKey = dvcBookingKey(row.bookingNo);
+    // The tail of "REF - PASSENGER - Supplier", for showing a person which
+    // costing was matched. Never compared against anything.
+    const parts = row.description.split(" - ");
+    row.supplierName = parts.length > 1 ? parts[parts.length - 1].trim() : "";
+
+    const why = [];
+    if (!row.bookingKey) why.push("no booking number");
+    if (row.amountCents == null) why.push(`unreadable amount "${row.rawAmount}"`);
+    if (why.length) {
+      problems.push({ line: row.line, why: why.join("; "), row });
+      return;
+    }
+    rows.push(row);
+  });
+
+  return { rows, problems, columns: names.filter(Boolean) };
+}
+
+/**
+ * Keep only the settlement date this run is for — step 1.
+ *
+ * The client's own example workbook stacks a MONTH of daily reports in one
+ * sheet, 31/07 through 31/08, because that is what "drop the CSV into the
+ * relevant tab" produces over a month. DVC is reconciled daily (BR02), so a run
+ * that reconciled all of it would be matching August's cards against a Tramada
+ * export pulled for one day and reporting the other twenty-one days as missing.
+ *
+ * A row whose own settlement date cannot be read is KEPT, not thrown away — an
+ * unreadable date is not evidence the row belongs to some other day. Same rule,
+ * and same reason, as `filterIpsiSettlementDate`.
+ */
+function filterDvcSettlementDate(rows, wantedDate) {
+  const want = toIsoDate(wantedDate);
+  if (!want) return { rows: rows || [], excluded: [] };
+  const kept = [];
+  const excluded = [];
+  for (const r of rows || []) {
+    const got = toIsoDate(r.settlementDate);
+    if (got && got !== want) {
+      excluded.push({ ...r, why: `settled ${got}, not ${want} — this run is for one settlement date` });
+    } else {
+      kept.push(r);
+    }
+  }
+  return { rows: kept, excluded };
+}
+
+/**
+ * A subset of `items` whose amounts sum to `want`, within `tolerance`.
+ *
+ * BR05's one-to-many and many-to-one both come down to this. It is a subset-sum
+ * search, so it is BOUNDED in three ways and says which bound it hit:
+ *
+ *   maxItems  how many lines may make up one amount. Six covers the scenarios
+ *             the document describes — "hotel, second hotel and transfers on
+ *             one booking", "six seat-selection charges against one seat
+ *             reservation" — and stops a booking with thirty costings from
+ *             being searched 2^30 ways.
+ *   maxPool   how many candidates are considered at all.
+ *   budget    a hard node count. A search that runs out comes back
+ *             `exhausted: true` and the caller says "could not be checked"
+ *             rather than "no combination exists", because those are different
+ *             claims and only one of them is true.
+ *
+ * SAME SIGN ONLY. A refund and a charge that happen to net to the DVC amount is
+ * arithmetic, not a reconciliation — mixing them would let a -739.20 refund and
+ * an 869.20 hotel "explain" a 130.00 transfer on the same booking.
+ *
+ * Smallest subsets first, so two lines that add up are preferred over four that
+ * also do.
+ */
+function dvcSubsetSum(items, want, tolerance, limits = {}) {
+  const maxItems = limits.maxItems == null ? 6 : limits.maxItems;
+  const maxPool = limits.maxPool == null ? 20 : limits.maxPool;
+  let budget = limits.budget == null ? 20000 : limits.budget;
+
+  const sign = want < 0 ? -1 : 1;
+  const pool = (items || [])
+    .filter((it) => (it.amountCents < 0 ? -1 : 1) === sign)
+    .slice(0, maxPool);
+
+  let exhausted = false;
+  for (let size = 2; size <= Math.min(maxItems, pool.length); size++) {
+    const picked = [];
+    const walk = (from, left, sum) => {
+      if (budget-- <= 0) { exhausted = true; return null; }
+      if (left === 0) return Math.abs(sum - want) <= tolerance ? picked.slice() : null;
+      // Not enough candidates left to reach `size` — stop rather than recurse
+      // into branches that cannot produce an answer.
+      for (let i = from; i <= pool.length - left; i++) {
+        picked.push(pool[i]);
+        const got = walk(i + 1, left - 1, sum + pool[i].amountCents);
+        picked.pop();
+        if (got) return got;
+        if (exhausted) return null;
+      }
+      return null;
+    };
+    const got = walk(0, size, 0);
+    if (got) return { picked: got, exhausted: false };
+    if (exhausted) return { picked: null, exhausted: true };
+  }
+  return { picked: null, exhausted: false };
+}
+
+/** "234.50 + 118.20 + 96.30 = 449.00" — BR05's breakdown, for the Remarks cell. */
+function dvcBreakdown(items) {
+  const list = items || [];
+  const sum = list.reduce((a, it) => a + (it.amountCents || 0), 0);
+  return `${list.map((it) => money(it.amountCents)).join(" + ")} = ${money(sum)}`;
+}
+
+/**
+ * The Westpac DVC report against Tramada's Agency CC Reimbursement export.
+ *
+ * Steps 4 to 11, in the order the document puts them, and the order is the
+ * whole design. Each pass only ever looks at what earlier passes did not claim,
+ * so the confident matches are made before the speculative ones and a line that
+ * would have matched exactly can never be eaten by a subset-sum that also
+ * happened to work.
+ *
+ *   1  booking + amount + segment agrees          step 4, confirmed by step 5
+ *   2  booking + amount, segment does not agree   step 5 — matched, downgraded
+ *   3  booking, amount is 3% high                 step 8 / BR06 — merchant fee
+ *   4  one DVC line ← several Tramada costings    step 6 / BR05
+ *   5  several DVC lines → one Tramada costing    step 7 / BR05
+ *   6  whatever is left                           step 11
+ *
+ * NOTHING HERE ADJUSTS AN AMOUNT AND NOTHING HERE RESOLVES A MISMATCH. BR15:
+ * "Resolution of reconciliation mismatches is completed by a human." Every pass
+ * either claims a Tramada costing for a DVC line or writes a remark saying why
+ * it would not.
+ *
+ * BR10 needs no pass of its own. Two passengers on two booking numbers share
+ * one card, Westpac has room for only one of those numbers, and the document
+ * says so: "in that case the line will present as an amount error". It lands in
+ * pass 6 as `Amount not match`, which is exactly where a human needs it.
+ */
+function reconcileDvc(dvcRows, tramadaRows, opts = {}) {
+  const tolerance = opts.toleranceCents == null ? DVC_TOLERANCE_CENTS : opts.toleranceCents;
+  const rows = (dvcRows || []).map((r, i) => ({
+    ...r,
+    n: i + 1,
+    matched: false,
+    matchedOn: "",
+    tramadaLines: [],
+    tramadaAmounts: [],
+    remark: "",
+    detail: "",
+    why: "",
+  }));
+  const costings = (tramadaRows || []).map((t, i) => ({ ...t, tn: i + 1 }));
+
+  const byBooking = new Map();
+  for (const t of costings) {
+    if (!byBooking.has(t.bookingKey)) byBooking.set(t.bookingKey, []);
+    byBooking.get(t.bookingKey).push(t);
+  }
+  const claimed = new Set();
+  const free = (key) => (byBooking.get(key) || []).filter((t) => !claimed.has(t.tn));
+
+  /** Claim `picked` for `row` and write the verdict onto it. */
+  const settle = (row, picked, { remark = "", detail = "", why, matchedOn }) => {
+    for (const t of picked) claimed.add(t.tn);
+    row.matched = true;
+    row.matchedOn = matchedOn;
+    row.tramadaLines = picked.map((t) => t.line);
+    row.tramadaAmounts = picked.map((t) => money(t.amountCents));
+    row.remark = remark;
+    row.detail = detail;
+    row.why = why;
+  };
+
+  const unsettled = () => rows.filter((r) => !r.matched && !r.remark);
+
+  /* ── pass 0: a row with no readable amount is out of every pass below ──
+     `parseDvcRows` already holds those back, so this only fires for rows that
+     reached here another way — a run resumed from the store, a hand-built
+     list. Settling it up front is cheaper than a null check in five passes,
+     and a null amount silently comparing as NaN would make `Math.abs(NaN) <= 5`
+     false everywhere and land the row in pass 6 wearing the wrong sentence. */
+  for (const row of rows) {
+    if (row.amountCents == null) {
+      row.remark = DVC_REMARKS.amountMismatch;
+      row.why = `the DVC report's amount "${row.rawAmount == null ? row.amount : row.rawAmount}" could not be read`;
+    }
+  }
+
+  /* ── passes 1 and 2: booking + amount, segment agreeing or not ──
+     TWO SWEEPS, NOT ONE, and the first sweep is what makes step 5 do any work.
+     With a single sweep, a booking holding a 500.00 HTL and a 500.00 TKT would
+     hand a Westpac HOTEL line whichever of them happened to be first in the
+     file, then hand the AIR TICKET line the other one and flag BOTH for review.
+     Taking the segment-agreeing pairs first leaves each line with the costing
+     it actually belongs to. */
+  for (const agreeing of [true, false]) {
+    for (const row of unsettled()) {
+      if (!row.bookingKey) continue;
+      const candidates = free(row.bookingKey).filter((t) =>
+        Math.abs(t.amountCents - row.amountCents) <= tolerance);
+      /* Second sweep: A COSTING THAT ABSTAINS BEATS ONE THAT DISAGREES. The
+         abstentions are the PKG costings and the segment types BR11 never
+         named, and taking whichever happened to be first in the file would put
+         "please check: segment type does not match" on a row that had a
+         perfectly unobjectionable costing sitting two lines below. The
+         disagreeing one is still taken when it is all there is — step 5
+         downgrades a match, it never refuses one. */
+      const pick = agreeing
+        ? candidates.find((t) => dvcSegmentAgrees(row.segmentType, t.segType) === true)
+        : (candidates.find((t) => dvcSegmentAgrees(row.segmentType, t.segType) !== false) || candidates[0]);
+      if (!pick) continue;
+      const agrees = dvcSegmentAgrees(row.segmentType, pick.segType);
+      settle(row, [pick], {
+        matchedOn: "booking and amount",
+        // A disagreeing segment type is a downgrade, never a refusal (step 5).
+        remark: agrees === false ? DVC_REMARKS.segment : "",
+        detail: agrees === false ? `${row.segmentType} against ${pick.segType}` : "",
+        why: `booking ${row.bookingNo}, $${row.amount}` +
+          (agrees === true ? `, segment ${row.segmentType} matches costing ${pick.segType}` : "") +
+          (agrees === false ? ` — but the segment type is ${row.segmentType} and the costing is ${pick.segType}` : ""),
+      });
+    }
+  }
+
+  /* ── pass 3: BR06, the 3% foreign merchant fee ──
+     The DVC line is HIGHER than the costing, because the fee was added to what
+     the card was charged. Tested against the Tramada amount, not against the
+     DVC one: 3% of the charge and 3% of the costing are different numbers, and
+     the costing is the figure the fee was calculated on. */
+  for (const row of unsettled()) {
+    if (!row.bookingKey) continue;
+    const pick = free(row.bookingKey).find((t) => {
+      // Same sign, or a refund would "match" a charge 3% away from it.
+      if ((t.amountCents < 0) !== (row.amountCents < 0)) return false;
+      const fee = Math.round(Math.abs(t.amountCents) * DVC_MERCHANT_FEE_PERCENT / 100);
+      const over = Math.abs(row.amountCents) - Math.abs(t.amountCents);
+      return Math.abs(over - fee) <= tolerance;
+    });
+    if (!pick) continue;
+    const over = Math.abs(row.amountCents) - Math.abs(pick.amountCents);
+    settle(row, [pick], {
+      matchedOn: "booking and amount plus merchant fee",
+      remark: DVC_REMARKS.merchantFee,
+      detail: `${money(pick.amountCents)} + ${money(over)}`,
+      why: `booking ${row.bookingNo} — Tramada holds $${pick.amount} and the card was charged ` +
+        `$${row.amount}, $${money(over)} more, which is ${DVC_MERCHANT_FEE_PERCENT}% of the costing`,
+    });
+  }
+
+  /* ── pass 4: BR05, one DVC amount covering several Tramada costings ──
+     Step 6: "a supplier charges a single amount covering several costings (e.g.
+     hotel, second hotel and transfers on one booking)". Same segment type first,
+     because step 6 says so: "Same booking number and same costing type across
+     two or more lines is a strong indicator". */
+  for (const row of unsettled()) {
+    if (!row.bookingKey) continue;
+    const pool = free(row.bookingKey);
+    const sameSegment = pool.filter((t) => dvcSegmentAgrees(row.segmentType, t.segType) !== false);
+    let found = dvcSubsetSum(sameSegment, row.amountCents, tolerance, opts.limits);
+    if (!found.picked && !found.exhausted && sameSegment.length !== pool.length) {
+      found = dvcSubsetSum(pool, row.amountCents, tolerance, opts.limits);
+    }
+    if (found.exhausted) {
+      row.remark = DVC_REMARKS.multipleCostings;
+      row.detail = `${pool.length} unmatched costings on this booking`;
+      row.why = `booking ${row.bookingNo} has ${pool.length} unmatched costings — too many combinations ` +
+        `to check, so this one is for a person rather than a guess`;
+      continue;
+    }
+    if (!found.picked) continue;
+    settle(row, found.picked, {
+      matchedOn: "one card charge over several costings",
+      remark: DVC_REMARKS.multipleAmounts,
+      detail: dvcBreakdown(found.picked),
+      why: `booking ${row.bookingNo} — this one $${row.amount} charge covers ` +
+        `${found.picked.length} Tramada costings: ${dvcBreakdown(found.picked)}`,
+    });
+  }
+
+  /* ── pass 5: BR05 the other way, several DVC lines against one costing ──
+     Step 7: "an airline charges per passenger (e.g. six seat-selection charges
+     against one seat reservation costing in Tramada)". Grouped by booking and
+     taken smallest group first, so a pair that adds up is settled before a
+     larger set that also would. */
+  for (const key of [...new Set(unsettled().map((r) => r.bookingKey))]) {
+    if (!key) continue;
+    /* KEEP GOING WHILE THE BOOKING STILL YIELDS A GROUP. Six seat-selection
+       charges against one costing is the document's example, but a booking can
+       hold two such costings — an outbound and a return — and stopping at the
+       first group found would leave the second set of charges to land in pass 6
+       as "Amount not match", which is a wrong answer rather than a missing one.
+       The loop terminates because every iteration that sets `progress` claims a
+       costing and settles at least two rows. */
+    let progress = true;
+    while (progress) {
+      progress = false;
+      const mine = unsettled().filter((r) => r.bookingKey === key);
+      if (mine.length < 2) break;
+      for (const t of free(key)) {
+        const found = dvcSubsetSum(mine, t.amountCents, tolerance, opts.limits);
+        if (!found.picked) continue;
+        const breakdown = dvcBreakdown(found.picked);
+        for (const row of found.picked) {
+          settle(row, [t], {
+            matchedOn: "several card charges against one costing",
+            remark: DVC_REMARKS.multipleAmounts,
+            detail: breakdown,
+            why: `booking ${row.bookingNo} — ${found.picked.length} card charges make up the one ` +
+              `$${t.amount} Tramada costing: ${breakdown}`,
+          });
+        }
+        progress = true;
+        break;
+      }
+    }
+  }
+
+  /* ── pass 6: step 11, everything that is left ──
+     Each of these is a sentence Finance acts on, so the distinctions are real:
+     a booking that is not in the Tramada file at all is a different problem
+     from a booking that is there with no costing of that type, which is a
+     different problem again from a costing that is there for the wrong money. */
+  for (const row of rows) {
+    if (row.matched || row.remark) continue;
+    if (!row.bookingKey) {
+      row.remark = DVC_REMARKS.bookingMissing;
+      row.why = "the DVC report carries no Tramada booking number on this line";
+      continue;
+    }
+    const onBooking = byBooking.get(row.bookingKey) || [];
+    if (!onBooking.length) {
+      // BR07 and BR08 are the same shape and want different words: a refund
+      // nobody entered is chased differently from a charge nobody entered.
+      row.remark = row.refund ? DVC_REMARKS.refundMissing : DVC_REMARKS.bookingMissing;
+      row.why = `booking ${row.bookingNo} is not in the Tramada export` +
+        (row.refund ? " — a refund with no Tramada entry is an exception (BR07)" : "");
+      continue;
+    }
+    const left = free(row.bookingKey);
+    if (!left.length) {
+      row.remark = DVC_REMARKS.costingMissing;
+      row.why = `booking ${row.bookingNo} is in the Tramada export, but every costing on it was ` +
+        `already matched to another line of this report`;
+      continue;
+    }
+    const sameSegment = left.filter((t) => dvcSegmentAgrees(row.segmentType, t.segType) !== false);
+    if (row.segmentType && !sameSegment.length) {
+      row.remark = DVC_REMARKS.costingMissing;
+      row.detail = `${row.segmentType} → ${segmentAbbreviation(row.segmentType) || "?"}`;
+      row.why = `booking ${row.bookingNo} has no unmatched ${row.segmentType} costing in Tramada ` +
+        `(it holds ${left.map((t) => t.segType).join(", ")})`;
+      continue;
+    }
+    /* The amount is wrong and it is not the 3% fee — BR06's "all other amount
+       errors are noted separately for Travel Accounts to investigate". The
+       closest unmatched costing goes in the detail so the person opening this
+       row is not left to find it themselves.
+       Closest OF THE RIGHT SEGMENT TYPE where there is one: on a booking
+       holding a 200.00 hotel and a 995.00 air ticket, a 1000.00 HOTEL charge
+       would otherwise be shown the air ticket, which is the nearest number and
+       the wrong costing to be comparing it against. */
+    const closest = (sameSegment.length ? sameSegment : left).slice().sort((a, b) =>
+      Math.abs(a.amountCents - row.amountCents) - Math.abs(b.amountCents - row.amountCents))[0];
+
+    /* BR09 — A CHARGE SMALLER THAN THE COSTING MAY BE A DEPOSIT, OR MAY BE
+       WRONG. $500 taken on the card against a $2,000 costing is either a part
+       payment — in which case a person types 500.00 into that segment's amount
+       box rather than ticking the row, since ticking auto-fills the full 2,000
+       and BR09 forbids overtyping it — or a charge that should not have been
+       $500 at all. The files cannot tell those apart, so the row is flagged,
+       never ticked, and the remark says both.
+       Charges the other way round are still amount errors: pass 3 has already
+       taken the 3% merchant fees, so a card charged MORE than the costing with
+       no fee to explain it is the thing BR06 sends to Travel Accounts.
+       Positive charges only — "smaller than" is not a meaning a refund has. */
+    if (row.amountCents > 0 && closest.amountCents > row.amountCents) {
+      const short = closest.amountCents - row.amountCents;
+      row.remark = DVC_REMARKS.partPayment;
+      row.detail = `DVC ${row.amount} against a ${money(closest.amountCents)} costing, ` +
+        `${money(short)} short`;
+      row.why = `booking ${row.bookingNo} — the card was charged $${row.amount} against a ` +
+        `$${closest.amount} costing, $${money(short)} short. Only a person can tell whether that is ` +
+        `a deposit or an incorrect amount. If it is a deposit, enter $${row.amount} against that ` +
+        `segment by hand; do NOT tick the row, because ticking fills in the full $${closest.amount} ` +
+        `and BR09 does not allow overtyping it.`;
+      continue;
+    }
+    row.remark = DVC_REMARKS.amountMismatch;
+    row.detail = `Tramada ${money(closest.amountCents)}, DVC ${row.amount}`;
+    row.why = `booking ${row.bookingNo} is in the Tramada export, but the nearest unmatched costing ` +
+      `is $${closest.amount} against this line's $${row.amount} — a difference of ` +
+      `$${money(Math.abs(closest.amountCents - row.amountCents))}, which is not the ` +
+      `${DVC_MERCHANT_FEE_PERCENT}% merchant fee. The card was charged MORE than Tramada holds, so ` +
+      `it is not a deposit — a person has to find which side is wrong`;
+  }
+
+  /* Tramada costings NOBODY claimed. Not an error on its own — the DVC report
+     is one day and the Tramada export is a wider date range on purpose (BR13) —
+     but the exception report has to show them, because a costing nobody paid is
+     exactly what step 19 sends a human looking for. */
+  const unmatchedTramada = costings
+    .filter((t) => !claimed.has(t.tn))
+    .map((t) => ({ ...t, why: `no DVC line matched booking ${t.bookingNo} for $${t.amount}` }));
+
+  return { rows, unmatchedTramada, summary: summariseDvc(rows) };
+}
+
+/** What the Remarks column actually says — the vocabulary term, then BR05's breakdown. */
+function dvcRemarksCell(row) {
+  const r = row || {};
+  if (!r.remark) return "";
+  return r.detail ? `${r.remark} — ${r.detail}` : r.remark;
+}
+
+/** What a DVC run made of its two files. */
+function summariseDvc(results) {
+  const r = results || [];
+  const flagged = r.filter((x) => x.matched && x.remark);
+  return {
+    total: r.length,
+    // Matched and nothing for anyone to do — the 85% the document expects.
+    matched: r.filter((x) => x.matched && !x.remark).length,
+    // Matched, but carrying a remark: a merchant fee, a segment type that does
+    // not line up, a one-to-many. Step 14 does not tick these.
+    matchedForReview: flagged.length,
+    merchantFee: flagged.filter((x) => x.remark === DVC_REMARKS.merchantFee).length,
+    multiple: flagged.filter((x) => x.remark === DVC_REMARKS.multipleAmounts).length,
+    unmatched: r.filter((x) => !x.matched).length,
+    refunds: r.filter((x) => x.refund).length,
+    unmatchedRefunds: r.filter((x) => x.refund && !x.matched).length,
+    /* What step 14 would tick: BR09 says a ticked checkbox auto-fills the full
+       amount and the agent must not overtype it, and step 14 says do not tick
+       an exception. So this is the clean matches and nothing else. */
+    tickableCents: r.filter((x) => x.matched && !x.remark)
+      .reduce((a, x) => a + (x.amountCents || 0), 0),
+  };
+}
+
+/**
+ * Step 15 / BR04 — what was matched against the DVC report's own total.
+ *
+ * Fifty cents across the whole report, not five: five cents is one
+ * transaction's allowance and this is fifty of them. Summed in integer cents,
+ * never by re-adding dollar strings, for the same reason every other total in
+ * this file is — a run of floats added as floats is how "to the cent" quietly
+ * stops being true.
+ *
+ * Nothing entered is `checked: false`, not a failure. "Not entered" and "does
+ * not match" are different claims and the person needs to hear which one.
+ */
+function checkDvcTotal(rows, entered) {
+  const fileCents = (rows || []).reduce((a, r) => a + (r.amountCents || 0), 0);
+  const want = cents(entered);
+  if (want == null) {
+    return { checked: false, ok: null, remark: "", fileCents, enteredCents: null,
+      reason: "no DVC report total was entered" };
+  }
+  const diff = Math.abs(fileCents - want);
+  if (diff <= DVC_TOTAL_TOLERANCE_CENTS) {
+    return { checked: true, ok: true, remark: "", fileCents, enteredCents: want, diffCents: diff,
+      reason: `the report's own total of $${money(fileCents)} is within $${money(DVC_TOTAL_TOLERANCE_CENTS)} ` +
+        `of the $${money(want)} entered` };
+  }
+  return {
+    checked: true, ok: false, remark: DVC_REMARKS.total, fileCents, enteredCents: want, diffCents: diff,
+    reason: `the report totals $${money(fileCents)} but $${money(want)} was entered — a difference of ` +
+      `$${money(diff)}, more than the $${money(DVC_TOTAL_TOLERANCE_CENTS)} allowed across a report`,
+  };
+}
+
+/*
+ * BR12 — the Issue Payment parameters, which are fixed for DVC.
+ *
+ * Step 13 sets these on Tramada's Finance > Payments > Issue Payment screen.
+ * They live here, beside the rules, so that whoever writes that browser flow
+ * reads them from one tested place rather than typing them into a
+ * `page.selectOption` — the same separation every other report in this file
+ * keeps (§2).
+ *
+ * THE CREDIT CARD IS NOT IN THIS OBJECT, AND THAT IS DELIBERATE. BR12 names it
+ * as a masked card number, and §4 is unambiguous: card numbers never go
+ * anywhere near this project. The card is chosen per run by whoever starts it
+ * and is passed in as `creditCard`; docs/dvc.md carries the value Finance
+ * selects. A dropdown label is also exactly the kind of thing that gets
+ * reissued — §6, discover rather than hard-code.
+ */
+const DVC_PAYMENT_PARAMETERS = {
+  paymentCategory: "Agency CC Reimbursement",
+  bankAccount: "Trust Account",
+  levelBranch1: "",
+  levelBranch2: "",
+  sortBy: "Booking number",
+  sortOrder: "Ascending",
+};
+
+/**
+ * BR13 — the segment-created date range the Issue Payment screen is given.
+ *
+ * Two days before the statement date, through to today. The wider range is not
+ * slack: it catches transactions a consultant entered late, which is the whole
+ * reason the document specifies it rather than using the statement date twice.
+ *
+ * An unreadable date comes back with an empty `from`, never a guessed one — the
+ * same contract `daysBefore` keeps, and for the same reason: a wrong From is a
+ * search that quietly misses transactions.
+ */
+function dvcDateRange(statementDate, today) {
+  const to = toIsoDate(today) || new Date().toISOString().slice(0, 10);
+  return { from: daysBefore(toIsoDate(statementDate) || statementDate, 2), to };
+}
+
+/**
+ * Step 16 — the payment session label, `DVC DD/MM/YYYY`.
+ *
+ * The format is the step's own and it is NOT this project's usual ISO: a person
+ * reopens this session from a list in Tramada tomorrow morning, and the list is
+ * read by people who write dates the Australian way. An unreadable date comes
+ * back as a bare "DVC" rather than "DVC undefined/NaN/..." — the session still
+ * saves, which BR14 requires, and it does not carry a date nobody entered.
+ */
+function dvcSessionLabel(date) {
+  const iso = toIsoDate(date);
+  if (!iso) return "DVC";
+  const [y, m, d] = iso.split("-");
+  return `DVC ${d}/${m}/${y}`;
+}
+
+/* ── steps 12 to 16: the Tramada Issue Payment half ──────────────────────── */
+
+/*
+ * The option VALUES behind BR12's labels, measured 18-09-2026.
+ *
+ * `DVC_PAYMENT_PARAMETERS` above holds what a person reads off the screen.
+ * These are what the `<option value>`s actually say, taken from the live
+ * capture of `finance/finance-payments-issue.htm` written down in
+ * docs/tokio-marine.md — the same screen, reached by the same two clicks, for a
+ * different payment category.
+ *
+ * THEY ARE A CROSS-CHECK, NOT THE KEY. `resolveSelectOption` matches on the
+ * label first and only falls back to these, because encoding today's option
+ * value as tomorrow's selector is exactly what §6 opens with — and because a
+ * value that has quietly stopped existing selects NOTHING, which on this screen
+ * means searching every payment category there is and getting back a long,
+ * plausible list of somebody else's transactions.
+ */
+const DVC_ISSUE_PAYMENT_OPTIONS = {
+  // The mouthful behind "Agency CC Reimbursement". There is no second CC
+  // category on the screen, so there is nothing for it to be confused with.
+  paymentCategory: "AGENCY_CC_DEBTOR_REIMBURSEMENT_PAYMENT",
+  bankAccount: "1",
+  sortBy: "BOOKING_NUMBER",
+  sortOrder: "ASCENDING",
+};
+
+/**
+ * Pick one `<option>` off a dropdown that was READ, not assumed.
+ *
+ * `offered` is whatever the live select is actually holding — `[{value, text}]`
+ * scraped off the page. The label wins, the measured value is the fallback, and
+ * nothing else counts as a match.
+ *
+ * It returns the OFFERED LIST on failure instead of throwing. This file is pure
+ * and has no idea which selector it is looking at; the sentence a person needs
+ * is "Payment Category would not take 'Agency CC Reimbursement' — it offered
+ * these five instead", and only the caller can write that.
+ */
+function resolveSelectOption(offered, wantedLabel, expectedValue) {
+  /* PUNCTUATION IS NOT PART OF A LABEL.
+   *
+   * Measured 22-09-2026 against the live screen. BR12 names the DVC card as
+   *
+   *     555003….0457 CA – A – Westpac DVC VCC     (ellipsis, en dashes)
+   *
+   * and Tramada's own dropdown offers
+   *
+   *     555003....0457 CA - A - Westpac DVC VCC   (four dots, hyphens)
+   *
+   * Character for character those are two different strings, so the match found
+   * nothing and the run refused a card that was sitting right there — which is
+   * a rule being enforced against a typographic convention rather than against
+   * a fact. A document written in Word and a Java web form will never agree on
+   * a dash, and neither of them is wrong.
+   *
+   * Dashes, ellipses, runs of dots and curly quotes are folded; DIGITS AND
+   * LETTERS ARE NOT TOUCHED, which is what actually distinguishes one card,
+   * account or branch from another. */
+  const norm = (s) => String(s == null ? "" : s)
+    .replace(/[\u2010-\u2015\u2212]/g, "-")      // ‐ ‑ ‒ – — ― −
+    .replace(/[\u2018\u2019\u201B]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/\u2026/g, "...")                    // …
+    .replace(/\.{2,}/g, "..")                     // "...." and "..." are one thing
+    .replace(/\s+/g, " ").trim().toLowerCase();
+  /* `text` is what the page says and `key` is what it is compared on. They
+     were one field, normalised, and every error message and progress line that
+     quoted a chosen option quoted it lowercased back at the reader. */
+  const list = (offered || []).map((o) => {
+    const text = String((o && (o.text != null ? o.text : o.label)) || "").replace(/\s+/g, " ").trim();
+    return { value: o && o.value != null ? String(o.value) : "", text, key: norm(text) };
+  });
+  const want = norm(wantedLabel);
+
+  /* BLANK IS A REAL ANSWER, NOT A MISSING ONE. BR12 wants Level Branch 1 and 2
+     left blank, and "" is an option on those selects. Treating an empty want as
+     "no match" would make the run refuse to do the thing the rule asks for. */
+  if (!want) {
+    const blank = list.find((o) => o.value === "");
+    return blank ? { value: "", text: blank.text, how: "blank" }
+      : { value: null, text: "", how: "", offered: list };
+  }
+
+  const exact = list.find((o) => o.key === want);
+  if (exact) return { value: exact.value, text: exact.text, how: "label" };
+
+  /* Then a label that CONTAINS what was asked for, and only when exactly one
+     does. Tramada writes "[TRUST] Trust Account" where BR12 says "Trust
+     Account" — the bracketed code in front is the shape every account and
+     creditor on this portal carries, so starts-with would never fire. Two
+     matches is an ambiguity and picking between them is a guess about which
+     bank account a day's payments come out of. */
+  const loose = list.filter((o) => o.key && o.key.includes(want));
+  if (loose.length === 1) return { value: loose[0].value, text: loose[0].text, how: "label" };
+
+  /* The measured value, last. A reworded label still finds the right row here;
+     a renumbered value was already found by the label above. Both changing at
+     once is a screen that has to be re-measured, and the caller says so with
+     the offered list in hand. */
+  if (expectedValue != null && expectedValue !== "") {
+    const byValue = list.find((o) => o.value === String(expectedValue));
+    if (byValue) return { value: byValue.value, text: byValue.text, how: "measured value" };
+  }
+  return { value: null, text: "", how: "", offered: list, ambiguous: loose.length > 1 };
+}
+
+/**
+ * §4's gate on the one DVC field that names a card.
+ *
+ * BR12 identifies the DVC card by the label Tramada shows in its dropdown —
+ * `555003….0457 CA – A – Westpac DVC VCC` — a BIN and a last four with the
+ * middle already masked by Tramada. That is a label on a screen, and matching
+ * it is the only way to pick the right card out of several.
+ *
+ * A FULL CARD NUMBER IS NOT A LABEL. Nothing in this project takes a PAN, there
+ * is no vault here and nothing redacts this server's socket (§4), so a value
+ * carrying thirteen or more digits is refused BEFORE it can be typed into a
+ * page, repeated by `onProgress`, or written to the run store. The refusal
+ * quotes none of them back — an error message is a log line too.
+ */
+function assertCardLabel(value, field = "Credit Card") {
+  const s = String(value == null ? "" : value).trim();
+  /* Separators out, then THIRTEEN CONSECUTIVE DIGITS — the shape of a card
+     number, whether it arrives closed up, spaced or hyphenated. Counting every
+     digit in the whole string instead refused BR12's own value the moment
+     somebody added a year or a branch number to the end of it, and a guard that
+     fires on correct input gets turned off. */
+  if (/\d{13,}/.test(s.replace(/[\s.\-\u2013\u2014\u2026]/g, ""))) {
+    throw new Error(
+      `${field} looks like a full card number, and nothing in this project takes one ` +
+      `(CLAUDE.md §4). Use the masked label Tramada shows in the dropdown — the leading ` +
+      `digits, an ellipsis, the last four and the card's name.`);
+  }
+  return s;
+}
+
+/**
+ * The Issue Payments RESULTS grid, by header name.
+ *
+ * THIS GRID HAS NOT BEEN MEASURED AND THESE NAMES ARE CANDIDATES. The search
+ * form above it has been measured (docs/tokio-marine.md, 18-09-2026), but
+ * nobody has yet pressed Go on the Agency CC Reimbursement category and written
+ * down what came back — `tramada-tokio.js` is the only code that has ever
+ * reached this screen and it stops at the search.
+ *
+ * So the names below are drawn from two places that are evidence rather than
+ * guesswork: the Sort by list on the form itself (`BOOKING_NUMBER | REFERENCE |
+ * CREDITOR_INVOICE_NUMBER | DATE_OF_ISSUE | SEGMENT_TYPE | PASSENGER_NAME` — a
+ * screen sorts by columns it shows), and the creditor payment form's own
+ * segment grid in docs/tramada-field-map.md.
+ *
+ * What makes this safe to ship unmeasured is that it CANNOT DEGRADE TO
+ * POSITIONS. `mapColumns` tries each alias in turn and a run that cannot find
+ * booking or amount stops and prints the headers it actually got — the opposite
+ * of counting from zero and ticking by index, which is the bug §6 opens with.
+ * `tools/probe-dvc-payment.js` exists to turn this list into a measurement.
+ */
+const ISSUE_PAYMENT_COLUMNS = {
+  bookingNo: ["booking no.", "booking no", "booking number", "booking"],
+  reference: ["reference", "supplier reference", "supplier ref", "creditor invoice number"],
+  segType: ["seg. type", "seg type", "segment type"],
+  passenger: ["passenger name", "passenger", "pax name"],
+  // "Segment Date" is what the Agency CC Reimbursement grid calls it (23-09-2026).
+  issued: ["date of issue", "issue date", "segment created date", "segment date", "created"],
+  amount: ["amount", "balance due", "creditor payable", "payable", "outstanding", "nett"],
+};
+
+/*
+ * Booking and amount, and nothing else. They are the two BR03 matches on, and a
+ * grid missing either cannot be ticked from at all. Everything else here is
+ * used to SAY which row was ticked, so a missing Passenger Name column costs a
+ * clearer sentence and not a wrong tick.
+ */
+const ISSUE_PAYMENT_REQUIRED_COLUMNS = {
+  bookingNo: "Booking No.",
+  amount: "Amount",
+};
+
+/**
+ * The Issue Payment results grid → rows the plan can reason about.
+ *
+ * `selectId` is whatever the page gave the row's checkbox and is carried
+ * through untouched: the reconcile screen reorders its table the moment a box
+ * is ticked (§6), so a row is addressed by its own id and never by where it was
+ * sitting when the grid was read.
+ */
+function parseIssuePaymentRows(headers, gridRows) {
+  const cols = mapColumns(headers, ISSUE_PAYMENT_COLUMNS);
+  const names = (headers || []).map((h) => String(h == null ? "" : h).trim());
+  const missingColumns = Object.keys(ISSUE_PAYMENT_REQUIRED_COLUMNS)
+    .filter((k) => cols[k] < 0)
+    .map((k) => ISSUE_PAYMENT_REQUIRED_COLUMNS[k]);
+
+  const at = (cells, key) =>
+    (cols[key] >= 0 && cells && cells[cols[key]] != null ? String(cells[cols[key]]).trim() : "");
+
+  const rows = (gridRows || []).map((g, i) => {
+    // Either a bare array of cell text, or {cells, selectId} from the page.
+    const cells = Array.isArray(g) ? g : (g && g.cells) || [];
+    const row = {
+      n: i + 1,
+      selectId: (!Array.isArray(g) && g && g.selectId) || "",
+      alreadyTicked: !Array.isArray(g) && !!(g && g.alreadyTicked),
+      bookingNo: at(cells, "bookingNo"),
+      reference: at(cells, "reference"),
+      segType: at(cells, "segType"),
+      passenger: at(cells, "passenger"),
+      issued: at(cells, "issued"),
+      amount: at(cells, "amount"),
+      cells: cells.map((c) => (c == null ? "" : String(c))),
+    };
+    row.amountCents = cents(row.amount);
+    if (row.amountCents != null) row.amount = money(row.amountCents);
+    row.bookingKey = dvcBookingKey(row.bookingNo);
+    return row;
+  });
+
+  return { rows, columns: names.filter(Boolean), missingColumns };
+}
+
+/** How a grid row is named in a sentence a person reads. */
+function issuePaymentRowLabel(g) {
+  const r = g || {};
+  return `booking ${r.bookingNo || "(none)"} $${r.amount || "?"}` +
+    (r.segType ? ` ${r.segType}` : "") + (r.passenger ? ` ${r.passenger}` : "");
+}
+
+/**
+ * Step 14 — which rows on the Issue Payment grid this run may tick.
+ *
+ * The grid is TRAMADA'S list of outstanding Agency CC Reimbursement
+ * transactions over BR13's date range. The DVC report is the BANK'S list of
+ * what the cards were actually charged. A grid row is ticked when a DVC line
+ * the reconciliation settled cleanly paid it, and step 14 is explicit about the
+ * rest: "Do not tick lines flagged as exceptions — leave these for the Travel
+ * Accounts team to resolve."
+ *
+ * DRIVEN FROM THE DECISIONS, NOT FROM THE GRID. `reconcileDvc` has already
+ * worked out which lines are clean and which costing each one claimed, and that
+ * is the authority here; walking the grid and re-deriving a match would be a
+ * second, subtly different matcher deciding money, which is the one thing §2
+ * forbids outright. A clean verdict claims exactly one costing — every
+ * one-to-many and every merchant fee carries a remark — so each clean line ticks
+ * at most one row.
+ *
+ * A GRID ROW NOBODY PAID IS NOT AN ERROR. BR13 makes the Tramada range two days
+ * wider than the report on purpose, so the grid legitimately holds costings this
+ * report has nothing to say about. Those come back `tick: false` carrying
+ * `outsideReport`, and they deliberately do NOT count as exceptions — if they
+ * did, no day's session could ever be "complete", and every email would send
+ * Travel Accounts looking for errors that are not there.
+ */
+function planDvcPayment(dvcRows, gridRows, opts = {}) {
+  const tolerance = opts.toleranceCents == null ? DVC_TOLERANCE_CENTS : opts.toleranceCents;
+  const grid = (gridRows || []).map((g, i) => ({
+    ...g,
+    n: g && g.n != null ? g.n : i + 1,
+    tick: false,
+    why: "",
+    dvcLine: null,
+    exception: false,
+    outsideReport: false,
+  }));
+
+  const all = dvcRows || [];
+  const clean = all.filter((r) => r.matched && !r.remark);
+  const taken = new Set();
+  const paired = new Set();
+
+  for (const r of clean) {
+    const claimed = r.tramadaAmounts || [];
+    /* A clean verdict claims exactly ONE costing. If that ever stops being
+       true the row is skipped rather than half-ticked: ticking one leg of a
+       one-to-many puts part of a card charge into a payment and leaves the
+       rest, which is a wrong number in Tramada rather than a missing one. */
+    if (claimed.length !== 1) continue;
+    const wantCents = cents(claimed[0]);
+    if (wantCents == null || !r.bookingKey) continue;
+
+    const hit = grid.find((g) =>
+      !taken.has(g.n) &&
+      g.bookingKey && g.bookingKey === r.bookingKey &&
+      g.amountCents != null &&
+      Math.abs(g.amountCents - wantCents) <= tolerance);
+    if (!hit) continue;
+
+    taken.add(hit.n);
+    paired.add(r);
+    hit.tick = true;
+    hit.dvcLine = r.line == null ? r.n : r.line;
+    hit.why = `DVC line ${hit.dvcLine} — booking ${r.bookingNo}, card charged $${r.amount}` +
+      (r.matchedOn ? ` (${r.matchedOn})` : "");
+  }
+
+  /* Why each remaining row was LEFT. Every one of these is a sentence Travel
+     Accounts acts on, so the distinctions are the same ones step 11 draws:
+     a booking this report never mentions is a different problem from a booking
+     it mentions and could not settle. */
+  for (const g of grid) {
+    if (g.tick) continue;
+    if (!g.bookingKey) {
+      g.exception = true;
+      g.why = "this grid row carries no booking number, so nothing on the report can be matched to it";
+      continue;
+    }
+    const onBooking = all.filter((r) => r.bookingKey === g.bookingKey);
+    if (!onBooking.length) {
+      g.outsideReport = true;
+      g.why = `booking ${g.bookingNo} is not on this DVC report — the Tramada range is two days ` +
+        `wider than the report (BR13), so this is expected rather than an error`;
+      continue;
+    }
+    const flagged = onBooking.filter((r) => r.remark);
+    if (flagged.length) {
+      g.exception = true;
+      g.why = `booking ${g.bookingNo} is on the report but flagged — ${flagged[0].remark}` +
+        (flagged[0].detail ? ` (${flagged[0].detail})` : "") +
+        ". Step 14 does not tick a flagged line.";
+      continue;
+    }
+    /* On the report, settled cleanly, and still not this row: the clean line
+       claimed a DIFFERENT costing on the same booking. Common and harmless —
+       a booking with two costings where the card paid one of them. */
+    g.outsideReport = true;
+    g.why = `booking ${g.bookingNo} was matched on this report, but to a different costing ` +
+      `than this $${g.amount} row`;
+  }
+
+  const ticked = grid.filter((g) => g.tick);
+  /* TICKED IN A SAVED SESSION, AND NOT CONFIDENT ANY MORE. A re-run reopens
+     the day's session (RAA, 23-09-2026) and its earlier ticks come back on;
+     one this run would not make — the line was re-uploaded with a different
+     amount, say — is NEVER unticked here. Unticking is a judgement about money
+     already placed in a session, which is a person's. It is named instead,
+     and the session is not complete while it stands. */
+  const stale = grid.filter((g) => g.alreadyTicked && !g.tick);
+  /* Clean DVC lines with NO row on the grid. BR13's range exists to contain
+     them, so one that is missing usually means the consultant has not entered
+     the costing yet — a person's problem, and named rather than counted,
+     because "which one" is the first thing they will ask. */
+  const missingFromGrid = clean.filter((r) => !paired.has(r)).map((r) => ({
+    line: r.line == null ? r.n : r.line,
+    bookingNo: r.bookingNo,
+    amount: r.amount,
+    why: `booking ${r.bookingNo} matched Tramada's export for $${r.amount}, but no row for it ` +
+      `came back on the Issue Payment grid`,
+  }));
+
+  return {
+    rows: grid,
+    ticked: ticked.length,
+    // Of the ticked, how many the saved session already had — so a re-run can
+    // say "2 already in the session, 2 added" rather than "4 ticked".
+    alreadyTicked: ticked.filter((g) => g.alreadyTicked).length,
+    stale: stale.map((g) => ({ bookingNo: g.bookingNo, amount: g.amount, why: g.why })),
+    left: grid.length - ticked.length,
+    tickCents: ticked.reduce((a, g) => a + (g.amountCents || 0), 0),
+    exceptions: grid.filter((g) => g.exception).length,
+    outsideReport: grid.filter((g) => g.outsideReport).length,
+    missingFromGrid,
+  };
+}
+
+/**
+ * Do the two spreadsheets reconcile with no errors? — THE GATE ON TRAMADA.
+ *
+ * RAA's process as drawn, 23-09-2026:
+ *
+ *   Westpac + Tramada spreadsheets → reconcile
+ *     errors?  → email a person → they fix the Westpac discrepancies and
+ *                re-upload → reconcile again, until no errors arise
+ *     none     → the Tramada reimbursement starts: tick, save the session —
+ *                "saved even if some other errors are found" there — and
+ *                email the accounts team the state of the session. A person
+ *                checks it, changes what needs changing, and clicks Issue.
+ *
+ * So a spreadsheet error keeps the whole Tramada half shut: fixing the Westpac
+ * report comes first, and entering half a day in Tramada before it is fixed is
+ * the step the drawing does not have. Errors found INSIDE Tramada — a clean
+ * line with no grid row, a ticked total more than BR04's fifty cents out — are
+ * a different thing, and `decideDvcCommit` saves the session with them.
+ *
+ * ── WHAT IS NOT COUNTED, AND WHY ────────────────────────────────────────────
+ *
+ * Tramada costings that nothing on the report paid (`unmatchedTramada`) are NOT
+ * a blocker. BR13 makes the Tramada range two days wider than the report on
+ * purpose, to catch costings entered late, so leftovers are the expected state
+ * and not an error — the fixtures carry four on a day that is otherwise
+ * perfect. Counting them would mean no day ever reached Tramada.
+ */
+function dvcReconciliationIsGreen(summary, totalCheck) {
+  const s = summary || {};
+  const blockers = [];
+
+  /* Nothing reconciled is not "all green". An empty run satisfies every test
+     below by having nothing to fail them, and calling that done would email
+     Travel Accounts that a day nobody read is ready to pay (§6). */
+  if (!s.total) blockers.push("nothing was reconciled");
+  else if (s.matched !== s.total) {
+    if (s.unmatched) {
+      blockers.push(`${s.unmatched} DVC line${s.unmatched === 1 ? " is" : "s are"} not matched`);
+    }
+    if (s.matchedForReview) {
+      blockers.push(`${s.matchedForReview} line${s.matchedForReview === 1 ? " is" : "s are"} matched but ` +
+        `flagged for a person`);
+    }
+    /* A count that adds up to neither. `summariseDvc` splits every row into
+       exactly one of matched / matchedForReview / unmatched, so this cannot
+       happen — and if a later change breaks that, the answer must be "not
+       done" rather than a green light on arithmetic it no longer understands. */
+    if (!s.unmatched && !s.matchedForReview) {
+      blockers.push(`${s.total - s.matched} line${s.total - s.matched === 1 ? "" : "s"} did not come back ` +
+        `matched, flagged or unmatched`);
+    }
+  }
+  // Step 15 / BR04, and only when somebody entered a figure to check against.
+  if (totalCheck && totalCheck.checked && totalCheck.ok === false) blockers.push(totalCheck.reason);
+
+  const green = !blockers.length;
+  return {
+    green,
+    blockers,
+    why: green
+      ? `all ${s.total} line${s.total === 1 ? "" : "s"} matched cleanly` +
+        (totalCheck && totalCheck.checked ? " and the report totals agree" : "")
+      : `the reconciliation is not clean — ${blockers.join("; ")}`,
+  };
+}
+
+/**
+ * Whether steps 12-16 run at all: only once the spreadsheets reconcile with no
+ * errors (see `dvcReconciliationIsGreen` for RAA's drawing of the process).
+ *
+ * Checked before a browser opens. A day with spreadsheet errors goes to a
+ * person by email first; connecting, signing in and loading two screens for it
+ * would be minutes spent on something that has to be run again anyway.
+ */
+function dvcTramadaGate(summary, totalCheck) {
+  const g = dvcReconciliationIsGreen(summary, totalCheck);
+  if (!g.green) {
+    return { open: false, blockers: g.blockers,
+      why: `the spreadsheets do not reconcile yet (${g.blockers.join("; ")}) — the Westpac ` +
+        "discrepancies are fixed and re-uploaded first, and the Tramada reimbursement starts once no " +
+        "errors arise" };
+  }
+  return { open: true, blockers: [], why: g.why };
+}
+
+/*
+ * What the run may do at the end: save the Payment Session, or nothing.
+ *
+ * THE AGENT NEVER PRESSES ISSUE (RAA, 23-09-2026). Step 17 is Travel Accounts'
+ * — they open the session the agent saved, check it, tick Round Remaining if it
+ * needs it, and Issue. Issue moves money out of the trust account and nothing
+ * rolls it back, so the last click on it belongs to a person who has read what
+ * it pays. There is deliberately no `issue` here for a caller to reach for; a
+ * run cannot be talked into it because the vocabulary does not have the word.
+ */
+const DVC_COMMIT = Object.freeze({ nothing: "nothing", session: "session" });
+
+/**
+ * Step 16 — save the Payment Session, or do nothing.
+ *
+ * Two separate questions, easy to read apart:
+ *
+ *   `wanted`  — is there anything to put in a session at all?
+ *   `action`  — is this run permitted to save it?
+ *
+ * ERRORS FOUND IN TRAMADA DO NOT STOP THE SESSION. RAA's drawing: "session is
+ * then saved even if some other errors are found". By the time this runs the
+ * spreadsheets have reconciled with no errors (`dvcTramadaGate`), so what can
+ * still go wrong is Tramada's side — a clean line with no grid row, a row the
+ * plan would not tick, a ticked total more than BR04's fifty cents out, a tick
+ * a reopened session holds that is no longer confident. Those come back in
+ * `errors`, the session is saved with every tick that could be made, and the
+ * email tells the accounts team what to check before they Issue.
+ *
+ * ISSUE IS A PERSON'S, after checking the saved session and changing what needs
+ * changing. `complete` says whether there was nothing to check.
+ *
+ * What does stop it:
+ *
+ *   - nothing ticked. An empty session is a record in Tramada saying a day was
+ *     worked when nothing was done; §6 does not press Done on an empty
+ *     statement page for the same reason.
+ *   - a dry run, which does everything except that click.
+ *
+ * A DAY THAT ALREADY HAS A SESSION IS RE-CHECKED, NOT REFUSED (RAA,
+ * 23-09-2026). The run reopens that session (`reopened`), ticks whatever is
+ * confident now, and saves it again — so the fix-and-re-upload loop ends in an
+ * email saying the day is ready to Issue. It never makes a second session: step
+ * 16's own note is that a second one carries the first one's transactions
+ * again, two sessions a person could Issue over the same card charges.
+ *
+ * `complete` means the session holds the whole day with nothing found to check.
+ */
+function decideDvcCommit(o = {}) {
+  const {
+    plan, dvcSummary, totalCheck, statementDate,
+    dryRun = true, reopened = false,
+  } = o;
+  const sessionLabel = dvcSessionLabel(statementDate);
+  const errors = [];
+
+  const gate = dvcReconciliationIsGreen(dvcSummary, totalCheck);
+  if (!gate.green) errors.push(...gate.blockers);
+
+  if (plan && plan.exceptions) {
+    errors.push(`${plan.exceptions} grid row${plan.exceptions === 1 ? " was" : "s were"} left unticked ` +
+      `as exceptions`);
+  }
+  if (plan && plan.stale && plan.stale.length) {
+    errors.push(`${plan.stale.length} row${plan.stale.length === 1 ? " is" : "s are"} ticked in the saved ` +
+      `session but no longer match with confidence (${plan.stale.map((r) => `booking ${r.bookingNo} ` +
+      `$${r.amount}`).join(", ")}) — left ticked for a person to decide`);
+  }
+  if (plan && plan.missingFromGrid && plan.missingFromGrid.length) {
+    errors.push(`${plan.missingFromGrid.length} matched line${plan.missingFromGrid.length === 1 ? "" : "s"} ` +
+      `had no row on the Issue Payment grid`);
+  }
+
+  /* Step 15's other total: what the ticks put in the session against what the
+     report says those same lines cost. They differ only by BR04's five cents a
+     transaction, and the whole report is allowed fifty. Past that it is an
+     error for the email — "Total transaction amount does not match" — and
+     still not a reason to throw the ticks away (step 16). */
+  const paidCents = plan ? plan.tickCents : 0;
+  const reportCents = dvcSummary ? dvcSummary.tickableCents : 0;
+  const diffCents = Math.abs(paidCents - reportCents);
+  const withinRounding = diffCents <= DVC_TOTAL_TOLERANCE_CENTS;
+  if (plan && plan.ticked && !withinRounding) {
+    errors.push(`${DVC_REMARKS.total}: the ticked rows come to $${money(paidCents)} against the ` +
+      `report's $${money(reportCents)} for the same lines — $${money(diffCents)} apart, more than the ` +
+      `$${money(DVC_TOTAL_TOLERANCE_CENTS)} BR04 allows across a report`);
+  }
+
+  /* Step 17's "tick Round Remaining if the difference is less than 0.50" — a
+     person's click now, so this is ADVICE carried to the email, not something
+     the run does. Only when there IS a difference: rounding nothing is a click
+     nobody can explain. */
+  const roundRemaining = !!(plan && plan.ticked) && diffCents > 0 && withinRounding;
+  const complete = !errors.length;
+
+  const base = {
+    sessionLabel, errors, complete, diffCents, paidCents, reportCents, roundRemaining, reopened: !!reopened,
+    added: plan ? plan.ticked - (plan.alreadyTicked || 0) : 0,
+    ticked: plan ? plan.ticked : 0,
+    wanted: DVC_COMMIT.nothing, action: DVC_COMMIT.nothing, held: "",
+  };
+
+  if (!plan || !plan.ticked) {
+    return { ...base, complete: false,
+      why: "nothing on the Issue Payment grid matched a clean DVC line, so there is nothing to " +
+        "tick and no session was saved" };
+  }
+  const wanted = DVC_COMMIT.session;
+  const rows = `${plan.ticked} row${plan.ticked === 1 ? "" : "s"}`;
+
+  if (dryRun) {
+    return { ...base, wanted, held: "dry run",
+      why: `${rows} ticked and verified, totalling $${money(paidCents)} — the session was not saved ` +
+        "(dry run)" };
+  }
+  return {
+    ...base, wanted, action: DVC_COMMIT.session,
+    why: (reopened
+      ? `Re-checked Payment Session "${sessionLabel}": ${rows} ticked (${base.added} added this run), ` +
+        `totalling $${money(paidCents)} — saving it again. `
+      : `${rows} ticked, totalling $${money(paidCents)} — saving Payment Session "${sessionLabel}". `) +
+      (complete ? "Nothing to check, so it is ready for Travel Accounts to Issue"
+        : `Saved with ${errors.length} thing${errors.length === 1 ? "" : "s"} found in Tramada to check ` +
+          `before it is Issued: ${errors.join("; ")}`),
+  };
+}
+
+/* ── step 18: the email to Travel Accounts ───────────────────────────────── */
+
+/**
+ * The updated Westpac spreadsheet — step 18's attachment, as CSV.
+ *
+ * THEIR FILE, WITH THE REMARKS FILLED IN. Every column the report arrived with,
+ * in its own order under its own heading, and the Remarks column step 3 asks to
+ * be appended written INTO rather than added a second time. Then two of the
+ * run's own: whether the line reconciled, and why — step 18 asks for a report
+ * that "distinguishes reconciled lines from lines requiring verification", and
+ * a remark alone does not say which a blank one is.
+ *
+ * Not `buildExportGrid`: that one appends BPay's Consultant, Shop, Receipt No
+ * and Allocation columns, which a DVC line has none of, and an attachment with
+ * four empty columns reads as four things the agent failed to fill in.
+ */
+function dvcReportCsv(rows, columns) {
+  const base = (columns || []).filter(Boolean);
+  const isRemarks = (h) => normaliseHeading(h) === "remarks";
+  const headings = base.slice();
+  if (!headings.some(isRemarks)) headings.push("Remarks");
+  headings.push("Reconciled", "Why");
+
+  const body = (rows || []).map((r) => headings.map((h, i) => {
+    if (i >= headings.length - 2) {
+      return h === "Reconciled" ? (r.matched && !r.remark ? "Reconciled" : r.matched ? "Matched — check" : "Not reconciled")
+        : (r.why || "");
+    }
+    if (isRemarks(h)) return dvcRemarksCell(r);
+    const cells = r.cells || {};
+    return cells[h] == null ? "" : String(cells[h]);
+  }));
+  return gridToCsv({ headings, rows: body });
+}
+
+/**
+ * Step 18 — the email to Travel Accounts, built here so every word of it is
+ * tested offline (§7). The mailer only sends what this returns.
+ *
+ * SUBJECT IS THE DOCUMENT'S OWN, "AI Agent DVC reconciliation", with the day
+ * after it: Travel Accounts filter on that phrase, and one subject a day for a
+ * month is a thread nobody can find a date in.
+ *
+ * THE FIRST LINE SAYS WHAT TO DO. Three things can have happened and they want
+ * three different mornings: the whole day is in a session ready to Issue; part
+ * of it is, with exceptions to resolve first; or nothing was entered and why.
+ * Everything after that line is evidence.
+ *
+ * Passenger names are not in here — the report arrives with them deleted
+ * (step 1), and nothing in the body is taken from anywhere else.
+ */
+function dvcEmail(o = {}) {
+  const {
+    statementDate, summary = {}, rows = [], unmatchedTramada = [], totalCheck,
+    payment = null, columns = [], runId = "", dryRun = false,
+  } = o;
+  const day = (dvcSessionLabel(statementDate).replace(/^DVC ?/, "")) || String(statementDate || "");
+  const label = dvcSessionLabel(statementDate);
+  const s = summary || {};
+  const c = (payment && payment.commit) || null;
+  const saved = !!(payment && payment.saved);
+  const green = dvcReconciliationIsGreen(s, totalCheck).green;
+
+  let headline;
+  let status;
+  const n = (rows || []).filter((r) => !r.matched || r.remark).length;
+  if (!green) {
+    /* ERRORS IDENTIFIED — THE FIRST EMAIL IN RAA'S DRAWING. Nothing has gone
+       into Tramada, on purpose: the Westpac report is fixed and re-uploaded
+       first, and the reimbursement starts on the run that comes back clean. */
+    status = "errors found — fix and re-upload";
+    headline = `The ${day} DVC reconciliation found ` +
+      (n ? `${n} line${n === 1 ? "" : "s"} that do${n === 1 ? "es" : ""} not reconcile` : "errors") +
+      ". Nothing has been entered in Tramada. Please fix the Westpac discrepancies (below, and in the " +
+      "Remarks column of the attachment) and upload the corrected report — the reconciliation runs " +
+      "again, and the Tramada reimbursement starts once no errors arise.";
+  } else if (saved && c && c.complete) {
+    status = "ready to issue";
+    headline = `All ${s.total} DVC line${s.total === 1 ? "" : "s"} for ${day} reconciled. Payment Session ` +
+      `"${label}" has been ${c.reopened ? "re-checked and saved again" : "saved"} in Tramada with ` +
+      `${c.ticked} transaction${c.ticked === 1 ? "" : "s"} totalling $${money(c.paidCents)}. Please open ` +
+      "it, check it, make any changes needed" +
+      (c.roundRemaining ? `, tick Round Remaining (the $${money(c.diffCents)} rounding is inside BR04's $0.50)` : "") +
+      " and Issue the payment.";
+  } else if (saved && c) {
+    /* THE SESSION IS SAVED; TRAMADA RAISED SOMETHING. The spreadsheets agreed,
+       so this is Tramada's side, and the drawing's answer is a person checking
+       the saved session and changing what needs changing before Issue. */
+    status = "session saved — check before issuing";
+    const k = (c.errors || []).length;
+    headline = `The ${day} DVC spreadsheets reconciled, and Payment Session "${label}" has been ` +
+      `${c.reopened ? "re-checked and saved again" : "saved"} in Tramada with ${c.ticked} ` +
+      `transaction${c.ticked === 1 ? "" : "s"} totalling $${money(c.paidCents)} — but Tramada raised ` +
+      `${k} thing${k === 1 ? "" : "s"} to check (below). Please open the session, make any changes ` +
+      "needed, and then Issue.";
+  } else {
+    status = "not entered";
+    const why = (payment && (payment.error || payment.why || (c && c.why))) || "";
+    headline = `The ${day} DVC spreadsheets reconciled, but no Payment Session was saved in Tramada` +
+      (dryRun ? " (dry run)" : "") + (why ? ` — ${why}` : "") + ".";
+  }
+
+  const exceptions = (rows || []).filter((r) => !r.matched || r.remark);
+  const lines = [
+    headline,
+    "",
+    `Settlement date: ${day}`,
+    `DVC lines: ${s.total || 0} — ${s.matched || 0} reconciled` +
+      (s.matchedForReview ? `, ${s.matchedForReview} matched but flagged` : "") +
+      (s.unmatched ? `, ${s.unmatched} not matched` : ""),
+  ];
+  if (totalCheck && totalCheck.checked) lines.push(`Report total: ${totalCheck.reason}`);
+  if (c) {
+    lines.push(`Payment Session: ${saved ? `"${label}" saved` : "not saved"} — ${c.ticked} ticked, ` +
+      `$${money(c.paidCents)} against the report's $${money(c.reportCents)}`);
+  }
+  if (c && c.errors && c.errors.length) {
+    lines.push("", "Still for a person:");
+    for (const e of c.errors) lines.push(`  - ${e}`);
+  }
+  if (exceptions.length) {
+    lines.push("", "Exceptions (not ticked):");
+    for (const r of exceptions) {
+      lines.push(`  - line ${r.line == null ? r.n : r.line}: booking ${r.bookingNo || "(none)"} ` +
+        `$${r.amount} — ${dvcRemarksCell(r) || "not matched"}`);
+    }
+  }
+  /* NOT "EXPECTED" WHEN A FLAGGED LINE IS ON THE SAME BOOKING. A hotel charged
+     $150.00 against its $420.00 costing leaves that costing unclaimed too, and
+     listing it under BR13's harmless leftovers told Travel Accounts the one
+     costing they need to look at was nothing to worry about. It is already
+     named in that exception's own line, so it is left out here. */
+  const flaggedBookings = new Set(exceptions.map((r) => r.bookingKey || r.bookingNo).filter(Boolean));
+  const leftovers = unmatchedTramada.filter((t) => !flaggedBookings.has(t.bookingKey || t.bookingNo));
+  if (leftovers.length) {
+    lines.push("", `Tramada costings nothing on the report paid (expected — BR13's wider range): ` +
+      leftovers.slice(0, 12).map((t) => `${t.bookingNo} $${t.amount}`).join(", ") +
+      (leftovers.length > 12 ? `, and ${leftovers.length - 12} more` : ""));
+  }
+  lines.push("",
+    "The agent does not press Issue. Issuing the payment is Travel Accounts' step (docs/dvc.md step 17).",
+    runId ? `Run ${runId}` : "");
+
+  const text = lines.join("\n").replace(/\n+$/, "") + "\n";
+  const escHtml = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const html = "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:14px\">" +
+    `<p><b>${escHtml(headline)}</b></p>` +
+    `<pre style="font-family:Consolas,monospace;font-size:13px">${escHtml(lines.slice(2).join("\n"))}</pre>` +
+    "</div>";
+
+  const stamp = toIsoDate(statementDate) || "undated";
+  return {
+    subject: `AI Agent DVC reconciliation — ${day}` + (dryRun ? " [DRY RUN]" : "") + ` — ${status}`,
+    text,
+    html,
+    status,
+    attachment: {
+      filename: `dvc-reconciliation-${stamp}.csv`,
+      contentType: "text/csv; charset=utf-8",
+      // A BOM for the same reason the export route sends one: Excel on Windows
+      // otherwise opens a UTF-8 CSV as mojibake.
+      content: "﻿" + dvcReportCsv(rows, columns),
+    },
+  };
+}
+
+/**
+ * What changed between two uploads of the same day's Westpac report.
+ *
+ * The whole DVC process is: reconcile, flag, a person fixes something,
+ * re-upload, re-run. So the same settlement date arrives more than once by
+ * design, and the one question nobody could answer afterwards was WHAT WAS
+ * DIFFERENT the second time. The bytes of both uploads are kept (§6b) and
+ * nothing compared them, so an edit to the bank's own report was invisible.
+ *
+ * KEYED ON THE CARD NUMBER WHERE IT CAN BE. DVC means one virtual card per
+ * transaction, so the card is the line's identity and survives rows being
+ * inserted, deleted or re-sorted between uploads. It falls back to position
+ * only when the cards do not identify the lines — and says which it used, so a
+ * diff read off positions is never mistaken for one read off identities.
+ */
+const DVC_DIFF_FIELDS = Object.freeze([
+  ["amount", "amount"],
+  ["bookingNo", "booking number"],
+  ["segmentType", "segment type"],
+  ["merchant", "merchant"],
+  ["supplierRef", "supplier reference"],
+  ["transactionDate", "transaction date"],
+  ["settlementDate", "settlement date"],
+  ["consultant", "consultant"],
+  ["shop", "shop"],
+]);
+
+function diffDvcUploads(before, after) {
+  const a = before || [], b = after || [];
+  const usable = (rows) => {
+    const cards = rows.map((r) => String((r && r.cardNumber) || "").trim());
+    return cards.length > 0 && cards.every(Boolean) && new Set(cards).size === cards.length;
+  };
+  /* Both files have to support the card key, or the two sides would be keyed
+     differently and every line would read as removed-and-added. */
+  const byCard = usable(a) && usable(b);
+  const keyOf = (r, i) => (byCard ? String(r.cardNumber).trim() : String(r && r.line != null ? r.line : i + 1));
+
+  const index = (rows) => {
+    const m = new Map();
+    rows.forEach((r, i) => m.set(keyOf(r, i), r));
+    return m;
+  };
+  const mA = index(a), mB = index(b);
+  const name = (r) => `booking ${(r && r.bookingNo) || "(none)"} $${(r && r.amount) || "?"}`;
+
+  const changed = [];
+  const added = [];
+  const removed = [];
+  for (const [k, rowB] of mB) {
+    const rowA = mA.get(k);
+    if (!rowA) { added.push({ key: k, what: name(rowB) }); continue; }
+    const fields = [];
+    for (const [field, label] of DVC_DIFF_FIELDS) {
+      const from = String(rowA[field] == null ? "" : rowA[field]);
+      const to = String(rowB[field] == null ? "" : rowB[field]);
+      if (from !== to) fields.push({ field, label, from, to });
+    }
+    if (fields.length) changed.push({ key: k, what: name(rowB), fields });
+  }
+  for (const [k, rowA] of mA) if (!mB.has(k)) removed.push({ key: k, what: name(rowA) });
+
+  const count = changed.length + added.length + removed.length;
+  const bits = [];
+  if (changed.length) bits.push(`${changed.length} line${changed.length === 1 ? "" : "s"} changed`);
+  if (added.length) bits.push(`${added.length} added`);
+  if (removed.length) bits.push(`${removed.length} removed`);
+
+  return {
+    by: byCard ? "card number" : "position",
+    changed, added, removed, count,
+    same: count === 0,
+    summary: count === 0 ? "identical to the earlier upload" : bits.join(", "),
+  };
+}
+
 /* ── the reports this system knows ───────────────────────────────────────── */
 
 /**
@@ -2499,6 +4243,38 @@ const REPORTS = {
     recPayType: "Creditor Payment",
     files: false,
   },
+  dvc: {
+    key: "dvc",
+    title: "DVC card reconciliation",
+    /* DVC RECONCILES TWO SPREADSHEETS AGAINST EACH OTHER, not a file against a
+       page. The Westpac DVC report and Tramada's Agency CC Reimbursement export
+       are both uploaded, `reconcileDvc` matches them, and no browser is touched
+       at all — which is what `offline` says and what keeps this out of the
+       statement-page phase of a combined run. It has no recPayType for the same
+       reason IPSI has none: there is no shared page for it to share.
+
+       `offline` IS STILL TRUE NOW THAT STEPS 12-16 RUN AUTOMATICALLY. It means
+       "reconciles against no bank statement page", which is what the routing
+       uses it for, and the Issue Payment half is a SEPARATE phase after the
+       matching — `server.js` takes the run lock for it alone. Flipping this flag to describe "opens a browser sometimes"
+       would send every DVC file into `handleMintRun` and match a whole correct
+       report against a bank statement it can never be on.
+
+       `issuesReceipt` is FALSE and must stay false. A combined run routes every
+       report with no recPayType through IPSI's flow, and a DVC file sent down
+       that path would be matched against Tramada's Finance Receipts screens —
+       a report running the wrong automation and then blaming the data, which is
+       the exact bug the IPSI split was made to fix. `runCombinedReconciliation`
+       refuses an `offline` report by name rather than guessing at it. */
+    recPayType: null,
+    files: false,
+    issuesReceipt: false,
+    offline: true,
+    /* Two files, not one. The card holds both and the run needs both — a DVC
+       reconciliation with only the Westpac side would report every line as
+       "Booking number not found". */
+    pairs: { westpac: "Westpac DVC report", tramada: "Tramada Agency CC Reimbursement export" },
+  },
 };
 
 /**
@@ -2526,7 +4302,12 @@ const REPORTS = {
  * at both ends). `test/test-run-order.js` reads that file and fails if the two
  * lists drift apart.
  */
-const RUN_ORDER = ["bpay", "mint", "ipsi", "travelpay"];
+/* DVC is LAST, and it is here only because the guard below requires every
+   defined report to have a place. It never shares a run: it opens no browser
+   and reconciles two spreadsheets against each other, so there is nothing for
+   it to go before or after. `REPORTS.dvc.offline` is what actually keeps it out
+   of a combined run — see `runCombinedReconciliation`. */
+const RUN_ORDER = ["bpay", "mint", "ipsi", "travelpay", "dvc"];
 
 /* A report defined but never ordered would be dropped from every combined run
    without a word. Caught at require time rather than at 3pm on a Friday. */
@@ -2588,6 +4369,14 @@ const MATCHERS = {
 
 /** The matcher for a report, defaulting to Mint's — the older behaviour. */
 function matcherFor(source) {
+  /* An OFFLINE report has no statement page and no matcher, and the default
+     below would hand it Mint's — which would match a DVC line against the
+     Reference column of a page its transactions can never appear on and then
+     report the file as wrong. Refused by name instead: reaching here at all
+     means a caller routed a DVC run down the statement-page path. */
+  if (REPORTS[source] && REPORTS[source].offline) {
+    throw new Error(`${REPORTS[source].title} does not reconcile against a statement page — it has no matcher.`);
+  }
   return (MATCHERS[source] || MATCHERS.mint).fn;
 }
 
@@ -3398,6 +5187,17 @@ module.exports = {
   explainIpsiMiss,
   isIpsiMatcherRemark,
   confirmIpsiIssued, allFiledEarlier, filterIpsiSettlementDate, checkIpsiFileTotal, checkIpsiAllocatedTotal, summariseIpsi,
+  DVC_COLUMNS, DVC_REQUIRED_COLUMNS, TRAMADA_CC_COLUMNS, DVC_REMARKS,
+  DVC_SEGMENT_ABBREVIATIONS, DVC_TOLERANCE_CENTS, DVC_TOTAL_TOLERANCE_CENTS, DVC_MERCHANT_FEE_PERCENT,
+  segmentAbbreviation, dvcSegmentAgrees, dvcDate, dvcBookingKey,
+  parseDvcRows, parseTramadaCcRows, filterDvcSettlementDate,
+  dvcSubsetSum, dvcBreakdown, reconcileDvc, dvcRemarksCell, summariseDvc, checkDvcTotal,
+  DVC_PAYMENT_PARAMETERS, dvcDateRange, dvcSessionLabel,
+  // steps 12-16, the Tramada Issue Payment half; step 18, the email
+  DVC_ISSUE_PAYMENT_OPTIONS, ISSUE_PAYMENT_COLUMNS, ISSUE_PAYMENT_REQUIRED_COLUMNS, DVC_COMMIT,
+  resolveSelectOption, assertCardLabel, parseIssuePaymentRows, issuePaymentRowLabel,
+  planDvcPayment, decideDvcCommit, dvcReconciliationIsGreen, dvcTramadaGate, dvcReportCsv, dvcEmail,
+  diffDvcUploads, DVC_DIFF_FIELDS,
   tidyError,
   summarise,
   MINT_REMARKS, TRAVELPAY_REMARKS, CHEAT_SHEET_COLUMNS,

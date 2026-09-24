@@ -14,7 +14,7 @@
     "docker:up": "docker compose up --build",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f recon",
-    "test": "node test/test-xlsx-lite.js && node test/test-statement-csv.js && node test/test-recon-core.js && node test/test-bpay-rules.js && node test/test-export.js && node test/test-creditor-rules.js && node test/test-travelpay.js && node test/test-ipsi.js && node test/test-run-store.js && node test/test-receipt-guard.js && node test/test-fixtures.js && node test/test-autocomplete-pick.js && node test/test-login-frames.js && node test/test-run-order.js && node test/test-mastercard-oauth.js && node test/test-ipsi-payment.js && node test/test-ipsi-chat.js && node test/test-payments-api.js && node test/test-azure-auth.js && node test/test-run-order.js && node test/test-select-card.js && node test/test-receipt-creditor.js && node test/test-control-by-label.js && node test/test-tokio.js && node test/test-tokio-dates.js && node test/test-tokio-api.js && node test/test-tokio-payment.js && node test/test-tokio-fixture.js && node test/test-ipsi-card-wiring.js && node test/test-tokio-email.js && node test/test-invoice-segments.js",
+    "test": "node test/test-xlsx-lite.js && node test/test-statement-csv.js && node test/test-recon-core.js && node test/test-bpay-rules.js && node test/test-export.js && node test/test-creditor-rules.js && node test/test-travelpay.js && node test/test-dvc.js && node test/test-dvc-payment.js && node test/test-ipsi.js && node test/test-run-store.js && node test/test-receipt-guard.js && node test/test-fixtures.js && node test/test-autocomplete-pick.js && node test/test-login-frames.js && node test/test-run-order.js && node test/test-mastercard-oauth.js && node test/test-ipsi-payment.js && node test/test-ipsi-chat.js && node test/test-payments-api.js && node test/test-azure-auth.js && node test/test-run-order.js && node test/test-select-card.js && node test/test-receipt-creditor.js && node test/test-control-by-label.js && node test/test-tokio.js && node test/test-tokio-dates.js && node test/test-tokio-api.js && node test/test-tokio-payment.js && node test/test-tokio-fixture.js && node test/test-ipsi-card-wiring.js && node test/test-tokio-email.js && node test/test-invoice-segments.js",
     "test:core": "node test/test-recon-core.js",
     "test:xlsx": "node test/test-xlsx-lite.js",
     "shots": "node shots/shot-recon.js && node shots/shot-recon-run.js && node shots/shot-mint-run.js && node shots/shot-overview.js && node shots/shot-both.js && node shots/shot-bpay-rules.js && node shots/shot-login-screen.js",
@@ -22,8 +22,13 @@
     "test:store:pg": "node test/test-store-pg.js",
     "smoke": "node test/smoke-store.js",
     "test:travelpay": "node test/test-travelpay.js",
+    "test:dvc": "node test/test-dvc.js",
+    "test:dvc:payment": "node test/test-dvc-payment.js",
+    "probe:dvc": "node tools/probe-dvc-payment.js",
     "fixtures:bpay": "node tools/make-fixtures.js bpay",
     "fixtures:travelpay": "node tools/make-fixtures.js travelpay",
+    "fixtures:dvc": "node tools/make-dvc-fixtures.js",
+    "fixtures:dvc:tramada": "node tools/make-dvc-bookings.js",
     "fixtures:mint": "node tools/make-fixtures.js mint",
     "fixtures": "node tools/make-fixtures.js all",
     "test:ipsi": "node test/test-ipsi.js",
@@ -62,7 +67,9 @@
     "fixtures:tokio:files": "node tools/make-fixtures.js tokio --files-only",
     "test:tokio:email": "node test/test-tokio-email.js",
     "test:invoice": "node test/test-invoice-segments.js",
-    "probe:invoice": "node tools/probe-invoice-page.js"
+    "probe:invoice": "node tools/probe-invoice-page.js",
+    "email:dvc": "node tools/send-dvc-email.js",
+    "email:signin": "node tools/email-signin.js"
   },
   "dependencies": {
     "@azure/identity": "^4.13.2",
@@ -71,12 +78,13 @@
     "dotenv": "^16.6.1",
     "express": "^4.21.0",
     "express-session": "^1.19.0",
+    "nodemailer": "^7.0.13",
     "pg": "^8.23.0",
     "playwright": "^1.58.2",
     "ws": "^8.18.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "devDependencies": {
     "jsdom": "^30.1.0"
