@@ -28,8 +28,15 @@ const path = require("path");
    what Tramada says is outstanding, and what BR13 matches against. */
 const LIVE = [
   { policy: "220044",   booking: "13817", payable: 175.0,  kind: "travel" },
+  /* 2203224 came back "not found in Tramada" — it is not on page 1 of the
+     grid for this date range. Kept as the BR15 case: a Travel policy the
+     sheet expects and Tramada does not show is reported, never assumed. */
   { policy: "2203224",  booking: "14267", payable: 131.22, kind: "travel" },
-  { policy: "20018654", booking: "128",   payable: 438.32, kind: "travel" },
+  /* 416.21, not 438.32 — the run told us so ("closest 416.21"). 438.32 was
+     read off a screenshot against the wrong row, and BR13 correctly refused
+     it. Left as a note because it is the good kind of failure: the matcher
+     caught bad input rather than reconciling it anyway. */
+  { policy: "20018654", booking: "128",   payable: 416.21, kind: "travel" },
   /* One of each of the other outcomes, so steps 7-8 still have something to
      do and the card does not look like a list of green ticks. */
   { policy: "2200128",  booking: "306",   payable: 312.06, kind: "retail" },
