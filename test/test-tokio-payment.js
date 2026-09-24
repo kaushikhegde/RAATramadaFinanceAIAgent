@@ -459,14 +459,50 @@ const travel = (policy, nett) => ({
       "by the row's own handle — BR12 means one reference can name two rows");
   });
 
-  await check("a tick that does not stay is a refusal, not a silent pass", async () => {
+  await check("a tick that will not stay is reported, and the page carries on", async () => {
+    /* Live 24-Sep-2026: 220044 matched and was ticked correctly, then the
+       read-back 120ms later found it unticked and the whole run stopped —
+       on a row it had got RIGHT. The A column does not settle instantly;
+       Tramada's handler fills the Allocate cell and re-renders the row.
+       So a row is now retried, and a genuine refusal is recorded against
+       THAT ROW while the rest of the page still gets ticked. Nothing is
+       saved either way — saving takes the literal. */
+    const page = fakePage(grid([
+      { reference: "21087245", amount: "700.00" },
+      { reference: "21099988", amount: "250.50" },
+    ]));
+    const boxes = Array.from(page.document.querySelectorAll('input[type="checkbox"]'));
+    // The first row refuses to hold its tick, however often it is clicked.
+    Object.defineProperty(boxes[0], "checked", { get: () => false, set: () => {}, configurable: true });
+
+    const out = await tk.tickMatchingRows(page, [
+      travel("21087245", 700),
+      travel("21099988", 250.5),
+    ]);
+
+    const stubborn = out.results.find((r) => r.policy === "21087245");
+    assert.ok(stubborn, "the refusing row must still be reported");
+    assert.strictEqual(stubborn.ticked, false);
+    assert.match(stubborn.remark, /would not keep this row ticked/i);
+
+    const other = out.results.find((r) => r.policy === "21099988");
+    assert.ok(other && other.ticked, "one stubborn row must not stop the rest of the page");
+  });
+
+  await check("a tick that needs a second click is retried, not abandoned", async () => {
     const page = fakePage(grid([{ reference: "21087245", amount: "700.00" }]));
     const box = page.document.querySelector('input[type="checkbox"]');
-    Object.defineProperty(box, "checked", { get: () => false, set: () => {}, configurable: true });
-    await assert.rejects(
-      () => tk.tickMatchingRows(page, [travel("21087245", 700)]),
-      /A column did not stay ticked for reference 21087245/
-    );
+    let clicks = 0;
+    let held = false;
+    Object.defineProperty(box, "checked", {
+      get: () => held,
+      // First click is dropped, as Tramada's re-render does; the second holds.
+      set: () => { clicks += 1; if (clicks >= 2) held = true; },
+      configurable: true,
+    });
+    const out = await tk.tickMatchingRows(page, [travel("21087245", 700)]);
+    assert.strictEqual(out.results[0].ticked, true, "the retry must rescue it");
+    assert.ok(clicks >= 2, "it should have clicked more than once");
   });
 
   // An empty search and a wrong page look identical in the DOM — Tramada

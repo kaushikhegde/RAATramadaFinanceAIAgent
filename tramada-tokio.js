@@ -495,6 +495,10 @@ async function readTransactionPage(page) {
     const iRef = col(/^reference$/i);
     const iAmount = col(/creditor\s*payable|amount|payable/i);
     const iBooking = col(/booking/i);
+    /* The Allocate column sits beside the A tick. Ticking A is what fills it,
+       so its value is the clearest evidence of whether Tramada accepted the
+       tick or quietly dropped it. Captured only to be REPORTED. */
+    const iAllocate = col(/^allocate$/i);
 
     const rows = [];
     Array.from(table.querySelectorAll("tr")).forEach((tr, index) => {
@@ -521,6 +525,13 @@ async function readTransactionPage(page) {
         reference,
         amount: iAmount >= 0 ? money(cells[iAmount]) : null,
         bookingNo: iBooking >= 0 ? cells[iBooking] : null,
+        allocate: (() => {
+          if (iAllocate < 0) return null;
+          const td = tr.querySelectorAll("td")[iAllocate];
+          if (!td) return null;
+          const inp = td.querySelector("input, textarea");
+          return norm(inp ? inp.value : td.textContent);
+        })(),
         ticked: !!box.checked,
         checkboxId: box.id || null,
       });
@@ -640,13 +651,48 @@ async function tickMatchingRows(page, travelRows, { onStep = () => {} } = {}) {
       continue;
     }
 
-    // A REAL click. Setting .checked and dispatching a synthetic event leaves
-    // Tramada's own onclick unrun — on the IPSI receipt form that meant a row
-    // that looked ticked and was never allocated.
-    await box.check().catch(async () => {
-      await box.click({ force: true }).catch(() => {});
-    });
-    await sleep(120);
+    /* A REAL click, THEN CHECK IT SURVIVED — per row, not at the end.
+       Setting .checked and dispatching a synthetic event leaves Tramada's own
+       onclick unrun; on the IPSI receipt form that meant a row that looked
+       ticked and was never allocated.
+       And the A column does not settle instantly. Ticking it runs Tramada's
+       handler, which fills the Allocate cell beside it and re-renders the
+       row — measured 24-Sep-2026, where a read 120ms later found the tick
+       gone and the run stopped on a row it had in fact ticked correctly. So
+       each row is given time, re-read, and clicked a second time before it
+       is called a refusal. */
+    const tickOnce = async () => {
+      await box.check().catch(async () => {
+        await box.click({ force: true }).catch(() => {});
+      });
+      await sleep(700);
+      const seen = await readTransactionPage(page);
+      return seen.rows.find((x) => x.handle === line.handle) || null;
+    };
+
+    let now = await tickOnce();
+    if (!now || !now.ticked) {
+      onStep({
+        step: "re-ticking",
+        detail: `${line.reference} did not hold on the first click` +
+          (now && now.allocate != null ? ` (Allocate reads ${JSON.stringify(now.allocate)})` : ""),
+      });
+      now = await tickOnce();
+    }
+    if (!now || !now.ticked) {
+      results.push({
+        policy: key,
+        reference: line.reference,
+        handle: line.handle,
+        ticked: false,
+        remark:
+          "Tramada would not keep this row ticked" +
+          (now && now.allocate != null ? ` — Allocate reads ${JSON.stringify(now.allocate)}` : "") +
+          ". The rest of the page was still ticked and nothing was saved.",
+      });
+      onStep({ step: "not ticked", detail: `${key} — Tramada would not keep it ticked` });
+      continue;
+    }
 
     results.push({
       policy: key,
@@ -668,7 +714,8 @@ async function tickMatchingRows(page, travelRows, { onStep = () => {} } = {}) {
     const now = after.rows.find((x) => x.handle === r.handle);
     if (!now || !now.ticked) {
       throw new Error(
-        `The A column did not stay ticked for reference ${r.reference}. Tramada will not include an ` +
+        `The A column was ticked for reference ${r.reference} and had come undone by the end of the ` +
+        `page — something later in the run untick it. Tramada will not include an ` +
           `unticked row in the session — nothing was saved.`
       );
     }
