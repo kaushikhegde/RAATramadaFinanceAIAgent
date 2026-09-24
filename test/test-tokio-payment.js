@@ -113,6 +113,21 @@ function fakePage(html) {
         async allTextContents() {
           return list.map((el) => (el.textContent || "").replace(/\s+/g, " ").trim());
         },
+        /* Playwright locators nest: page.locator(a).locator(b) scopes b
+           inside a. tickMatchingRows relies on it to re-resolve a row's
+           checkbox after Tramada re-renders the row. */
+        locator(inner) {
+          const found = [];
+          for (const el of list) for (const m of el.querySelectorAll(inner)) found.push(m);
+          return wrap(found);
+        },
+        async fill(v) {
+          const el = list[0];
+          if (!el) throw new Error("fill: nothing matches " + sel);
+          el.value = v;
+          el.dispatchEvent(new window.Event("input", { bubbles: true }));
+          el.dispatchEvent(new window.Event("change", { bubbles: true }));
+        },
         async textContent() { return list[0] ? list[0].textContent : null; },
         async check() {
           page.calls.push({ action: "check", sel });

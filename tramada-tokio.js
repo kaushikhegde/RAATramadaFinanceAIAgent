@@ -661,23 +661,52 @@ async function tickMatchingRows(page, travelRows, { onStep = () => {} } = {}) {
        gone and the run stopped on a row it had in fact ticked correctly. So
        each row is given time, re-read, and clicked a second time before it
        is called a refusal. */
-    const tickOnce = async () => {
-      await box.check().catch(async () => {
-        await box.click({ force: true }).catch(() => {});
+    /* RE-RESOLVE THE CHECKBOX EVERY ATTEMPT.
+       Ticking A makes Tramada re-render the row, which detaches the element
+       the locator was pointing at AND strips the data-tokio-row attribute we
+       tagged it with. A retry against the old locator therefore clicks
+       nothing at all and fails silently — which is what the second attempt
+       was doing. readTransactionPage re-tags by row index, so re-reading
+       first is what makes a fresh, attached locator possible. */
+    const tickOnce = async (fillAllocate) => {
+      await readTransactionPage(page); // re-tag after any re-render
+      const cell = page.locator(`[data-tokio-row="${line.handle}"]`);
+      if (!(await cell.count().catch(() => 0))) return null;
+
+      /* "Segments To Allocate" — the tick allocates a payment ACROSS
+         segments, and Tramada was leaving Allocate empty and dropping the
+         tick. Where the amount has to be stated, state it: the figure is
+         Creditor Payable, the row's own number, never one of ours. */
+      if (fillAllocate) {
+        const amountBox = cell.locator("input[type='text'], input:not([type])").first();
+        if (await amountBox.count().catch(() => 0)) {
+          await amountBox.fill(String(line.amount)).catch(() => {});
+          await sleep(200);
+        }
+      }
+
+      const fresh = cell.locator("input[type='checkbox']").first();
+      if (!(await fresh.count().catch(() => 0))) return null;
+      await fresh.check().catch(async () => {
+        await fresh.click({ force: true }).catch(() => {});
       });
       await sleep(700);
       const seen = await readTransactionPage(page);
       return seen.rows.find((x) => x.handle === line.handle) || null;
     };
 
-    let now = await tickOnce();
+    let now = await tickOnce(false);
     if (!now || !now.ticked) {
       onStep({
         step: "re-ticking",
         detail: `${line.reference} did not hold on the first click` +
-          (now && now.allocate != null ? ` (Allocate reads ${JSON.stringify(now.allocate)})` : ""),
+          (now && now.allocate != null ? ` (Allocate reads ${JSON.stringify(now.allocate)})` : "") +
+          " — retrying, and stating the amount this time",
       });
-      now = await tickOnce();
+      // Second attempt states the Allocate amount; third is a plain retry in
+      // case the row simply needed longer.
+      now = await tickOnce(true);
+      if (!now || !now.ticked) now = await tickOnce(false);
     }
     if (!now || !now.ticked) {
       results.push({
