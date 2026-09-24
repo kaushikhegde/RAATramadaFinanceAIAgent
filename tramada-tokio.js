@@ -792,6 +792,10 @@ async function tickMatchingRows(page, travelRows, { onStep = () => {} } = {}) {
       reference: line.reference,
       handle: line.handle,
       ticked: true,
+      // The booking travels with the row so the dashboard can show WHICH
+      // booking was ticked. Reading a policy number back to Travel Accounts
+      // without it makes them look it up again.
+      bookingNo: line.bookingNo || null,
       amount: line.amount,
       expected: netOf(travel),
       differenceCents: verdict.differenceCents,

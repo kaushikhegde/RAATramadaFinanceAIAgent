@@ -7277,6 +7277,30 @@ function askMarkStale(){
         '<div><b>' + r.mismatched.length + '</b>not ticked</div>' +
         '<div><b>' + esc(r.reference) + '</b>reference</div>' +
       '</div>' +
+      /* WHAT WAS TICKED, not only what was not. The card used to list the
+         failures and give the successes as a number, which is the wrong way
+         round for the thing being demonstrated: "2 ticked" asks to be taken
+         on trust, whereas the policy, the amount Tramada held and the amount
+         the sheet expected can be read against each other. It is also where
+         BR13 becomes visible — 416.21 against 416.213 is a match, and seeing
+         the two numbers is what makes that legible rather than magic. */
+      (r.ticked && r.ticked.length
+        ? '<div class="tk-scroll" style="margin-top:10px"><table class="tk-tbl"><thead><tr>' +
+            '<th>Policy</th><th>Booking</th><th class="num">Tramada</th>' +
+            '<th class="num">Sheet</th><th>Reference</th></tr></thead><tbody>' +
+            r.ticked.map((t) => {
+              const drift = (t.differenceCents == null || t.differenceCents === 0)
+                ? 'exact'
+                : '±' + (Math.abs(t.differenceCents) / 100).toFixed(2);
+              return '<tr><td class="mono">' + esc(t.policy || '') + '</td>' +
+                '<td class="mono">' + esc(t.bookingNo || '') + '</td>' +
+                '<td class="num">' + esc(t.amount != null ? t.amount : '') + '</td>' +
+                '<td class="num">' + esc(t.expected != null ? t.expected : '') +
+                  ' <span class="rk">(' + drift + ')</span></td>' +
+                '<td class="rk">' + esc(String(t.reference || '').slice(0, 54)) + '</td></tr>';
+            }).join('') +
+          '</tbody></table></div>'
+        : '') +
       (r.mismatched.length
         ? '<div class="tk-scroll" style="margin-top:10px"><table class="tk-tbl"><thead><tr>' +
             '<th>Policy</th><th>Remark</th></tr></thead><tbody>' +
@@ -7392,8 +7416,11 @@ function askMarkStale(){
   function tokioSteps(r) {
     const steps = (r && r.steps) || [];
     if (!steps.length) return '';
-    return '<details style="margin-top:10px"><summary style="font-size:11.5px;cursor:pointer">' +
-      'Steps taken (' + steps.length + ') — logged for auditing</summary>' +
+    /* OPEN, not collapsed. The guide's "Other features" asks to show the
+       steps the agent took, and a log nobody opens shows nothing. It is also
+       the only place the run explains itself when something goes wrong. */
+    return '<details open style="margin-top:10px"><summary style="font-size:11.5px;cursor:pointer">' +
+      'Steps taken (' + steps.length + ') — every action, in order, logged for auditing</summary>' +
       '<div class="tk-scroll" style="margin-top:7px"><table class="tk-tbl"><tbody>' +
       steps.map((st) =>
         '<tr><td>' + esc(st.step || '') + '</td><td class="rk">' + esc(st.detail || '') + '</td></tr>'
