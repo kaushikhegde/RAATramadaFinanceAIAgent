@@ -74,6 +74,7 @@ function fakePage(html) {
       };
     },
     async isEnabled() { return page._goDisabled !== true; },
+    isClosed() { return page._closed === true; },
     async bringToFront() { page.calls.push({ action: "bringToFront" }); },
     async selectOption(sel, value) {
       const el = window.document.querySelector(sel);
@@ -791,6 +792,28 @@ const travel = (policy, nett) => ({
       tk.PAYMENT.saveSession.length = 0;
       real.forEach((x) => tk.PAYMENT.saveSession.push(x));
     }
+  });
+
+  await check("saving CLOSES the window, and that is the success path", async () => {
+    /* Live 24-Sep-2026: clicking Session saves and closes the popup, and the
+       error scrape that came next died with "Target page, context or browser
+       has been closed" — on a save that had worked. Tramada does not close a
+       window it is about to complain in. */
+    const page = fakePage(SAVE);
+    const realClick = page.click.bind(page);
+    page.click = async (sel) => { await realClick(sel); page._closed = true; };
+
+    const out = await tk.saveSession(page, "TOKIO_SEP 26");
+    assert.strictEqual(out.label, "TOKIO_SEP 26");
+    assert.strictEqual(out.windowClosed, true);
+    assert.strictEqual(out.verifiedOnScreen, false,
+      "it must not claim to have read a confirmation off a window that is gone");
+  });
+
+  await check("a window still open is still read for a refusal", async () => {
+    // The closed-window path must not become a blanket "assume it worked".
+    const page = fakePage(SAVE + `<span>Session Label is required</span>`);
+    await assert.rejects(() => tk.saveSession(page, "TOKIO_SEP 26"), /Tramada refused the session/);
   });
 
   await check("Tramada refusing the session is reported, not swallowed", async () => {

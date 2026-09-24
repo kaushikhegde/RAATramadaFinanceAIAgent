@@ -969,19 +969,40 @@ async function saveSession(page, label, onProgress = () => {}) {
   await Promise.all([page.waitForLoadState("domcontentloaded").catch(() => {}), page.click(saveSel)]);
   await sleep(1500);
 
-  const errors = await page.evaluate(() => {
-    const out = [];
-    document.querySelectorAll("span, div, li, font").forEach((n) => {
-      if (n.children.length) return;
-      const t = (n.textContent || "").trim();
-      if (t && t.length < 200 && /must be|is required|is invalid|cannot be/i.test(t)) out.push(t);
-    });
-    return [...new Set(out)].slice(0, 6);
-  });
+  /* SAVING CLOSES THE WINDOW.
+     The results grid is a popup, and clicking Session saves and closes it —
+     measured 24-Sep-2026, where the run reported
+     "Target page, context or browser has been closed" from the error scrape
+     that came next, on a save that had in fact worked.
+     A closed page is therefore the SUCCESS path, not a fault: Tramada does
+     not close a window it is about to complain in. There is nothing left to
+     read, so say so plainly rather than inventing a confirmation. */
+  if (page.isClosed()) {
+    onProgress(100, `Session ${label} saved — Tramada closed the payment window.`);
+    return { label, windowClosed: true, verifiedOnScreen: false };
+  }
+
+  const errors = await page
+    .evaluate(() => {
+      const out = [];
+      document.querySelectorAll("span, div, li, font").forEach((n) => {
+        if (n.children.length) return;
+        const t = (n.textContent || "").trim();
+        if (t && t.length < 200 && /must be|is required|is invalid|cannot be/i.test(t)) out.push(t);
+      });
+      return [...new Set(out)].slice(0, 6);
+    })
+    // The window can close between isClosed() and here — same success path.
+    .catch(() => null);
+
+  if (errors === null) {
+    onProgress(100, `Session ${label} saved — Tramada closed the payment window.`);
+    return { label, windowClosed: true, verifiedOnScreen: false };
+  }
   if (errors.length) throw new Error(`Tramada refused the session: ${errors.join("; ")}`);
 
   onProgress(100, `Session ${label} saved.`);
-  return { label };
+  return { label, windowClosed: false, verifiedOnScreen: true };
 }
 
 
@@ -1093,7 +1114,7 @@ async function runTokioReconciliation({
       );
       onProgress(100, "Nothing outstanding for this creditor — nothing ticked.");
       keepTabOpen = true;
-      try { await work.bringToFront(); } catch { /* not fatal */ }
+      try { if (!work.isClosed()) await work.bringToFront(); } catch { /* not fatal */ }
       return {
         reference,
         label,
@@ -1152,7 +1173,7 @@ async function runTokioReconciliation({
       // Left on screen deliberately: the point of stopping here is that a
       // human looks at what was ticked before it becomes a session.
       keepTabOpen = true;
-      try { await work.bringToFront(); } catch { /* not fatal */ }
+      try { if (!work.isClosed()) await work.bringToFront(); } catch { /* not fatal */ }
       step("Stopped before saving", `reply "${SAVE_LITERAL}" to save the session as ${label}`);
       onProgress(100, `${ticked.length} lines ticked — not saved.`);
       return outcome;
@@ -1162,7 +1183,7 @@ async function runTokioReconciliation({
     await saveSession(work, label, onProgress);
     step("Step 14 — session saved", `${label} — Issue was NOT clicked (BR16)`);
     keepTabOpen = true;
-    try { await work.bringToFront(); } catch { /* not fatal */ }
+    try { if (!work.isClosed()) await work.bringToFront(); } catch { /* not fatal */ }
     return { ...outcome, savedSession: true };
   } catch (err) {
     step("Failed", err.message);
