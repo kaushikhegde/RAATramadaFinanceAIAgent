@@ -60,11 +60,60 @@ function fakePage(html) {
     // Which page we are on decides whether "no grid" means no rows or a
     // navigation that went wrong, so the stub has to answer it.
     url() { return page._url || 'https://asp.tramada.com.au/ttms/x/finance/finance-payments-issue.htm'; },
+    /* Go opens the results in a NEW WINDOW. The stub models that the way
+       Playwright surfaces it: context().waitForEvent("page"). `page._popup`
+       is what that call resolves to; leaving it unset models a click that
+       opens nothing, which is how a refused search behaves. */
+    context() {
+      return {
+        async waitForEvent(name) {
+          if (name !== "page") throw new Error("unexpected event " + name);
+          if (!page._popup) { await new Promise((r) => setTimeout(r, 5)); throw new Error("timeout"); }
+          return page._popup;
+        },
+      };
+    },
+    async isEnabled() { return page._goDisabled !== true; },
+    async bringToFront() { page.calls.push({ action: "bringToFront" }); },
+    async selectOption(sel, value) {
+      const el = window.document.querySelector(sel);
+      if (!el) throw new Error("selectOption: no " + sel);
+      el.value = typeof value === "object" && value ? (value.value != null ? value.value : value.label) : value;
+      el.dispatchEvent(new window.Event("change", { bubbles: true }));
+      return [el.value];
+    },
+    async inputValue(sel) {
+      const el = window.document.querySelector(sel);
+      return el ? String(el.value) : null;
+    },
+    async waitForSelector() {},
+    async type(sel, text) {
+      const el = window.document.querySelector(sel);
+      if (!el) throw new Error("type: no " + sel);
+      el.value = (el.value || "") + text;
+      el.dispatchEvent(new window.Event("input", { bubbles: true }));
+    },
+    async waitForTimeout() {},
+    async $$eval(sel, fn) {
+      return fn(Array.from(window.document.querySelectorAll(sel)));
+    },
     locator(sel) {
       const els = Array.from(window.document.querySelectorAll(sel));
       const wrap = (list) => ({
         async count() { return list.length; },
         first() { return wrap(list.slice(0, 1)); },
+        nth(i) { return wrap(list.slice(i, i + 1)); },
+        // Playwright's locator.filter({ hasText }) — the creditor picker uses it.
+        filter(opts) {
+          const t = opts && (opts.hasText != null ? opts.hasText : opts.has_text);
+          if (t == null) return wrap(list);
+          const re = t instanceof RegExp ? t : new RegExp(String(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+          return wrap(list.filter((el) => re.test((el.textContent || "").replace(/\s+/g, " ").trim())));
+        },
+        async allTextContents() {
+          return list.map((el) => (el.textContent || "").replace(/\s+/g, " ").trim());
+        },
+        async textContent() { return list[0] ? list[0].textContent : null; },
         async check() {
           page.calls.push({ action: "check", sel });
           const el = list[0];
@@ -75,7 +124,20 @@ function fakePage(html) {
             el.dispatchEvent(new window.Event("change", { bubbles: true }));
           }
         },
-        async click() { page.calls.push({ action: "click", sel }); },
+        async click() {
+          page.calls.push({ action: "click", sel });
+          /* Tramada fills the Creditor Code field from the suggestion you
+             click. The stub does the same, so the read-back that insists on
+             a resolved "[CODE] Name" is exercised rather than bypassed. */
+          const el = list[0];
+          if (el && el.closest && el.closest("#creditor_auto_complete_div")) {
+            const inp = window.document.querySelector("#creditor");
+            if (inp) {
+              inp.value = (el.textContent || "").replace(/\s+/g, " ").trim();
+              inp.dispatchEvent(new window.Event("change", { bubbles: true }));
+            }
+          }
+        },
         async evaluate(fn, v) {
           const saved = { HTMLInputElement: global.HTMLInputElement, Event: global.Event };
           global.HTMLInputElement = window.HTMLInputElement;
@@ -172,6 +234,67 @@ const travel = (policy, nett) => ({
     const steps = [];
     await tk.tickMatchingRows(page, [travel("21087245", 700)], { onStep: (s) => steps.push(s) });
     assert.ok(!steps.some((s) => s.step === "unreadable reference"));
+  });
+
+  console.log("\nstep 10 — Go opens the results in a NEW WINDOW");
+
+  /* THE BUG THIS PAIR EXISTS FOR — 24-Sep-2026, and it cost the most.
+     Clicking Go does not navigate the search form. Tramada opens
+     finance-creditor-payment.htm in a SEPARATE window and leaves the form
+     exactly as it was. Code that clicks Go and then reads the same `page`
+     sees the form it started with — no grid, no header — and reports
+     "nothing outstanding" against a creditor with pages of segments. We
+     told RAA their sandbox was broken on the strength of it. */
+  const SEARCH_FORM = `
+    <table>
+      <tr><td>Payment Category</td><td><select id="paymentType"><option value=""></option><option value="CREDITOR_PAYMENT">Creditor Payment</option></select></td></tr>
+      <tr><td>Bank Account</td><td><select id="agencyBankAccount"><option value=""></option><option value="1">[TRUST] Trust Account</option></select></td></tr>
+      <tr><td>Creditor Code</td><td><input id="creditor" value="[TOKIOMARINE] Tokio Marine"></td></tr>
+      <tr><td>Level 1 Branch</td><td><select id="level1Branch"><option value=""></option><option value="1" selected>[ADL] RAA Adelaide</option></select></td></tr>
+      <tr><td>From</td><td><input id="fromTransactionDate" value="01-08-2026"></td></tr>
+      <tr><td>To</td><td><input id="toTransactionDate" value="22-10-2026"></td></tr>
+      <tr><td>Sort by</td><td><select id="sortBy"><option value=""></option><option value="REFERENCE">Reference</option></select></td></tr>
+      <tr><td>Sort order</td><td><select id="sortOrder"><option value="ASCENDING">Ascending</option></select></td></tr>
+    </table>
+    <div id="creditor_auto_complete_div"><ul><li>[TOKIOMARINE] Tokio Marine</li></ul></div>
+    <input type="button" id="goButton" value="Go">
+    <input type="button" id="form_clearButton" value="Clear">`;
+
+  await check("the results window is followed, not the form left behind", async () => {
+    const form = fakePage(SEARCH_FORM);
+    const results = fakePage(
+      '<h3>Segments To Allocate</h3>' + grid([{ reference: "21087245", amount: "700.00", booking: "13817" }]),
+      // Playwright would give us the popup's own url.
+    );
+    results._url = "https://asp.tramada.com.au/ttms/x/finance/finance-creditor-payment.htm?dataContainerId=854";
+    form._popup = results;
+
+    const out = await tk.searchCreditorPayments(form, { creditor: "Tokio" });
+    assert.strictEqual(out.openedInNewWindow, true, "the popup was not detected");
+    assert.strictEqual(out.page, results, "the caller must be handed the RESULTS page, not the form");
+
+    // And the grid really is readable on it, which the form would never give.
+    const read = await tk.readTransactionPage(out.page);
+    assert.strictEqual(read.found, true);
+    assert.strictEqual(read.rows[0].reference, "21087245");
+  });
+
+  await check('a refused search says so instead of reporting "nothing outstanding"', async () => {
+    /* "Creditor Code must be entered" is a red banner on the form and
+       NOTHING else changes — no popup, no navigation. Read as an empty
+       result it says the creditor owes nothing, which is a different and
+       much more damaging claim than "you did not fill the form in". */
+    const form = fakePage(SEARCH_FORM + '<div class="err">Creditor Code must be entered</div>');
+    // no _popup — the click opens nothing
+    await assert.rejects(
+      () => tk.searchCreditorPayments(form, { creditor: "Tokio" }),
+      (err) => {
+        assert.match(err.message, /must be entered/i, err.message);
+        assert.match(err.message, /not an empty result/i,
+          "the message has to rule out the reading that misled us");
+        return true;
+      }
+    );
   });
 
   console.log("\nstep 11 — refusing to hunt for a header that is not there");

@@ -269,6 +269,55 @@ accept an override. Worth one sentence of confirmation before go-live.
 
 ---
 
+## FOUND IT: Go opens the results in a NEW WINDOW (24-Sep-2026)
+
+Everything below this section was wrong, and this is why.
+
+Clicking **Go** on `finance-payments-issue.htm` does not navigate that page.
+Tramada opens **`finance/finance-creditor-payment.htm`** — "Issue Creditor
+Payment" — in a **separate browser window**, carrying `agencyBankAccount`,
+`level1Branch` and a `dataContainerId`. The search form is still sitting
+there afterwards, completely unchanged.
+
+So code that clicks Go and then reads the same `page` object sees the form it
+started with: no grid, no Payment Overview header. It concludes there is
+nothing to pay. That is what this module did, and on the strength of it we
+told RAA their sandbox had never had a creditor payment. It has pages of
+them.
+
+### The results page
+
+```
+finance-creditor-payment.htm?isAgencyCreditCardPayment=false
+    &agencyBankAccount=1&level1Branch=1&dataContainerId=<n>
+```
+
+- **"Segments To Allocate"** is the grid — not a heading this file looked for.
+  Columns: `D | R | Seg. Type | Booking No. | Reference | Issue/Conf. Date |
+  Creditor Nett | Creditor Paid | Creditor Payable | Allocate | A`.
+  The tick is the **A** column.
+- The **Payment Overview / Payment Details** header (Transaction Type, Payee
+  Name, Date Of Payment, Amount Of Payment, Reference) — step 11 — lives on
+  THIS page. It was never missing; we were never on the page that has it.
+- `Select All` / `Deselect All` / `Refresh` sit above the grid.
+
+`searchCreditorPayments` now listens for the popup before clicking Go and
+returns it as `search.page`; the whole run works against that window.
+
+### The other thing that hid this: a silently refused search
+
+**Creditor Code is mandatory.** Submitting without it paints a red banner —
+*"Creditor Code must be entered"* — and changes nothing else on the page. Read
+by code looking only for a grid, that is indistinguishable from an empty
+result. Every "all creditors" search used to argue the sandbox was empty was
+refused this way and never ran. `searchCreditorPayments` now reads the banner
+and says the search was refused, which is a different claim from "this
+creditor owes nothing".
+
+---
+
+## Superseded — the conclusions the bug above produced
+
 ## RAA's own example booking does not appear either (24-Sep-2026)
 
 Megan gave booking **13817** as the one she did it on. Its Tokio segment is

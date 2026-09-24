@@ -198,14 +198,57 @@ async function searchCreditorPayments(page, opts = {}, onProgress = () => {}) {
     );
   }
 
+  /* GO OPENS THE RESULTS IN A NEW WINDOW — and this is what made every
+     search look empty.
+     Measured 24-Sep-2026: clicking Go does not navigate this page. It opens
+     `finance/finance-creditor-payment.htm` in a SEPARATE tab, carrying
+     `agencyBankAccount`, `level1Branch` and a `dataContainerId`. The search
+     form is still sitting there afterwards, unchanged, so code that clicks
+     Go and then reads the same `page` sees the form it started with — no
+     grid, no header — and concludes there is nothing to pay.
+     That is exactly what this module did, and why it reported an empty
+     result against a creditor with pages of outstanding segments.
+     So: listen for the popup BEFORE clicking, and hand the caller the page
+     the results are actually on. */
   onProgress(35, `Searching ${settled.from} → ${settled.to}, sorted by reference...`);
-  await Promise.all([
-    page.waitForLoadState("domcontentloaded"),
-    page.click(SEARCH.go),
-  ]);
-  await sleep(1500);
+  const ctx = page.context();
+  const popupPromise = ctx
+    .waitForEvent("page", { timeout: 20000 })
+    .catch(() => null);
+  await page.click(SEARCH.go);
+  const results = await popupPromise;
 
-  return settled;
+  if (results) {
+    await results.waitForLoadState("domcontentloaded").catch(() => {});
+    await sleep(1200);
+    try { await results.bringToFront(); } catch { /* not fatal */ }
+    return { ...settled, page: results, openedInNewWindow: true };
+  }
+
+  /* No popup. Either Tramada navigated in place (a configuration we have not
+     seen), or the search was refused. A refusal is a red banner on the form
+     — "Creditor Code must be entered" is the one that cost us a day, because
+     nothing else on the page changes and it reads exactly like an empty
+     result. Look for it rather than reporting "nothing outstanding". */
+  await page.waitForLoadState("domcontentloaded").catch(() => {});
+  await sleep(1200);
+  const refusal = await page
+    .evaluate(() => {
+      const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+      const hit = Array.from(document.querySelectorAll("div, span, td, p, li"))
+        .map((e) => norm(e.textContent))
+        .filter((t) => t && t.length < 160)
+        .find((t) => /must be entered|is invalid|is required|not valid/i.test(t));
+      return hit || null;
+    })
+    .catch(() => null);
+  if (refusal) {
+    throw new Error(
+      `Tramada refused the search: "${refusal}". Nothing was searched, so this is not an empty result.`
+    );
+  }
+
+  return { ...settled, page, openedInNewWindow: false };
 }
 
 
@@ -747,7 +790,16 @@ async function runTokioReconciliation({
     await openIssuePayments(page, onProgress);
     step("Steps 9-10 — Issue Payments", "Creditor Payment, Trust account, sorted by reference (BR10)");
     const search = await searchCreditorPayments(page, { creditor, fromCreated, toCreated }, onProgress);
-    step("Step 10 — searched", `${search.creditor} · ${search.from} → ${search.to}`);
+    /* THE RESULTS ARE ON ANOTHER PAGE. Go opens finance-creditor-payment.htm
+       in a new window; `search.page` is that window, and every step from here
+       reads and ticks THERE. Using `page` instead reads the search form and
+       reports "nothing outstanding" against a full grid. */
+    const work = search.page || page;
+    step(
+      "Step 10 — searched",
+      `${search.creditor} · ${search.from} → ${search.to}` +
+        (search.openedInNewWindow ? " — results opened in a new window" : "")
+    );
 
     /* STEP 11 ONLY EXISTS ONCE THE SEARCH RETURNED SEGMENTS.
        Tramada renders Payment Overview / Payment Details — Transaction Type,
@@ -761,7 +813,7 @@ async function runTokioReconciliation({
 
        So: look for the grid first. No grid is an ANSWER, not a fault — the
        same distinction tickMatchingRows now draws. */
-    const firstPage = await readTransactionPage(page);
+    const firstPage = await readTransactionPage(work);
     if (!firstPage.found) {
       step(
         "No rows",
@@ -770,7 +822,7 @@ async function runTokioReconciliation({
       );
       onProgress(100, "Nothing outstanding for this creditor — nothing ticked.");
       keepTabOpen = true;
-      try { await page.bringToFront(); } catch { /* not fatal */ }
+      try { await work.bringToFront(); } catch { /* not fatal */ }
       return {
         reference,
         label,
@@ -788,11 +840,11 @@ async function runTokioReconciliation({
     }
 
     // Step 11.
-    const header = await fillPaymentHeader(page, { reference }, onProgress);
+    const header = await fillPaymentHeader(work, { reference }, onProgress);
     step("Step 11 — payment header", `${header.transactionType} · ${header.payeeName} · ${header.reference}`);
 
     // Steps 12-13, every page.
-    const matched = await walkAllPages(page, travelRows, {
+    const matched = await walkAllPages(work, travelRows, {
       onProgress,
       onStep: (s) => step(s.step, s.detail),
     });
@@ -829,17 +881,17 @@ async function runTokioReconciliation({
       // Left on screen deliberately: the point of stopping here is that a
       // human looks at what was ticked before it becomes a session.
       keepTabOpen = true;
-      try { await page.bringToFront(); } catch { /* not fatal */ }
+      try { await work.bringToFront(); } catch { /* not fatal */ }
       step("Stopped before saving", `reply "${SAVE_LITERAL}" to save the session as ${label}`);
       onProgress(100, `${ticked.length} lines ticked — not saved.`);
       return outcome;
     }
 
     // Step 14.
-    await saveSession(page, label, onProgress);
+    await saveSession(work, label, onProgress);
     step("Step 14 — session saved", `${label} — Issue was NOT clicked (BR16)`);
     keepTabOpen = true;
-    try { await page.bringToFront(); } catch { /* not fatal */ }
+    try { await work.bringToFront(); } catch { /* not fatal */ }
     return { ...outcome, savedSession: true };
   } catch (err) {
     step("Failed", err.message);
