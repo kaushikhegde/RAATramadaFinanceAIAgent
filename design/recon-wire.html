@@ -2264,14 +2264,19 @@ header.top { display: none !important }
        "show me TravelPay", where a dropdown that silently omitted TravelPay
        would leave somebody wondering whether the agent supports it at all. */
     sel.style.display = '';
-    if (!present.length) reportOnly = '';
+    // Tokio is not in SOURCES and must not be — SOURCES builds the upload
+    // tiles, and Tokio has its own four-file card. It IS a payment type
+    // though, so it belongs in this list.
+    if (!present.length && reportOnly !== 'tokio') reportOnly = '';
+    const haveTokio = !!(tokio && (tokio.result || tokio.run));
     sel.innerHTML = '<option value="">All payment types</option>' +
       Object.keys(SOURCES).map((k) => {
         const here = present.indexOf(k) >= 0;
         return '<option value="' + esc(k) + '">' +
           esc(PAY_TYPE[k] || (SOURCES[k] || {}).title || k) + (here ? '' : ' — none') +
           '</option>';
-      }).join('');
+      }).join('') +
+      '<option value="tokio">Tokio Marine' + (haveTokio ? '' : ' — none') + '</option>';
     sel.value = reportOnly;
   }
 
@@ -2286,6 +2291,33 @@ header.top { display: none !important }
   function render() {
     const pane = $('#triagePane');
     if (!pane) return;
+    /* Tokio sits BESIDE this table, never in it. A Tokio row is a monthly
+       policy line, not a bank-statement line — it has no receipt, no
+       allocation and no statement page — so forcing it through these columns
+       would be seven empty cells and a wrong heading. */
+    renderTokioReport();
+    if (reportOnly === 'tokio') {
+      const rp0 = $('#reportPane');
+      if (rp0) rp0.style.display = 'none';
+      pane.style.display = '';
+      const tri0 = $('#inboxGrid .triage');
+      if (tri0) {
+        tri0.innerHTML = '<div class="spacer"></div><span class="badge ' +
+          (tokio.run && tokio.run.savedSession ? 'b-ok' : 'b-mute') +
+          '" style="margin-bottom:8px">' +
+          (tokio.result || tokio.run ? 'Tokio Marine \u00b7 monthly' : 'no Tokio run yet') +
+          '</span>';
+      }
+      pane.innerHTML = '<table><tbody><tr><td class="muted" ' +
+        'style="padding:22px;text-align:center">' +
+        (tokio.result || tokio.run
+          ? 'Tokio Marine is a monthly creditor reconciliation, not a statement-line ' +
+            'report \u2014 its result is below.'
+          : 'No Tokio Marine run yet. Drop the four files on ' +
+            '<a href="#" data-go="sources">Sources &amp; upload</a>.') +
+        '</td></tr></tbody></table>';
+      return;
+    }
     /* EVERYTHING below reads `all`, not `results` — that is the one line that
        makes this screen able to show a run from yesterday. `results` is the
        live run; `all` is whichever run is on screen, filtered to one report
@@ -4038,45 +4070,49 @@ header.top { display: none !important }
 
     const css = document.createElement('style');
     css.textContent = [
-      '#tokioCard{grid-column:1/-1;background:#fff;border:1px solid var(--line,#e3e3ee);',
+      '.tk-host{grid-column:1/-1;background:#fff;border:1px solid var(--line,#e3e3ee);',
       '  border-radius:12px;padding:18px 20px;margin-top:4px}',
-      '#tokioCard h3{margin:0 0 4px;font-size:15px;display:flex;align-items:center;gap:8px}',
-      '#tokioCard .tk-sub{color:var(--ink-2,#5a5a72);font-size:12.5px;margin:0 0 14px}',
-      '#tokioCard .tk-slots{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}',
+      '.tk-host h3{margin:0 0 4px;font-size:15px;display:flex;align-items:center;gap:8px}',
+      '.tk-host .tk-sub{color:var(--ink-2,#5a5a72);font-size:12.5px;margin:0 0 14px}',
+      '.tk-host .tk-slots{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}',
       '.tk-slot{border:1px solid var(--line-2,#ececf4);border-radius:9px;padding:11px 12px}',
       '.tk-slot b{display:block;font-size:12.5px;margin-bottom:3px}',
       '.tk-slot .tk-note{font-size:11px;color:var(--ink-3,#7a7a90);line-height:1.45}',
       '.tk-slot .tk-have{font-size:11.5px;color:#14532d;margin-top:7px;word-break:break-all}',
       '.tk-slot .tk-btn{margin-top:8px}',
-      '#tokioCard .tk-month{margin-top:16px;padding-top:14px;border-top:1px solid var(--line-2,#ececf4)}',
-      '#tokioCard .tk-month label{font-size:11px;font-weight:600;display:block;margin-bottom:3px}',
-      '#tokioCard .tk-warn{color:#8a5a00;font-size:11.5px;margin-top:6px;line-height:1.5}',
-      '#tokioCard .tk-err{color:var(--err,#b3261e);font-size:12px;margin-top:10px}',
-      '#tokioCard .tk-counts{display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:12.5px}',
-      '#tokioCard .tk-counts b{font-size:17px;display:block}',
+      '.tk-host .tk-month{margin-top:16px;padding-top:14px;border-top:1px solid var(--line-2,#ececf4)}',
+      '.tk-host .tk-month label{font-size:11px;font-weight:600;display:block;margin-bottom:3px}',
+      '.tk-host .tk-warn{color:#8a5a00;font-size:11.5px;margin-top:6px;line-height:1.5}',
+      '.tk-host .tk-err{color:var(--err,#b3261e);font-size:12px;margin-top:10px}',
+      '.tk-host .tk-counts{display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:12.5px}',
+      '.tk-host .tk-counts b{font-size:17px;display:block}',
       /* The consolidated sheet itself. The guide's "Other features" asks to
          see it on the dashboard, with the Remarks column carrying the reason
          for every exception and mismatch — three counts alone do not let
          Finance check a single row back. */
-      '#tokioCard .tk-sheet{margin-top:16px;border-top:1px solid var(--line-2,#ececf4);padding-top:14px}',
-      '#tokioCard .tk-scroll{overflow:auto;max-height:340px;border:1px solid var(--line,#e3e3ee);border-radius:8px}',
-      '#tokioCard table.tk-tbl{border-collapse:collapse;width:100%;font-size:11.5px}',
-      '#tokioCard .tk-tbl th{position:sticky;top:0;background:#f6f6fb;text-align:left;padding:7px 9px;',
+      '.tk-host .tk-sheet{margin-top:16px;border-top:1px solid var(--line-2,#ececf4);padding-top:14px}',
+      '.tk-host .tk-scroll{overflow:auto;max-height:340px;border:1px solid var(--line,#e3e3ee);border-radius:8px}',
+      '.tk-host table.tk-tbl{border-collapse:collapse;width:100%;font-size:11.5px}',
+      '.tk-host .tk-tbl th{position:sticky;top:0;background:#f6f6fb;text-align:left;padding:7px 9px;',
       '  font-weight:600;white-space:nowrap;border-bottom:1px solid var(--line,#e3e3ee)}',
-      '#tokioCard .tk-tbl td{padding:6px 9px;border-bottom:1px solid var(--line-2,#f1f1f7);white-space:nowrap}',
-      '#tokioCard .tk-tbl td.rk{white-space:normal;min-width:220px;color:#8a5a00}',
-      '#tokioCard .tk-tbl tr.is-retail{background:#fafafa;color:var(--ink-2,#5a5a72)}',
-      '#tokioCard .tk-tbl tr.is-exception{background:#fffaf0}',
-      '#tokioCard .tk-pill{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:600}',
-      '#tokioCard .tk-pill.travel{background:#e7f5ec;color:#1b5e33}',
-      '#tokioCard .tk-pill.retail{background:#eeeef4;color:#5a5a72}',
-      '#tokioCard .tk-pill.exception{background:#fdecc8;color:#8a5a00}',
-      '#tokioCard .tk-acts{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}',
+      '.tk-host .tk-tbl td{padding:6px 9px;border-bottom:1px solid var(--line-2,#f1f1f7);white-space:nowrap}',
+      '.tk-host .tk-tbl td.rk{white-space:normal;min-width:220px;color:#8a5a00}',
+      '.tk-host .tk-tbl tr.is-retail{background:#fafafa;color:var(--ink-2,#5a5a72)}',
+      '.tk-host .tk-tbl tr.is-exception{background:#fffaf0}',
+      '.tk-host .tk-pill{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:600}',
+      '.tk-host .tk-pill.travel{background:#e7f5ec;color:#1b5e33}',
+      '.tk-host .tk-pill.retail{background:#eeeef4;color:#5a5a72}',
+      '.tk-host .tk-pill.exception{background:#fdecc8;color:#8a5a00}',
+      '.tk-host .tk-acts{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}',
     ].join('\n');
     document.head.appendChild(css);
 
     const card = document.createElement('div');
     card.id = 'tokioCard';
+    /* The styling is a CLASS now, not this id. The Reconciliation report
+       screen shows the same run in the same shapes, and a second card cannot
+       carry the same id. */
+    card.className = 'tk-host';
     grid.parentNode.insertBefore(card, grid.nextSibling);
     renderTokio();
   }
@@ -4144,6 +4180,108 @@ header.top { display: none !important }
     });
     const mi = document.getElementById('tokioMonth');
     if (mi) mi.onchange = () => { tokio.month = mi.value; sendTokio(); };
+    // The same run, on the screen people read results on.
+    renderTokioReport();
+    drawReportPicker();
+  }
+
+  /* ── THE SAME RUN, ON THE RECONCILIATION REPORT SCREEN ──
+     Asked for 24-Sep-2026: "what we show here can we show in reconciliation
+     report page like other shows". Every other report's result is read on the
+     Reconciliation report screen; Tokio's was readable only on the card you
+     uploaded the four files to, which is the screen you leave once they are
+     uploaded.
+
+     ONE STATE, TWO SCREENS. This reads `tokio` — the same object the upload
+     card reads — and calls the same builders, so the two cannot drift into
+     saying different things about one run. What it does NOT carry is the
+     writing buttons: Reconcile and Save stay on the upload card, because a
+     second Reconcile button on a second screen is a second way to write to
+     Tramada and no way to tell which one did it. */
+  function mountTokioReport() {
+    const grid = document.getElementById('inboxGrid');
+    if (!grid || document.getElementById('tokioReportCard')) return;
+    const card = document.createElement('div');
+    card.id = 'tokioReportCard';
+    card.className = 'tk-host';
+    card.style.display = 'none';
+    // Beside the inbox grid, not inside it: the grid is the mockup's two-column
+    // layout and a full-width card dropped into it takes a column.
+    grid.parentNode.insertBefore(card, grid.nextSibling);
+    renderTokioReport();
+  }
+
+  /* Shown when there is a Tokio run or sheet to show AND the payment-type
+     filter is either "all" or Tokio. Hidden otherwise — a person filtering
+     the screen to IPSI is not asking to read Tokio underneath it. */
+  function tokioReportVisible() {
+    if (!tokio.result && !tokio.run && !tokio.runError) return false;
+    return reportOnly === '' || reportOnly === 'tokio';
+  }
+
+  /* Read-only bar. Export and the step-15 email are both reads of a run that
+     already happened; neither touches Tramada. */
+  function tokioReportActions() {
+    const res = tokio.result;
+    if (!res || !res.rows || !res.rows.length) return '';
+    return '<div class="tk-acts">' +
+      '<button class="btn sm" id="tokioReportExport">Export CSV</button>' +
+      (tokio.run && tokio.run.savedSession
+        ? '<button class="btn sm" id="tokioReportEmail"' + (tokio.emailing ? ' disabled' : '') + '>' +
+            (tokio.emailing ? 'Preparing\u2026' : 'Email Travel Accounts') + '</button>'
+        : '') +
+      '<span style="font-size:11.5px;color:var(--ink-2,#5a5a72)">' + res.rows.length +
+        ' row(s) \u00b7 this is the sheet that goes to Travel Accounts</span>' +
+      '</div>';
+  }
+
+  function renderTokioReport() {
+    const card = document.getElementById('tokioReportCard');
+    if (!card) return;
+    if (!tokioReportVisible()) { card.style.display = 'none'; card.innerHTML = ''; return; }
+    card.style.display = '';
+
+    const res = tokio.result;
+    const r = tokio.run;
+    const m = res && res.month;
+    const c = res && res.counts;
+
+    /* The badge says what STATE the run is in, derived, never asserted — the
+       same rule the checklist works by. "session saved" is the only one that
+       claims anything happened in Tramada. */
+    const badgeKind = r && r.savedSession ? 'b-ok' : tokio.runError ? 'b-err' : 'b-mute';
+    const badgeText = tokio.runError ? 'stopped'
+      : r && r.savedSession ? 'session saved'
+      : r ? 'ticked, not saved'
+      : 'consolidated \u2014 not run in Tramada yet';
+
+    const counts = !c ? '' :
+      '<div class="tk-counts">' +
+        '<div><b>' + c.travel + '</b>Travel \u2014 to reconcile</div>' +
+        '<div><b>' + c.retail + '</b>Retail \u2014 removed</div>' +
+        '<div><b>' + c.exceptions + '</b>Exceptions \u2014 for a human</div>' +
+        (c.undocumented ? '<div><b>' + c.undocumented + '</b>Not covered by the guide</div>' : '') +
+      '</div>';
+
+    card.innerHTML =
+      '<h3>Tokio Marine <span class="badge ' + badgeKind + '">' + badgeText + '</span></h3>' +
+      '<p class="tk-sub">' +
+        (m ? esc(m.label || m.key) + ' \u00b7 ' : '') +
+        (res && res.labels
+          ? 'payment reference <b>' + esc(res.labels.paymentReference) + '</b> \u00b7 session <b>' +
+            esc(res.labels.sessionLabel) + '</b> \u00b7 '
+          : '') +
+        'monthly creditor reconciliation. Read-only here \u2014 the run is started from ' +
+        '<a href="#" data-go="sources">Sources &amp; upload</a>.</p>' +
+      counts +
+      tokioRunBlock() +
+      tokioChecklist() +
+      tokioSheetTable(tokioReportActions());
+
+    const exp = card.querySelector('#tokioReportExport');
+    if (exp) exp.onclick = tokioExportCsv;
+    const em = card.querySelector('#tokioReportEmail');
+    if (em) em.onclick = tokioEmail;
   }
 
   function pickTokioFile(kind) {
@@ -4176,7 +4314,12 @@ header.top { display: none !important }
 
      Nothing is classified here. `outcome` and `Remarks` both come from the
      server, so the table, the counts and the export cannot disagree. */
-  function tokioSheet() {
+  /* The sheet TABLE alone, with whatever action bar the screen showing it
+     wants passed in. Split out on 24-Sep-2026 because the Reconciliation
+     report screen shows the same sheet with a read-only bar: the run is
+     started from Sources & upload, and two Reconcile buttons on two screens
+     is two ways to write to Tramada. */
+  function tokioSheetTable(extra) {
     const res = tokio.result;
     if (!res || !res.rows || !res.rows.length) return '';
 
@@ -4210,7 +4353,15 @@ header.top { display: none !important }
       '<div class="tk-scroll"><table class="tk-tbl"><thead><tr>' +
         head.map((h) => '<th>' + esc(h) + '</th>').join('') +
       '</tr></thead><tbody>' + body + '</tbody></table></div>' +
-      '<div class="tk-acts">' +
+      (extra || '') + '</div>';
+  }
+
+  /* The UPLOAD card's action bar — the only place the two writing buttons
+     live, because this is the screen the four files were dropped on. */
+  function tokioActions() {
+    const res = tokio.result;
+    if (!res || !res.rows || !res.rows.length) return '';
+    return '<div class="tk-acts">' +
         '<button class="btn sm" id="tokioExport">Export CSV</button>' +
         /* Steps 9-14 without a terminal. Two buttons, not one: the first ticks
            and stops, the second saves the session. Issue is never offered —
@@ -4230,7 +4381,11 @@ header.top { display: none !important }
           : '') +
         '<span style="font-size:11.5px;color:var(--ink-2,#5a5a72)">' +
           res.rows.length + ' row(s) \u00b7 this is the sheet that goes to Travel Accounts</span>' +
-      '</div>' + tokioRunBlock() + tokioChecklist() + '</div>';
+      '</div>';
+  }
+
+  function tokioSheet() {
+    return tokioSheetTable(tokioActions()) + tokioRunBlock() + tokioChecklist();
   }
 
   /* WHAT THE TRAMADA RUN DID.
@@ -4592,7 +4747,7 @@ header.top { display: none !important }
     // allowed to be right about screens that still are not.
     mountCheatSheetScreen();
     mountNav(); mountSources(); renderOverview(); markSamples(); hideUnwired();
-    mountTokio();
+    mountTokio(); mountTokioReport();
     mountAccountNav();
     render(); connect(); loadOverview(); loadCheatSheets(); loadIpsiPending();
     /* Open on Sources & upload, not on Run overview.
