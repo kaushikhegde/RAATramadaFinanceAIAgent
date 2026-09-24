@@ -340,19 +340,35 @@ async function firstPresent(page, selectors, { timeout = 10000, what = "field" }
     await sleep(250);
   }
 
+  /* WHEN A BUTTON IS MISSING, LIST THE BUTTONS.
+     The first 30 controls of this page are a form and a TinyMCE toolbar, so
+     a flat list truncated at 30 showed everything EXCEPT the save control
+     that was being looked for — which is the one thing the message existed
+     to reveal. Now it reports the kind of control that is missing, and
+     reports it first. */
+  const wantsButton = /button|save|go|continue|issue|submit/i.test(what) ||
+    selectors.some((sel) => /button|\[value=/i.test(sel));
+
   const present = await page
-    .evaluate(() => {
+    .evaluate((arg) => {
       const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
-      return Array.from(document.querySelectorAll("input, select, textarea, button"))
-        .filter((el) => el.type !== "hidden")
-        .map((el) => {
-          const td = el.closest("td");
-          const prev = td && td.previousElementSibling;
-          const name = el.id ? "#" + el.id : el.name ? `[name=${el.name}]` : el.tagName.toLowerCase();
-          return `${name}${prev ? ` ("${norm(prev.textContent).slice(0, 24)}")` : ""}`;
-        })
-        .slice(0, 30);
-    })
+      const label = (el) => {
+        const td = el.closest("td");
+        const prev = td && td.previousElementSibling;
+        const name = el.id ? "#" + el.id : el.name ? `[name=${el.name}]` : el.tagName.toLowerCase();
+        const value = /button|submit|reset/i.test(el.type || "") || el.tagName === "BUTTON"
+          ? ` "${norm(el.value || el.textContent).slice(0, 28)}"`
+          : prev ? ` ("${norm(prev.textContent).slice(0, 24)}")` : "";
+        return name + value;
+      };
+      const all = Array.from(document.querySelectorAll("input, select, textarea, button, a[onclick], a[data-fn-click]"))
+        .filter((el) => el.type !== "hidden" && !/^mceu/.test(el.id || ""));
+      const buttons = all.filter(
+        (el) => el.tagName === "BUTTON" || el.tagName === "A" || /button|submit|reset/i.test(el.type || "")
+      );
+      const list = arg.wantsButton ? buttons.concat(all.filter((el) => !buttons.includes(el))) : all;
+      return list.map(label).slice(0, 60);
+    }, { wantsButton })
     .catch(() => []);
 
   throw new Error(
@@ -386,12 +402,26 @@ async function firstPresent(page, selectors, { timeout = 10000, what = "field" }
 const ALLOCATE_TICK = 'input[type="checkbox"][name="segmentsToAllocate"]';
 
 /* Candidates, most-likely first. Replace with the probe's output. */
+/* MEASURED 24-Sep-2026 off finance-creditor-payment.htm. Everything on this
+   form carries a `payment` prefix — the guesses without it were only ever
+   reached through the label fallback. The real ids come first now. */
 const PAYMENT = Object.freeze({
-  transactionType: ["#transactionTypeCode", "#paymenttransactionTypeCode", "#transactionType"],
-  payeeName: ["#payeeName", "#paymentpayeeName", "#payee"],
-  reference: ["#referenceNumber", "#paymentreferenceNumber", "#reference"],
-  sessionLabel: ["#sessionLabel", "#paymentsessionLabel", "#sessionName", "#label"],
-  saveSession: ["#saveSession", "#saveSessionButton", 'input[value="Save Session"]', 'input[value="Save"]'],
+  transactionType: ["#paymenttransactionTypeCode", "#transactionTypeCode", "#transactionType"],
+  payeeName: ["#paymentpayeeName", "#payeeName", "#payee"],
+  reference: ["#paymentreferenceNumber", "#referenceNumber", "#reference"],
+  paymentDate: ["#paymentpaymentDate"],
+  paymentAmount: ["#paymentpaymentAmount"],
+  sessionLabel: ["#paymentsessionLabel", "#sessionLabel", "#sessionName", "#label"],
+  /* NOT YET MEASURED. The error that sent us here listed only the first 30
+     controls and the TinyMCE toolbar ate the rest, so the save control was
+     never shown. Candidates widened, and the diagnostic below now lists
+     BUTTONS when a button is what is missing. */
+  saveSession: [
+    "#paymentsaveSession", "#saveSession", "#saveSessionButton",
+    "#form_saveSession", "#save", "#form_save",
+    'input[value="Save Session"]', 'input[value="Save session"]', 'input[value="Save"]',
+    'button[value="Save Session"]',
+  ],
   nextPage: ["#nextPage", 'a[title="Next"]', 'input[value="Next"]', "a.next"],
 });
 

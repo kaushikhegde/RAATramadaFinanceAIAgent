@@ -693,6 +693,32 @@ const travel = (policy, nett) => ({
     await assert.rejects(() => tk.fillPaymentHeader(page, {}), /payment reference is required/i);
   });
 
+  await check("a missing BUTTON is reported by listing the buttons, not the form", async () => {
+    /* Live 24-Sep-2026: step 14 could not find Save Session, and the message
+       listed the first 30 controls — a form and a TinyMCE toolbar — so the
+       one control it existed to reveal was the one it cut off. When a button
+       is missing, buttons come first. */
+    const page = fakePage(`
+      <table><tr><td>Payee Name</td><td><input id="paymentpayeeName"></td></tr></table>
+      ${Array.from({ length: 40 }).map((_, i) => `<input id="filler${i}">`).join("")}
+      <div id="mceu_0-open"></div>
+      <input type="button" id="paymentsaveTheThing" value="Save Payment Session">
+      <input type="button" id="form_cancel" value="Cancel">`);
+    await assert.rejects(
+      () => tk.fillPaymentHeader(page, { reference: "TOKIO_SEP 2026" }),
+      () => true
+    ).catch(() => {});
+
+    // The diagnostic itself is what is under test.
+    let msg = "";
+    try {
+      await tk.firstPresent(page, ["#nothingLikeThis"], { what: "Save Session button", timeout: 50 });
+    } catch (err) { msg = err.message; }
+    assert.match(msg, /paymentsaveTheThing/, `the button should be listed; got: ${msg}`);
+    assert.match(msg, /Save Payment Session/, "its label should be shown too");
+    assert.ok(!/mceu_0/.test(msg), "the editor toolbar should not crowd it out");
+  });
+
   console.log("\nstep 14 — save the session, never Issue");
 
   const SAVE = `
