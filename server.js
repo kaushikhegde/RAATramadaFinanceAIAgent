@@ -389,73 +389,6 @@ app.post("/api/tokio/parse", express.json({ limit: "48mb" }), (req, res) => {
   }
 });
 
-/* ── the outbox: every email the DVC run wrote ───────────────────────────── */
-
-/**
- * `/outbox` — every email the agent was asked to send, whether it went, failed
- * or was only captured (MAIL_TRANSPORT=outbox). The company proxy blocks mail
- * from this machine entirely (23-09-2026), so this page is where "did the run
- * alert the accounts team, and what did it say?" is answered.
- *
- * Behind the same sign-in as everything else (`requireAuth` above). The ids are
- * checked against their own shape in mailer.outboxFile before any path is
- * built, so a crafted id cannot read anything outside the outbox.
- */
-app.get("/outbox", (req, res) => {
-  const esc = (t) => String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  const mails = mailer.listOutbox();
-  const c = mailer.config();
-  const badge = (m) => m.sent ? `<span class="b ok">sent via ${esc(m.via)}</span>`
-    : m.via === "outbox" ? '<span class="b cap">captured — not sent</span>'
-    : `<span class="b err">not sent</span>`;
-  const items = mails.map((m) => `
-    <details${mails[0] === m ? " open" : ""}>
-      <summary>${badge(m)} <b>${esc(m.subject)}</b>
-        <span class="muted">${esc(new Date(m.at).toLocaleString("en-AU"))} · to ${esc((m.to || []).join(", ") || "(DVC_EMAIL_TO not set)")}</span></summary>
-      ${m.why ? `<p class="muted">${esc(m.why)}</p>` : ""}
-      <p><a href="/outbox/${encodeURIComponent(m.id)}.eml">Download .eml</a>
-        ${m.attachment ? ` · <a href="/outbox/${encodeURIComponent(m.id)}/attachment">${esc(m.attachment.filename)}</a>` : ""}</p>
-      <div class="mail">${m.html || `<pre>${esc(m.text)}</pre>`}</div>
-    </details>`).join("");
-  res.type("html").send(`<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>DVC outbox</title>
-<style>
-  :root{--bg:#f6f7fb;--fg:#1d2433;--muted:#667085;--line:#d5dbe6;--card:#fff}
-  @media (prefers-color-scheme:dark){:root{--bg:#12151c;--fg:#e6e9ef;--muted:#98a2b3;--line:#2c3342;--card:#1a1f29}}
-  body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:14px/1.5 "Segoe UI",Arial,sans-serif}
-  main{max-width:980px;margin:0 auto}
-  details{background:var(--card);border:1px solid var(--line);border-radius:8px;margin:10px 0;padding:10px 14px}
-  summary{cursor:pointer} .muted{color:var(--muted)} .mail{border-top:1px solid var(--line);margin-top:8px;padding-top:8px;overflow-x:auto}
-  .b{font-size:12px;padding:1px 8px;border-radius:10px;margin-right:6px} .ok{background:#dcfae6;color:#067647}
-  .cap{background:#e0eaff;color:#3538cd} .err{background:#fee4e2;color:#b42318} a{color:#3538cd}
-</style></head><body><main>
-<h1>DVC outbox</h1>
-<p class="muted">Every email the DVC run was asked to send, newest first. Mode: <b>${esc(c.transport)}</b>
-${c.transport === "outbox" ? "— emails are captured here and not sent." : ""}
-Stored in <code>${esc(c.outboxDir)}</code>.</p>
-${items || '<p class="muted">Nothing yet. Run a DVC reconciliation, or <code>npm run email:dvc</code>.</p>'}
-</main></body></html>`);
-});
-
-app.get("/outbox/:id.eml", (req, res) => {
-  const file = mailer.outboxFile(req.params.id, "eml");
-  if (!file) return res.status(404).send("no such email");
-  res.setHeader("Content-Type", "message/rfc822");
-  res.setHeader("Content-Disposition", `attachment; filename="${req.params.id}.eml"`);
-  res.send(fs.readFileSync(file));
-});
-
-app.get("/outbox/:id/attachment", (req, res) => {
-  const meta = mailer.outboxFile(req.params.id, "json");
-  const file = mailer.outboxFile(req.params.id, "attachment");
-  if (!meta || !file) return res.status(404).send("that email has no attachment");
-  const att = JSON.parse(fs.readFileSync(meta, "utf8")).attachment || {};
-  res.setHeader("Content-Type", att.contentType || "application/octet-stream");
-  res.setHeader("Content-Disposition", `attachment; filename="${String(att.filename || "attachment").replace(/"/g, "")}"`);
-  res.send(fs.readFileSync(file));
-});
-
 /* ── the working file ────────────────────────────────────────────────────── */
 
 /**
@@ -1432,12 +1365,9 @@ async function handleDvcRun(session, msg) {
     // Step 18 — whatever happened in Tramada, Travel Accounts hears about it.
     const email = await dvcSendEmail(msg, { out, total, payment, run });
     cb.onProgress(email.sent
-      ? `Emailed the reconciliation to ${email.to.join(", ")} (step 18). A copy is in the outbox: /outbox`
-      : email.captured
-        ? "The email to the accounts team was written to the outbox, not sent (MAIL_TRANSPORT=outbox) — " +
-          "see /outbox."
-        : `The reconciliation email was not sent — ${email.why}. The copy it tried to send is in /outbox.`,
-      !!(email.sent || email.captured));
+      ? `Emailed the reconciliation to ${email.to.join(", ")} (step 18).`
+      : `The reconciliation email was not sent — ${email.why}.`,
+      !!email.sent);
 
     closeRun(run, { summary: s, committed: sessionCommitted(payment, msg) });
     send(session, {
@@ -1448,8 +1378,7 @@ async function handleDvcRun(session, msg) {
       total,
       sessionLabel: reconCore.dvcSessionLabel(msg.statementDate),
       payment: paymentForPage(payment, msg),
-      email: { sent: !!email.sent, captured: !!email.captured, to: email.to || [], why: email.why || "",
-        outboxId: email.outboxId || "" },
+      email: { sent: !!email.sent, to: email.to || [], why: email.why || "" },
       uploadDiff: diff,
     });
   } catch (err) {
