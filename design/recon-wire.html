@@ -4230,7 +4230,7 @@ header.top { display: none !important }
           : '') +
         '<span style="font-size:11.5px;color:var(--ink-2,#5a5a72)">' +
           res.rows.length + ' row(s) \u00b7 this is the sheet that goes to Travel Accounts</span>' +
-      '</div>' + tokioRunBlock() + '</div>';
+      '</div>' + tokioRunBlock() + tokioChecklist() + '</div>';
   }
 
   /* WHAT THE TRAMADA RUN DID.
@@ -4291,6 +4291,106 @@ header.top { display: none !important }
         : '') +
       tokioSteps(r) +
       '</div>';
+  }
+
+  /* THE GUIDE'S FIFTEEN STEPS, WITH WHAT ACTUALLY HAPPENED AGAINST EACH.
+
+     A run that stops at step 11 and a run that finishes both used to render
+     as "some steps, a table, maybe an error". On a demo that is unreadable:
+     nobody can tell whether the agent did its job badly or did nine steps
+     perfectly and hit a wall on the tenth. So the checklist is explicit, and
+     a step nobody reached says "not reached" rather than going quietly
+     missing.
+
+     Status is DERIVED from the run, never asserted: `done` only where there
+     is evidence in the result, so this cannot claim more than happened. */
+  const TOKIO_STEPS = [
+    { n: 1,  t: 'Passenger names removed from the B2B report', who: 'Finance' },
+    { n: 2,  t: 'Four files for the same reporting month' },
+    { n: 3,  t: 'RAA commission 30% / nett 70% appended' },
+    { n: 4,  t: 'Tramada Payment Report looked up by policy' },
+    { n: 5,  t: 'Tramada Costing Report looked up by policy' },
+    { n: 6,  t: 'RCC report looked up by policy' },
+    { n: 7,  t: 'Retail lines excluded' },
+    { n: 8,  t: 'Travel / exception split, with Remarks' },
+    { n: 9,  t: 'Tramada → Finance → Issue Payments' },
+    { n: 10, t: 'Search: Tokio Marine, Trust account, by reference' },
+    { n: 11, t: 'Payment Overview — EFT, payee, reference' },
+    { n: 12, t: 'Match on reference AND amount (±1%)' },
+    { n: 13, t: 'Tick the matching lines, every page' },
+    { n: 14, t: 'Save the session — Issue never clicked' },
+    { n: 15, t: 'Email the sheet to Travel Accounts' },
+  ];
+
+  function tokioChecklist() {
+    const res = tokio.result;
+    const r = tokio.run;
+    const steps = (r && r.steps) || [];
+    const said = (re) => steps.some((st) => re.test((st.step || '') + ' ' + (st.detail || '')));
+    const failed = steps.some((st) => /^Failed$/i.test(st.step || ''));
+
+    // Steps 1-8 are decided from the files alone — if the sheet rendered, they ran.
+    const parsed = !!(res && res.rows && res.rows.length);
+    const counts = (res && res.counts) || {};
+
+    const state = (n) => {
+      if (n <= 8) return parsed ? 'done' : 'todo';
+      if (!r && !tokio.runError) return 'todo';
+      if (n === 9)  return said(/Issue Payments/i) ? 'done' : (failed ? 'fail' : 'todo');
+      if (n === 10) return said(/searched/i) ? 'done' : (failed ? 'fail' : 'todo');
+      if (n === 11) return said(/payment header/i) ? 'done'
+        : (r && r.empty) ? 'skip' : (failed ? 'fail' : 'todo');
+      if (n === 12 || n === 13) {
+        if (r && r.empty) return 'skip';
+        if (said(/matched/i)) return 'done';
+        return failed ? 'fail' : 'todo';
+      }
+      if (n === 14) return (r && r.savedSession) ? 'done' : (r ? 'todo' : 'todo');
+      if (n === 15) return (tokio.emailResult ? 'done' : 'todo');
+      return 'todo';
+    };
+
+    const MARK = {
+      done: ['\u2713', '#1a7f37', 'done'],
+      todo: ['\u00b7', 'var(--ink-2,#5a5a72)', 'not reached'],
+      skip: ['\u2013', '#9a6700', 'nothing to do'],
+      fail: ['\u00d7', '#b42318', 'stopped here'],
+    };
+
+    const detailFor = (n) => {
+      if (n === 3 && parsed) return 'every row';
+      if (n === 7 && parsed) return (counts.retail || 0) + ' excluded';
+      if (n === 8 && parsed) return (counts.travel || 0) + ' Travel, ' + (counts.exceptions || 0) + ' exception(s)';
+      if (n === 10 && r && r.search) return esc(r.search.creditor || '');
+      if (n === 11 && r && r.header) return esc(r.header.reference || '');
+      if ((n === 12 || n === 13) && r) return (r.ticked || []).length + ' ticked';
+      if (n === 14 && r) return r.savedSession ? esc(r.label) : 'not saved yet';
+      if (n === 15 && tokio.emailResult) return tokio.emailResult.sent ? 'sent' : 'draft written';
+      return '';
+    };
+
+    const rows = TOKIO_STEPS.map((st) => {
+      const k = state(st.n);
+      const m = MARK[k];
+      return '<tr>' +
+        '<td style="width:26px;color:' + m[1] + ';font-weight:700;text-align:center">' + m[0] + '</td>' +
+        '<td style="width:26px;color:var(--ink-2,#5a5a72)">' + st.n + '</td>' +
+        '<td>' + esc(st.t) + (st.who ? ' <span style="color:var(--ink-2,#5a5a72)">(' + esc(st.who) + ')</span>' : '') + '</td>' +
+        '<td class="rk" style="color:' + m[1] + '">' + (detailFor(st.n) || m[2]) + '</td>' +
+      '</tr>';
+    }).join('');
+
+    const doneCount = TOKIO_STEPS.filter((st) => state(st.n) === 'done').length;
+
+    return '<div class="tk-sheet" style="margin-top:12px">' +
+      '<div style="font-size:12px;font-weight:600;margin-bottom:7px">' +
+        'The guide\u2019s 15 steps \u2014 ' + doneCount + ' of 15 done' +
+      '</div>' +
+      '<div class="tk-scroll"><table class="tk-tbl"><tbody>' + rows + '</tbody></table></div>' +
+      '<div class="muted" style="font-size:11px;margin-top:7px">' +
+        'Step 1 is Finance\u2019s, before the files arrive. Step 14 saves the session and ' +
+        'stops \u2014 Issue is always a person\u2019s click (BR16/BR18).' +
+      '</div></div>';
   }
 
   function tokioSteps(r) {
