@@ -69,7 +69,8 @@
     "test:invoice": "node test/test-invoice-segments.js",
     "probe:invoice": "node tools/probe-invoice-page.js",
     "email:dvc": "node tools/send-dvc-email.js",
-    "email:signin": "node tools/email-signin.js"
+    "email:signin": "node tools/email-signin.js",
+    "fixtures:tokio:live": "node tools/make-tokio-live-fixture.js"
   },
   "dependencies": {
     "@azure/identity": "^4.13.2",
