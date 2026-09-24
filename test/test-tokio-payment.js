@@ -297,6 +297,37 @@ const travel = (policy, nett) => ({
     );
   });
 
+  await check("the header is found by LABEL when the ids are not what we guessed", async () => {
+    /* The Payment Overview header was only ever seen in a screenshot, so
+       PAYMENT's ids are guesses while the labels are certain. This is the
+       real page's layout with DIFFERENT ids — if only the guesses worked,
+       step 11 would fail on the live page and take 12-14 with it. */
+    const page = fakePage(`
+      <h3>Payment Overview</h3>
+      <table>
+        <tr><td>Transaction Type</td><td><select id="wibble"><option></option><option value="ET">EFT</option></select></td></tr>
+        <tr><td>Payee Name</td><td><input type="text" id="wobble"></td></tr>
+        <tr><td>Reference</td><td><input type="text" id="wubble"></td></tr>
+      </table>` + grid([{ reference: "21087245", amount: "700.00" }]));
+
+    const out = await tk.fillPaymentHeader(page, { reference: "TOKIO_AUG 2026" });
+    assert.strictEqual(out.transactionType, "EFT");
+    assert.strictEqual(out.payeeName, "Tokio");
+    assert.strictEqual(out.reference, "TOKIO_AUG 2026");
+    assert.strictEqual(page.window.document.querySelector("#wibble").value, "ET",
+      "the select found by label must actually be the one set");
+  });
+
+  await check("a label that matches nothing still reports what the page has", async () => {
+    // The fallback must not swallow a genuinely wrong page.
+    const page = fakePage('<h3>Payment Overview</h3><input id="nothingUseful">' +
+      grid([{ reference: "21087245", amount: "700.00" }]));
+    await assert.rejects(
+      () => tk.fillPaymentHeader(page, { reference: "TOKIO_AUG 2026" }),
+      (err) => { assert.match(err.message, /nothingUseful|Could not find/i, err.message); return true; }
+    );
+  });
+
   console.log("\nstep 11 — refusing to hunt for a header that is not there");
 
   /* The live failure this pair exists for: the dashboard reported "Could not

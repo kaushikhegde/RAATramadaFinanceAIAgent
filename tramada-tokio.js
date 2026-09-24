@@ -271,6 +271,56 @@ async function searchCreditorPayments(page, opts = {}, onProgress = () => {}) {
  */
 
 /** Wait for whichever of several selectors this page actually renders. */
+/** firstPresent without the throw — null when no candidate is present. */
+async function firstPresentOrNull(page, selectors) {
+  for (const sel of selectors) {
+    if (await page.locator(sel).count().catch(() => 0)) return sel;
+  }
+  return null;
+}
+
+/**
+ * Find a control by the LABEL a person reads, when its id is unknown.
+ *
+ * The Payment Overview header was only ever seen in a screenshot: the labels
+ * are certain ("Transaction Type", "Payee Name", "Reference"), the ids are
+ * guesses. Tramada lays these out as <td>Label</td><td><control></td>, so the
+ * label is the sounder handle. Tags the control and returns a selector for it.
+ */
+async function controlByLabel(page, labelText, kinds = "input,select,textarea") {
+  return await page
+    .evaluate(
+      (arg) => {
+        const norm = (x) => (x || "").replace(/\s+/g, " ").trim();
+        const esc = arg.labelText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const want = new RegExp("^\\s*" + esc + "\\s*:?\\s*$", "i");
+        const tag = (el) => {
+          el.setAttribute("data-tokio-field", arg.labelText);
+          return '[data-tokio-field="' + arg.labelText + '"]';
+        };
+        for (const lab of document.querySelectorAll("label")) {
+          if (!want.test(norm(lab.textContent))) continue;
+          const id = lab.getAttribute("for");
+          const el = id ? document.getElementById(id) : lab.querySelector(arg.kinds);
+          if (el) return tag(el);
+        }
+        for (const td of document.querySelectorAll("td, th")) {
+          if (!want.test(norm(td.textContent))) continue;
+          let sib = td.nextElementSibling;
+          while (sib) {
+            const el = sib.matches && sib.matches(arg.kinds) ? sib
+              : (sib.querySelector ? sib.querySelector(arg.kinds) : null);
+            if (el) return tag(el);
+            sib = sib.nextElementSibling;
+          }
+        }
+        return null;
+      },
+      { labelText, kinds }
+    )
+    .catch(() => null);
+}
+
 async function firstPresent(page, selectors, { timeout = 10000, what = "field" } = {}) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
@@ -359,7 +409,13 @@ async function fillPaymentHeader(page, { reference, payeeName = "Tokio" }, onPro
     );
   }
 
-  const txnSel = await firstPresent(page, PAYMENT.transactionType, { what: "Transaction Type select" });
+  /* ID FIRST, THEN THE LABEL. These ids were never measured — the Payment
+     Overview header was only seen in a screenshot — so a miss falls back to
+     the label a person reads, and only then to the reporting throw. */
+  const txnSel =
+    (await firstPresentOrNull(page, PAYMENT.transactionType)) ||
+    (await controlByLabel(page, "Transaction Type", "select")) ||
+    (await firstPresent(page, PAYMENT.transactionType, { what: "Transaction Type select" }));
   const txn = await page.evaluate((sel) => {
     const el = document.querySelector(sel);
     if (!el || !el.options) return null;
@@ -376,10 +432,16 @@ async function fillPaymentHeader(page, { reference, payeeName = "Tokio" }, onPro
   }
   await sleep(500);
 
-  const payeeSel = await firstPresent(page, PAYMENT.payeeName, { what: "Payee Name field" });
+  const payeeSel =
+    (await firstPresentOrNull(page, PAYMENT.payeeName)) ||
+    (await controlByLabel(page, "Payee Name", "input")) ||
+    (await firstPresent(page, PAYMENT.payeeName, { what: "Payee Name field" }));
   await page.fill(payeeSel, String(payeeName));
 
-  const refSel = await firstPresent(page, PAYMENT.reference, { what: "Reference field" });
+  const refSel =
+    (await firstPresentOrNull(page, PAYMENT.reference)) ||
+    (await controlByLabel(page, "Reference", "input")) ||
+    (await firstPresent(page, PAYMENT.reference, { what: "Reference field" }));
   await page.fill(refSel, String(reference));
   await sleep(300);
 
@@ -909,6 +971,8 @@ module.exports = {
   // The screen, re-exported so a caller (and test/test-tokio-dates.js) still
   // has one place to reach for it.
   TRAMADA_BASE_URL,
+  controlByLabel,
+  firstPresentOrNull,
   SEARCH,
   CHOOSER,
   tramadaDate,
