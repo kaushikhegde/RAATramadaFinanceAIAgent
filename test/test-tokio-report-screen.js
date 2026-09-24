@@ -140,9 +140,23 @@ async function main() {
   await sleep(80);
   doc.createElement = realCreate;
 
-  check("four files parse into a consolidated sheet", () => {
+  check("four files parse, and the upload card says so in one line", () => {
     assert.ok(seen.some((u) => u.includes("/api/tokio/parse")), "the page never asked to parse");
-    assert.ok(doc.getElementById("tokioCard").textContent.includes("Consolidated working sheet"));
+    const up = doc.getElementById("tokioCard");
+    assert.ok(up.querySelector(".tk-status"), "the upload card has no status line");
+    assert.ok(/Not run in Tramada yet/.test(up.textContent), "it does not say the run has not happened");
+    assert.ok(up.querySelector('.tk-status a[data-go="inbox"]'), "no link to the report");
+  });
+
+  check("the upload card does NOT repeat the result — that is the other screen's job", () => {
+    /* This is the whole point of the split. Every other source card on
+       Sources & upload names its file, counts its rows and starts the run;
+       the result is read on the Reconciliation report screen. Tokio drew the
+       tables on BOTH, which is two places to read one run. */
+    const up = doc.getElementById("tokioCard").textContent;
+    for (const claim of ["Consolidated working sheet", "Steps taken", "The guide\u2019s 15 steps"]) {
+      assert.ok(!up.includes(claim), "the upload card still shows: " + claim);
+    }
   });
 
   check("the report screen shows the sheet as soon as it exists", () => {
@@ -152,11 +166,24 @@ async function main() {
     assert.ok(card.textContent.includes("TOKIO_AUG"), "the payment reference is not shown");
   });
 
-  check("it does NOT carry the writing buttons", () => {
-    const card = doc.getElementById("tokioReportCard");
-    assert.ok(!card.querySelector("#tokioRun"), "a second Reconcile button");
-    assert.ok(!card.querySelector("#tokioSave"), "a second Save Session button");
-    assert.ok(card.querySelector("#tokioReportExport"), "no Export CSV");
+  check("the two screens split the job, and neither takes the other's", () => {
+    const up = doc.getElementById("tokioCard");
+    const rep = doc.getElementById("tokioReportCard");
+    // Writing stays where the files were dropped.
+    assert.ok(up.querySelector("#tokioRun"), "no Reconcile button on the upload card");
+    assert.ok(!rep.querySelector("#tokioRun"), "a second Reconcile button on the report screen");
+    assert.ok(!rep.querySelector("#tokioSave"), "a second Save Session button");
+    // Reading — export, and the step-15 mail — goes with the result.
+    assert.ok(rep.querySelector("#tokioReportExport"), "no Export CSV on the report screen");
+    assert.ok(!up.querySelector("#tokioExport"), "Export is still on the upload card too");
+  });
+
+  check("both cards use the same badge words as every other source card", () => {
+    const b = doc.getElementById("tokioCard").querySelector("h3 .badge");
+    assert.ok(b, "the upload card lost its badge");
+    assert.ok(/^(loaded|running…|processed|not run yet|not saved yet|reading…|\d of 4 uploaded)$/
+      .test(b.textContent.trim()), "badge says its own thing: " + b.textContent);
+    assert.strictEqual(b.textContent.trim(), "not run yet");
   });
 
   // ── run it ──
@@ -184,12 +211,13 @@ async function main() {
     assert.ok(t.includes("Issue was NOT clicked"), "BR16 is not stated on this screen");
   });
 
-  check("the two screens cannot disagree — both read one run", () => {
-    const a = doc.getElementById("tokioCard").textContent;
-    const b = doc.getElementById("tokioReportCard").textContent;
-    for (const claim of ["TOKIO_AUG 26", "21922098", "Issue was NOT clicked"]) {
-      assert.ok(a.includes(claim) && b.includes(claim), claim + " is on only one of the two cards");
-    }
+  check("after the run the upload card updates its one line, and still shows no tables", () => {
+    const up = doc.getElementById("tokioCard");
+    assert.ok(/Session TOKIO_AUG 26 saved/.test(up.textContent), "the status line did not update");
+    assert.ok(/Issue was NOT clicked/.test(up.textContent), "BR16 is not stated where the run is started");
+    assert.ok(!up.textContent.includes("Consolidated working sheet"), "the sheet came back");
+    assert.ok(!up.textContent.includes("Steps taken"), "the step log came back");
+    assert.strictEqual(up.querySelector("h3 .badge").textContent.trim(), "processed");
   });
 
   check("the statement-line table says which nothing it means", () => {

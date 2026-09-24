@@ -7112,6 +7112,9 @@ function askMarkStale(){
       '.tk-host .tk-pill.travel{background:#e7f5ec;color:#1b5e33}',
       '.tk-host .tk-pill.retail{background:#eeeef4;color:#5a5a72}',
       '.tk-host .tk-pill.exception{background:#fdecc8;color:#8a5a00}',
+      '.tk-host .tk-status{margin-top:14px;padding-top:12px;font-size:12.5px;',
+      '  border-top:1px solid var(--line-2,#ececf4);color:var(--ink-2,#5a5a72)}',
+      '.tk-host .tk-status a{margin-left:6px;white-space:nowrap}',
       '.tk-host .tk-acts{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}',
     ].join('\n');
     document.head.appendChild(css);
@@ -7163,27 +7166,37 @@ function askMarkStale(){
         (c.undocumented ? '<div><b>' + c.undocumented + '</b>Not covered by the guide</div>' : '') +
       '</div>';
 
+    /* THE SAME BADGE VOCABULARY AS EVERY OTHER SOURCE CARD — loaded,
+       running…, processed, not run yet. Tokio had its own words
+       ("ready", "consolidated") for the same four states, so two cards side
+       by side on one screen described the same situation differently. */
+    const r0 = tokio.run;
+    const badge = have < 4 ? ['b-mute', have + ' of 4 uploaded']
+      : tokio.busy ? ['b-mute', 'reading\u2026']
+      : tokio.running ? ['b-ai', 'running\u2026']
+      : !tokio.result ? ['b-mute', 'loaded']
+      : r0 && r0.savedSession ? ['b-ok', 'processed']
+      : r0 ? ['b-warn', 'not saved yet']
+      : ['b-warn', 'not run yet'];
+
     card.innerHTML =
-      '<h3>Tokio Marine <span class="badge ' + (have === 4 ? 'b-ok' : 'b-mute') + '">' +
-        (have === 4 ? (tokio.result ? 'consolidated' : 'ready') : have + ' of 4 uploaded') + '</span></h3>' +
+      '<h3>Tokio Marine <span class="badge ' + badge[0] + '">' + badge[1] + '</span></h3>' +
       '<p class="tk-sub">Monthly. All four files must be for the same reporting month. ' +
         'No transaction total is entered \u2014 the figure to balance to is not known until ' +
         'Retail is excluded and the exceptions are resolved.</p>' +
       '<div class="tk-slots">' + slots + '</div>' +
       (tokio.busy ? '<div class="muted" style="margin-top:12px">Reading the four files\u2026</div>' : '') +
       (tokio.error ? '<div class="tk-err">' + esc(tokio.error) + '</div>' : '') +
-      monthBlock + counts + tokioSheet();
+      monthBlock + counts + tokioStatus() + tokioActions();
 
-    const exp = card.querySelector('#tokioExport');
-    if (exp) exp.onclick = tokioExportCsv;
+    // Export and the step-15 email are wired on the report card, with the
+    // result they act on.
     const run = card.querySelector('#tokioRun');
     if (run) run.onclick = () => tokioReconcile(null);
     const sv = card.querySelector('#tokioSave');
     // The literal the server insists on. Typed here in full rather than
     // assembled, so grepping for it finds every place it is spoken.
     if (sv) sv.onclick = () => tokioReconcile('SAVE SESSION');
-    const em = card.querySelector('#tokioEmail');
-    if (em) em.onclick = tokioEmail;
     card.querySelectorAll('[data-tokio-pick]').forEach((b) => {
       b.onclick = () => pickTokioFile(b.getAttribute('data-tokio-pick'));
     });
@@ -7369,13 +7382,36 @@ function askMarkStale(){
       (extra || '') + '</div>';
   }
 
-  /* The UPLOAD card's action bar — the only place the two writing buttons
-     live, because this is the screen the four files were dropped on. */
+  /* ── WHAT THE UPLOAD CARD SAYS ABOUT THE RUN: one line ──
+     Every other report works this way. Its card on Sources & upload names the
+     file, counts its rows and starts the run; the RESULT is read on the
+     Reconciliation report screen. Tokio used to draw the whole result on both
+     screens, which is two places to read one run and two places to check when
+     they disagree. So this is the sentence, and the report screen has the
+     tables. */
+  function tokioStatus() {
+    const res = tokio.result;
+    if (!res || !res.rows || !res.rows.length) return '';
+    const r = tokio.run;
+    const line = tokio.running ? 'Running in Tramada\u2026'
+      : r && r.savedSession ? 'Session <b>' + esc(r.label) + '</b> saved \u2014 ' +
+          (r.ticked || []).length + ' ticked, ' + (r.mismatched || []).length +
+          ' not ticked. Issue was NOT clicked.'
+      : r ? (r.ticked || []).length + ' ticked in Tramada \u2014 nothing saved yet.'
+      : 'Consolidated. Not run in Tramada yet.';
+    return '<div class="tk-status">' + line +
+      ' <a href="#" data-go="inbox">See the report \u2192</a></div>' +
+      (tokio.runError ? '<div class="tk-err">' + esc(tokio.runError) + '</div>' : '');
+  }
+
+  /* The two WRITING buttons, and only those. Export and the step-15 email are
+     reads of a finished run, so they sit with the result on the report
+     screen — the same place every other report's working file is exported
+     from. */
   function tokioActions() {
     const res = tokio.result;
     if (!res || !res.rows || !res.rows.length) return '';
     return '<div class="tk-acts">' +
-        '<button class="btn sm" id="tokioExport">Export CSV</button>' +
         /* Steps 9-14 without a terminal. Two buttons, not one: the first ticks
            and stops, the second saves the session. Issue is never offered —
            BR16 puts it in a human's hands and BR18 leaves them the total. */
@@ -7385,20 +7421,7 @@ function askMarkStale(){
           ? '<button class="btn sm" id="tokioSave"' + (tokio.running ? ' disabled' : '') + '>' +
               'Save session ' + esc(tokio.run.label) + '</button>'
           : '') +
-        /* STEP 15 appears only once step 14 has happened, because the mail's
-           subject says "Session saved, ready for review". Offering it before
-           then would offer to tell Travel Accounts something untrue. */
-        (tokio.run && tokio.run.savedSession
-          ? '<button class="btn sm" id="tokioEmail"' + (tokio.emailing ? ' disabled' : '') + '>' +
-              (tokio.emailing ? 'Preparing\u2026' : 'Email Travel Accounts') + '</button>'
-          : '') +
-        '<span style="font-size:11.5px;color:var(--ink-2,#5a5a72)">' +
-          res.rows.length + ' row(s) \u00b7 this is the sheet that goes to Travel Accounts</span>' +
       '</div>';
-  }
-
-  function tokioSheet() {
-    return tokioSheetTable(tokioActions()) + tokioRunBlock() + tokioChecklist();
   }
 
   /* WHAT THE TRAMADA RUN DID.
