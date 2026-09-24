@@ -30,7 +30,13 @@ const line = (s = "") => console.log(s);
     await tk.openIssuePayments(page, () => {});
     const search = await tk.searchCreditorPayments(
       page,
-      { creditor: "Tokio", fromCreated: "01-08-2026", toCreated: "22-10-2026" },
+      {
+        creditor: "Tokio",
+        // Date objects, not "dd-mm-yyyy" strings: tramadaDate() does the
+        // formatting, and new Date("01-08-2026") is Invalid Date in Node.
+        fromCreated: new Date(2026, 7, 1),   // 01-08-2026
+        toCreated: new Date(2026, 9, 22),    // 22-10-2026
+      },
       () => {}
     );
     results = search.page || page;
