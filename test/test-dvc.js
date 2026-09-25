@@ -614,8 +614,12 @@ console.log("\na wrong amount on a hotel + flight booking — a person decides (
      BR13's harmless leftovers — the very costings a person has to check. */
   const mail = C.dvcEmail({ statementDate: "2026-09-24", summary: out.summary, rows: out.rows,
     unmatchedTramada: out.unmatchedTramada, payment: null });
-  ok("the email names both hotels as exceptions", /booking 90001 \$150\.00/.test(mail.text) &&
-    /booking 90002 \$214\.50/.test(mail.text), mail.text);
+  /* The per-line breakdown is not in the email any more (RAA, 24-09-2026) —
+     it is the attachment's Remarks/Reconciled/Why columns for every row — so
+     what is left to check here is the count, and that leftovers (below)
+     never claims these two as harmless. */
+  ok("the email points at the attachment for both hotels' exceptions",
+    /See the attachment for the 2 lines not ticked/.test(mail.text), mail.text);
   ok("...and never calls their costings expected leftovers", !/nothing on the report paid/.test(mail.text), mail.text);
   ok("...and counts them as two lines, not one thing", /found 2 lines that do not reconcile/.test(mail.text), mail.text);
 }

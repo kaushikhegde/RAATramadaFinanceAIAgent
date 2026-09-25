@@ -4003,8 +4003,8 @@ function dvcEmail(o = {}) {
     status = "errors found — fix and re-upload";
     headline = `The ${day} DVC reconciliation found ` +
       (n ? `${n} line${n === 1 ? "" : "s"} that do${n === 1 ? "es" : ""} not reconcile` : "errors") +
-      ". Nothing has been entered in Tramada. Please fix the Westpac discrepancies (below, and in the " +
-      "Remarks column of the attachment) and upload the corrected report — the reconciliation runs " +
+      ". Nothing has been entered in Tramada. Please fix the Westpac discrepancies (see the Remarks column " +
+      "of the attachment) and upload the corrected report — the reconciliation runs " +
       "again, and the Tramada reimbursement starts once no errors arise.";
   } else if (saved && c && c.complete) {
     status = "ready to issue";
@@ -4050,12 +4050,15 @@ function dvcEmail(o = {}) {
     lines.push("", "Still for a person:");
     for (const e of c.errors) lines.push(`  - ${e}`);
   }
+  /* THE PER-LINE BREAKDOWN IS NOT HERE. It used to be — booking, amount, and
+     dvcRemarksCell's reason, one per exception — but that is exactly the
+     Remarks/Reconciled/Why columns the attachment already carries for every
+     row (dvcReportCsv), so the email just said the spreadsheet's contents
+     back at the reader a second time. RAA, 24-09-2026: the spreadsheet does
+     that job; the email says how many and points at it. */
   if (exceptions.length) {
-    lines.push("", "Exceptions (not ticked):");
-    for (const r of exceptions) {
-      lines.push(`  - line ${r.line == null ? r.n : r.line}: booking ${r.bookingNo || "(none)"} ` +
-        `$${r.amount} — ${dvcRemarksCell(r) || "not matched"}`);
-    }
+    lines.push("", `See the attachment for the ${exceptions.length} line${exceptions.length === 1 ? "" : "s"} ` +
+      "not ticked, each with its own Remarks and Why.");
   }
   /* NOT "EXPECTED" WHEN A FLAGGED LINE IS ON THE SAME BOOKING. A hotel charged
      $150.00 against its $420.00 costing leaves that costing unclaimed too, and
@@ -4092,6 +4095,62 @@ function dvcEmail(o = {}) {
       // A BOM for the same reason the export route sends one: Excel on Windows
       // otherwise opens a UTF-8 CSV as mojibake.
       content: "﻿" + dvcReportCsv(rows, columns),
+    },
+  };
+}
+
+/* ── the email for BPay, Mint, TravelPay and IPSI ────────────────────────── */
+
+/**
+ * A reconciliation email for the four reports that do not save a Tramada
+ * Payment Session — DVC's `dvcEmail` is the one that does, and stays its own
+ * function because a saved session is a different shape of news. This is the
+ * shared shape underneath all four: what happened, in one sentence the caller
+ * already worked out for the progress line, and the updated spreadsheet
+ * attached so a flagged row's Remarks and Why are read there rather than
+ * retyped into the email body (dvcEmail took the same view, 24-09-2026).
+ *
+ * TEMPORARY RECIPIENT. There is no `BPAY_EMAIL_TO` / `MINT_EMAIL_TO` /
+ * `TRAVELPAY_EMAIL_TO` / `IPSI_EMAIL_TO` yet — nobody at RAA has said who reads
+ * these four, so `mailer.js` sends every one of them to `DVC_EMAIL_TO` for now,
+ * the one recipient that IS provisioned. Give each report its own address once
+ * RAA names one; until then this is one inbox standing in for five.
+ */
+function reconEmail(o = {}) {
+  const {
+    source, title, statementDate, headline, rows = [], columns = [],
+    runId = "", dryRun = false,
+  } = o;
+  const day = toIsoDate(statementDate) || String(statementDate || "");
+  // Same test dvcEmail uses for its per-line breakdown: a row with anything in
+  // the Remarks column is the one a person still has to look at.
+  const exceptions = (rows || []).filter((r) => r && r.remark);
+
+  const lines = [headline, "", `Settlement date: ${day || "(none given)"}`];
+  if (exceptions.length) {
+    lines.push("", `See the attachment for the ${exceptions.length} line${exceptions.length === 1 ? "" : "s"} ` +
+      "flagged for a person, each with its own Remarks and Why.");
+  }
+  lines.push("", runId ? `Run ${runId}` : "");
+
+  const text = lines.join("\n").replace(/\n+$/, "") + "\n";
+  const escHtml = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const html = "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:14px\">" +
+    `<p><b>${escHtml(headline)}</b></p>` +
+    `<pre style="font-family:Consolas,monospace;font-size:13px">${escHtml(lines.slice(2).join("\n"))}</pre>` +
+    "</div>";
+
+  const stamp = toIsoDate(statementDate) || "undated";
+  const grid = buildExportGrid(rows, columns, { inputColumns: inputColumnsOf(columns) });
+  return {
+    subject: `AI Agent ${title} reconciliation — ${day || stamp}` + (dryRun ? " [DRY RUN]" : ""),
+    text,
+    html,
+    attachment: {
+      filename: `${source}-reconciliation-${stamp}.csv`,
+      contentType: "text/csv; charset=utf-8",
+      // A BOM for the same reason dvcReportCsv's attachment carries one.
+      content: "﻿" + gridToCsv(grid),
     },
   };
 }
@@ -5256,6 +5315,7 @@ module.exports = {
   DVC_ISSUE_PAYMENT_OPTIONS, ISSUE_PAYMENT_COLUMNS, ISSUE_PAYMENT_REQUIRED_COLUMNS, DVC_COMMIT,
   resolveSelectOption, assertCardLabel, parseIssuePaymentRows, issuePaymentRowLabel,
   planDvcPayment, decideDvcCommit, dvcReconciliationIsGreen, dvcTramadaGate, dvcReportCsv, dvcEmail,
+  reconEmail,
   diffDvcUploads, DVC_DIFF_FIELDS,
   tidyError,
   summarise,

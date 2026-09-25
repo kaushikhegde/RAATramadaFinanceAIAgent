@@ -454,6 +454,61 @@ async function findButton(page, wantText) {
   }, wantText);
 }
 
+/**
+ * READ-ONLY. What a labelled field on the page actually is — selector, tag,
+ * current value, readonly/disabled, and its options if it is a select.
+ *
+ * For a block of the screen nothing has measured yet (a "Payment Overview" /
+ * "Credit Card Details" / "Document Details" section, say): give it the labels
+ * as printed on screen and get back what each one really is, rather than
+ * guessing an id and finding out from a validation banner that it was wrong.
+ * Same label-then-adjacent-cell strategy `findControl` uses, generalised across
+ * every tag a labelled field might be (`findControl` only ever searches one).
+ * Ticks nothing, types nothing, saves nothing.
+ */
+async function describeFields(page, labels) {
+  return await page.evaluate((labels) => {
+    const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
+    const low = (s) => norm(s).toLowerCase();
+    const sel = (el) => (el.id ? `#${el.id}` : el.name ? `${el.tagName.toLowerCase()}[name="${el.name}"]` : null);
+    const FIELD_TAGS = "input, select, textarea";
+
+    const describe = (el, how) => {
+      const tag = el.tagName.toLowerCase();
+      return {
+        selector: sel(el) || "(no id or name)",
+        how,
+        tag,
+        type: tag === "input" ? (el.type || "text") : "",
+        value: tag === "select" ? (el.options[el.selectedIndex] || {}).text || "" : el.value || "",
+        readOnly: !!el.readOnly,
+        disabled: !!el.disabled,
+        options: tag === "select" ? [...el.options].slice(0, 12).map((o) => norm(o.textContent)).filter(Boolean) : [],
+      };
+    };
+
+    const findFor = (label) => {
+      const want = low(label);
+      for (const l of document.querySelectorAll("label")) {
+        if (low(l.textContent) !== want) continue;
+        const t = l.htmlFor ? document.getElementById(l.htmlFor) : l.querySelector(FIELD_TAGS);
+        if (t) return describe(t, "label");
+      }
+      for (const cell of document.querySelectorAll("td, th, div, span")) {
+        if (low(cell.textContent) !== want) continue;
+        let sib = cell.nextElementSibling;
+        for (let i = 0; i < 3 && sib; i++, sib = sib.nextElementSibling) {
+          const t = sib.matches(FIELD_TAGS) ? sib : sib.querySelector(FIELD_TAGS);
+          if (t) return describe(t, "adjacent cell");
+        }
+      }
+      return { selector: null, how: "not found by label or adjacent cell", tag: "", value: "", readOnly: false, disabled: false, options: [] };
+    };
+
+    return labels.map((label) => ({ label, ...findFor(label) }));
+  }, labels);
+}
+
 module.exports = {
   TRAMADA_BASE_URL,
   SEARCH,
@@ -464,6 +519,7 @@ module.exports = {
   openBrowser,
   assertSignedIn,
   openIssuePayments,
+  describeFields,
   optionsOf,
   pick,
   setByLabel,

@@ -1097,24 +1097,36 @@ async function handleReconRun(session, msg) {
        itself has already said what happened, with the date, so this line is
        skipped rather than restated: three sentences arrived for one event and
        two of them were near-copies of the third. */
-    if (!out.alreadyFiled) {
-      send(session, {
-        type: "recon_progress",
-        /* NO "fully clean". POC feedback BPAY 05: "What does 'fully clean' means?
-           Doesn't sound like a term RAA uses, can remove if not needed." It was
-           a third count for rows that were both allocated AND reconciled — which
-           the first two numbers already let you work out, under a name Finance
-           does not use. `s.both` is still computed and still on the run record;
-           it just no longer gets a made-up label in the sentence a person reads. */
-        message: `${s.allocated} of ${s.total} allocated, ${s.reconciled} reconciled` +
-          (s.failed ? `, ${s.failed} failed` : ""),
-      });
-    }
+    /* NO "fully clean". POC feedback BPAY 05: "What does 'fully clean' means?
+       Doesn't sound like a term RAA uses, can remove if not needed." It was
+       a third count for rows that were both allocated AND reconciled — which
+       the first two numbers already let you work out, under a name Finance
+       does not use. `s.both` is still computed and still on the run record;
+       it just no longer gets a made-up label in the sentence a person reads. */
+    const headline = out.alreadyFiled
+      ? `All ${s.total} BPay row${s.total === 1 ? "" : "s"} for ${msg.statementDate} were already filed by ` +
+        `an earlier run — reconciliation page ${out.pageNumber} was not touched by this one.`
+      : `${s.allocated} of ${s.total} BPay row${s.total === 1 ? "" : "s"} for ${msg.statementDate} allocated, ` +
+        `${s.reconciled} reconciled` + (s.failed ? `, ${s.failed} failed` : "") + ".";
+    if (!out.alreadyFiled) send(session, { type: "recon_progress", message: headline });
+
+    const email = await sendReconEmail(msg, {
+      source: "bpay", title: reconCore.REPORTS.bpay.title, headline, rows: out.results, run,
+    });
+    send(session, {
+      type: "recon_progress",
+      message: email.sent
+        ? `Emailed the reconciliation to ${email.to.join(", ")}.`
+        : `The reconciliation email was not sent — ${email.why}.`,
+      ok: !!email.sent,
+    });
+
     send(session, {
       type: "recon_done", pageNumber: out.pageNumber, summary: s, runId: run && run.id,
       // So the page knows not to add its own "page N created" — nothing was
       // created, and the run has already said so.
       alreadyFiled: !!out.alreadyFiled,
+      email: { sent: !!email.sent, to: email.to || [], why: email.why || "" },
     });
   } catch (err) {
     // The receipts already filed are real. Say how far it got rather than
@@ -1228,14 +1240,29 @@ async function handleCombinedRun(session, msg) {
     });
     const s = out.summary;
     closeRun(run, out);
+    const title = reconCore.RUN_ORDER
+      .filter((k) => (byReport[k] || []).length)
+      .map((k) => reconCore.REPORTS[k].title)
+      .join(" + ");
+    const headline = `${title}, ${msg.statementDate}: ${s.reconciled} of ${s.total} reconciled on page ` +
+      `${out.pageNumber} (${s.perReport})` +
+      (s.allocated ? `, ${s.allocated} allocated` : "") +
+      (s.failed ? `, ${s.failed} failed` : "") + ".";
+    send(session, { type: "recon_progress", message: headline });
+
+    const email = await sendReconEmail(msg, { source: "combined", title, headline, rows: out.results, run });
     send(session, {
       type: "recon_progress",
-      message: `${s.reconciled} of ${s.total} reconciled on page ${out.pageNumber} ` +
-        ` (${s.perReport})` +
-        (s.allocated ? `, ${s.allocated} allocated` : "") +
-        (s.failed ? `, ${s.failed} failed` : ""),
+      message: email.sent
+        ? `Emailed the reconciliation to ${email.to.join(", ")}.`
+        : `The reconciliation email was not sent — ${email.why}.`,
+      ok: !!email.sent,
     });
-    send(session, { type: "recon_done", pageNumber: out.pageNumber, summary: s, runId: run && run.id });
+
+    send(session, {
+      type: "recon_done", pageNumber: out.pageNumber, summary: s, runId: run && run.id,
+      email: { sent: !!email.sent, to: email.to || [], why: email.why || "" },
+    });
   } catch (err) {
     const why = reconCore.tidyError(err.message);
     closeRun(run, null, why);
@@ -1305,19 +1332,32 @@ async function handleIpsiRun(session, msg) {
     });
     const s = out.summary;
     closeRun(run, out);
+    // "0 of 4 matched and ticked, nothing issued" is a true and terrible way
+    // to describe a settlement that was already fully reconciled, so that
+    // case gets its own sentence rather than the tally.
+    const headline = out.alreadyReconciled
+      ? `All ${s.total} IPSI rows for ${msg.statementDate} were already reconciled — nothing left to tick or issue.`
+      : `IPSI ${msg.statementDate}: ${s.ticked} of ${s.total} matched and ticked` +
+        (s.alreadyReconciled ? `, ${s.alreadyReconciled} already reconciled earlier` : "") +
+        (s.onBooking ? ` (${s.onReference} on reference, ${s.onBooking} on booking)` : "") +
+        (out.issued && out.issued.issued ? `, receipt issued for $${out.issued.amount}` : ", nothing issued") + ".";
+    send(session, { type: "recon_progress", message: headline });
+
+    const email = await sendReconEmail(msg, {
+      source: "ipsi", title: reconCore.REPORTS.ipsi.title, headline, rows: out.results, run,
+    });
     send(session, {
       type: "recon_progress",
-      // "0 of 4 matched and ticked, nothing issued" is a true and terrible way
-      // to describe a settlement that was already fully reconciled, so that
-      // case gets its own sentence rather than the tally.
-      message: out.alreadyReconciled
-        ? `All ${s.total} rows were already reconciled — nothing left to tick or issue.`
-        : `${s.ticked} of ${s.total} matched and ticked` +
-          (s.alreadyReconciled ? `, ${s.alreadyReconciled} already reconciled earlier` : "") +
-          (s.onBooking ? ` (${s.onReference} on reference, ${s.onBooking} on booking)` : "") +
-          (out.issued && out.issued.issued ? `, receipt issued for $${out.issued.amount}` : ", nothing issued"),
+      message: email.sent
+        ? `Emailed the reconciliation to ${email.to.join(", ")}.`
+        : `The reconciliation email was not sent — ${email.why}.`,
+      ok: !!email.sent,
     });
-    send(session, { type: "recon_done", summary: s, runId: run && run.id });
+
+    send(session, {
+      type: "recon_done", summary: s, runId: run && run.id,
+      email: { sent: !!email.sent, to: email.to || [], why: email.why || "" },
+    });
   } catch (err) {
     const why = reconCore.tidyError(err.message);
     closeRun(run, null, why);
@@ -1624,6 +1664,30 @@ async function dvcSendEmail(msg, { out, total, payment, run }) {
 }
 
 /**
+ * The same step for BPay, Mint, TravelPay and IPSI — built by
+ * `reconCore.reconEmail` (tested offline), delivered by mailer.js, never
+ * throws. `headline` is the one sentence each handler already worked out for
+ * its own `recon_progress` line — passed in rather than recomputed, so the
+ * email and the screen never disagree about what happened.
+ */
+async function sendReconEmail(msg, { source, title, headline, rows, run }) {
+  try {
+    const message = reconCore.reconEmail({
+      source, title,
+      statementDate: msg.statementDate,
+      headline,
+      rows: rows || [],
+      columns: Array.isArray(msg.columns) ? msg.columns.filter(Boolean) : [],
+      runId: run && run.id,
+      dryRun: !!msg.dryRun,
+    });
+    return await mailer.send(message);
+  } catch (err) {
+    return { sent: false, why: reconCore.tidyError(err.message) };
+  }
+}
+
+/**
  * What the store keeps about a saved session — the record of what each run
  * did. It no longer decides anything: whether a session exists is read off
  * Tramada (see `tramada-dvc.findSavedSessions`).
@@ -1902,13 +1966,24 @@ async function handleMintRun(session, msg) {
     });
     const s = out.summary;
     closeRun(run, out);
+    const headline = `${report.title}, ${msg.statementDate}: ${s.reconciled} of ${s.total} found on page ` +
+      `${out.pageNumber}` + (s.mismatched ? `, ${s.mismatched} with a difference to check` : "") +
+      (s.notReconciled ? `, ${s.notReconciled} missing` : "") + ".";
+    send(session, { type: "recon_progress", message: headline });
+
+    const email = await sendReconEmail(msg, { source, title: report.title, headline, rows: out.results, run });
     send(session, {
       type: "recon_progress",
-      message: `${s.reconciled} of ${s.total} found on page ${out.pageNumber}` +
-        (s.mismatched ? `, ${s.mismatched} with a difference to check` : "") +
-        (s.notReconciled ? `, ${s.notReconciled} missing` : ""),
+      message: email.sent
+        ? `Emailed the reconciliation to ${email.to.join(", ")}.`
+        : `The reconciliation email was not sent — ${email.why}.`,
+      ok: !!email.sent,
     });
-    send(session, { type: "recon_done", pageNumber: out.pageNumber, summary: s, runId: run && run.id });
+
+    send(session, {
+      type: "recon_done", pageNumber: out.pageNumber, summary: s, runId: run && run.id,
+      email: { sent: !!email.sent, to: email.to || [], why: email.why || "" },
+    });
   } catch (err) {
     const why = reconCore.tidyError(err.message);
     closeRun(run, null, why);

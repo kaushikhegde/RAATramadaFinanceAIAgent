@@ -49,8 +49,13 @@
  * the first time somebody forgot a variable would send the accounts team a
  * sandbox day as though it were theirs. DVC_EMAIL_TO is set deliberately.
  *
- * WHAT the email says is `recon-core.dvcEmail`, tested offline (§2, §7). This
- * file only delivers it.
+ * TEMPORARILY ONE RECIPIENT FOR FIVE REPORTS. BPay, Mint, TravelPay and IPSI
+ * send here too now (`recon-core.reconEmail`), and none of them has its own
+ * `..._EMAIL_TO` — only DVC_EMAIL_TO is provisioned, so `config()` reads that
+ * one name for all five until RAA says who reads each report's mail.
+ *
+ * WHAT the email says is `recon-core.dvcEmail` (DVC) or `recon-core.reconEmail`
+ * (the other four), both tested offline (§2, §7). This file only delivers it.
  */
 
 require("dotenv").config();

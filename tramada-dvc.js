@@ -432,6 +432,71 @@ async function pressAndCheck(page, wantText, what, say) {
 }
 
 /**
+ * The results page's OWN payment header — "Issue Agency Credit Card
+ * Reimbursement" over Payment Overview / Payment Details / Document Details —
+ * separate from the search parameters `fillSearch` already set two clicks ago.
+ *
+ * NEVER MEASURED UNTIL A SESSION SAVE FAILED ON IT (RAA, 25-09-2026):
+ * "Amount Of Payment must equal the allocated amount" and "Transaction Type
+ * must be selected", on a screen `tramada-dvc.js`'s own header used to say
+ * stopped at Round Remaining, Session and Issue. It does not: Session
+ * validates this header too, even though nothing here is Issued.
+ *
+ * ONLY THESE TWO ARE THE AGENT'S TO FILL (RAA, 25-09-2026). Payee Name,
+ * Reference and Payment Notes are left exactly as they load — blank — for
+ * Travel Accounts to fill before Issue; typing a reference or a payee here
+ * would be inventing one (§3). Bank Account, Document Template, Document
+ * Heading and Document Type are read-only or already correct and are not
+ * touched.
+ *
+ *   Transaction Type    always EFT — DVC's only committed a Payment Session
+ *                       when the run's own money agrees to the cent, so a
+ *                       cheque or a card is never in play here.
+ *   Amount Of Payment   the allocated amount, which on this screen means
+ *                       `commit.paidCents` — the same figure the email and
+ *                       the run record already call "ticked total", not the
+ *                       report's own total, which a partial commit would not
+ *                       match.
+ *
+ * Discovered by label (§6), same as the Credit Card field two steps back —
+ * this part of the page has never been probed, so a hard-coded id would be a
+ * guess wearing a selector's clothes.
+ */
+async function fillPaymentHeader(page, { paidCents }, say = () => {}) {
+  const txn = await screen.findControl(page, { label: "Transaction Type", idHint: "transactionType", tag: "select" });
+  if (!txn.selector) {
+    const seen = (txn.seen || []).map((s) => s.selector).join(", ");
+    throw new Error(
+      `No Transaction Type field on the results page — Session cannot save without it. ` +
+      `Selects seen: ${seen || "(none)"}`);
+  }
+  const setTxn = await screen.setByLabel(page, txn.selector, "EFT", null, "Transaction Type", core);
+  say(`Transaction Type set to "${setTxn.text}".`, true);
+
+  const amt = await screen.findControl(page, { label: "Amount Of Payment", idHint: "paymentAmount", tag: "input" });
+  if (!amt.selector) {
+    throw new Error(`No Amount Of Payment field on the results page — Session cannot save without it.`);
+  }
+  const amount = core.money(paidCents);
+  await page.fill(amt.selector, "").catch(() => {});
+  await page.fill(amt.selector, amount).catch(() => {});
+  let got = await page.inputValue(amt.selector).catch(() => "");
+  if (core.cents(got) !== paidCents) {
+    await page.click(amt.selector).catch(() => {});
+    await page.fill(amt.selector, "").catch(() => {});
+    await page.type(amt.selector, amount, { delay: 40 });
+    got = await page.inputValue(amt.selector).catch(() => "");
+  }
+  if (core.cents(got) !== paidCents) {
+    throw new Error(
+      `Amount Of Payment would not take "${amount}" (the allocated total) — the field ` +
+      `(${amt.selector}) reads "${got}". Nothing has been saved.`);
+  }
+  say(`Amount Of Payment set to $${amount} — the allocated total.`, true);
+  return { transactionType: setTxn, amount };
+}
+
+/**
  * Step 16 — type the session label, prove it took, press Session.
  *
  * The label box is found by what it is called rather than by an id nobody had
@@ -683,6 +748,10 @@ async function runDvcPayment(o = {}) {
     if (commit.wanted === core.DVC_COMMIT.session) {
       ticked = await tickPlannedRows(page, plan, say);
       if (commit.action === core.DVC_COMMIT.session) {
+        // The page's own header validates on Session too, not only on Issue —
+        // see `fillPaymentHeader`. After ticking, so nothing left to touch the
+        // page runs between filling it and pressing Session.
+        await fillPaymentHeader(page, { paidCents: commit.paidCents }, say);
         saved = await saveSession(page, commit.sessionLabel, say);
       }
     } else {
@@ -727,6 +796,7 @@ module.exports = {
   chooseCreditCard,
   readGrid,
   tickPlannedRows,
+  fillPaymentHeader,
   saveSession,
   findSessionLabel,
   findSavedSessions,
