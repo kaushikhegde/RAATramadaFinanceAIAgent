@@ -507,6 +507,16 @@ check("it reads a Tramada-shaped date too", C.dvcSessionLabel("04-09-2026"), "DV
 // date must not stop it — it just does not carry a date nobody entered.
 check("no date, no invented date", C.dvcSessionLabel(""), "DVC");
 
+console.log("\nthe Issue Agency Credit Card Reimbursement header's Payee Name and Reference");
+// RAA, 28-09-2026: Payee is always "Westpac DVC"; Reference is that name plus
+// the Date Of Payment field's own value, compact, not this project's usual ISO.
+check("the reference", C.westpacDvcReference("2026-09-26"), "Westpac DVC_20260926");
+check("it reads a Tramada-shaped date too", C.westpacDvcReference("26-09-2026"), "Westpac DVC_20260926");
+// Same defensive contract as dvcSessionLabel — an unreadable Date Of Payment
+// must not produce "Westpac DVC_undefined" on a field Session validates.
+check("no date, no invented date", C.westpacDvcReference(""), "Westpac DVC");
+check("the payee is fixed", C.WESTPAC_DVC_PAYEE, "Westpac DVC");
+
 console.log("\nthe report is registered, and cannot be swept into a browser run");
 check("DVC is a report", C.REPORTS.dvc.title, "DVC card reconciliation");
 check("it has no statement page", C.REPORTS.dvc.recPayType, null);

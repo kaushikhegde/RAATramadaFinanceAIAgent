@@ -442,12 +442,10 @@ async function pressAndCheck(page, wantText, what, say) {
  * stopped at Round Remaining, Session and Issue. It does not: Session
  * validates this header too, even though nothing here is Issued.
  *
- * ONLY THESE TWO ARE THE AGENT'S TO FILL (RAA, 25-09-2026). Payee Name,
- * Reference and Payment Notes are left exactly as they load — blank — for
- * Travel Accounts to fill before Issue; typing a reference or a payee here
- * would be inventing one (§3). Bank Account, Document Template, Document
- * Heading and Document Type are read-only or already correct and are not
- * touched.
+ * FOUR OF THESE ARE THE AGENT'S TO FILL. Payment Notes is left exactly as it
+ * loads — blank — for Travel Accounts to fill before Issue. Bank Account,
+ * Document Template, Document Heading and Document Type are read-only or
+ * already correct and are not touched.
  *
  *   Transaction Type    always EFT — DVC's only committed a Payment Session
  *                       when the run's own money agrees to the cent, so a
@@ -457,11 +455,40 @@ async function pressAndCheck(page, wantText, what, say) {
  *                       the run record already call "ticked total", not the
  *                       report's own total, which a partial commit would not
  *                       match.
+ *   Payee Name          always "Westpac DVC" (RAA, 28-09-2026).
+ *   Reference           "Westpac DVC_YYYYMMDD", built from whatever Date Of
+ *                       Payment already reads on the form — read back, not
+ *                       computed independently, so it can never disagree with
+ *                       the date sitting next to it. `core.westpacDvcReference`.
+ *
+ * Payee Name and Reference were left blank until 28-09-2026: RAA's original
+ * word was that these were for Travel Accounts to fill before Issue, and
+ * typing one would be inventing it (§3). RAA has since named the exact payee
+ * and reference pattern to use for this screen, which is a value supplied,
+ * not one guessed — so this is the one screen where those two fields are now
+ * filled. That instruction does not extend to any other reimbursement or
+ * payment screen.
  *
  * Discovered by label (§6), same as the Credit Card field two steps back —
  * this part of the page has never been probed, so a hard-coded id would be a
  * guess wearing a selector's clothes.
  */
+async function fillTextAndVerify(page, selector, value, field) {
+  await page.fill(selector, "").catch(() => {});
+  await page.fill(selector, value).catch(() => {});
+  let got = await page.inputValue(selector).catch(() => "");
+  if (got !== value) {
+    await page.click(selector).catch(() => {});
+    await page.fill(selector, "").catch(() => {});
+    await page.type(selector, value, { delay: 40 });
+    got = await page.inputValue(selector).catch(() => "");
+  }
+  if (got !== value) {
+    throw new Error(`${field} did not stick: set "${value}", the form reads "${got}".`);
+  }
+  return got;
+}
+
 async function fillPaymentHeader(page, { paidCents }, say = () => {}) {
   const txn = await screen.findControl(page, { label: "Transaction Type", idHint: "transactionType", tag: "select" });
   if (!txn.selector) {
@@ -493,7 +520,26 @@ async function fillPaymentHeader(page, { paidCents }, say = () => {}) {
       `(${amt.selector}) reads "${got}". Nothing has been saved.`);
   }
   say(`Amount Of Payment set to $${amount} — the allocated total.`, true);
-  return { transactionType: setTxn, amount };
+
+  const dateField = await screen.findControl(page, { label: "Date Of Payment", idHint: "paymentDate", tag: "input" });
+  const dateOfPayment = dateField.selector ? await page.inputValue(dateField.selector).catch(() => "") : "";
+  const reference = core.westpacDvcReference(dateOfPayment);
+
+  const payee = await screen.findControl(page, { label: "Payee Name", idHint: "payeeName", tag: "input" });
+  if (!payee.selector) {
+    throw new Error(`No Payee Name field on the results page — Session cannot save without it.`);
+  }
+  await fillTextAndVerify(page, payee.selector, core.WESTPAC_DVC_PAYEE, "Payee Name");
+  say(`Payee Name set to "${core.WESTPAC_DVC_PAYEE}".`, true);
+
+  const ref = await screen.findControl(page, { label: "Reference", idHint: "reference", tag: "input" });
+  if (!ref.selector) {
+    throw new Error(`No Reference field on the results page — Session cannot save without it.`);
+  }
+  await fillTextAndVerify(page, ref.selector, reference, "Reference");
+  say(`Reference set to "${reference}".`, true);
+
+  return { transactionType: setTxn, amount, payee: core.WESTPAC_DVC_PAYEE, reference };
 }
 
 /**

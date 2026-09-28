@@ -3354,6 +3354,28 @@ function dvcSessionLabel(date) {
   return `DVC ${d}/${m}/${y}`;
 }
 
+const WESTPAC_DVC_PAYEE = "Westpac DVC";
+
+/**
+ * The Issue Agency Credit Card Reimbursement header's Payee Name and
+ * Reference — RAA, 28-09-2026, and only for this one screen: Payee is always
+ * "Westpac DVC" and Reference is that same name plus the Date Of Payment
+ * field's own value as YYYYMMDD.
+ *
+ * Takes the field's value, not `new Date()` — the reference has to match the
+ * payment it is filed under, and Date Of Payment is what Tramada will show
+ * next to it, whatever that turns out to be.
+ *
+ * An unreadable date returns the bare payee with no trailing date, the same
+ * defensive contract as `dvcSessionLabel` just above: the field still gets a
+ * value, never one with "undefined" baked into it.
+ */
+function westpacDvcReference(dateOfPayment) {
+  const iso = toIsoDate(dateOfPayment);
+  if (!iso) return WESTPAC_DVC_PAYEE;
+  return `${WESTPAC_DVC_PAYEE}_${iso.slice(0, 4)}${iso.slice(5, 7)}${iso.slice(8, 10)}`;
+}
+
 /* ── steps 12 to 16: the Tramada Issue Payment half ──────────────────────── */
 
 /*
@@ -5310,7 +5332,7 @@ module.exports = {
   segmentAbbreviation, dvcSegmentAgrees, dvcDate, dvcBookingKey,
   parseDvcRows, parseTramadaCcRows, filterDvcSettlementDate,
   dvcSubsetSum, dvcBreakdown, reconcileDvc, dvcRemarksCell, summariseDvc, checkDvcTotal,
-  DVC_PAYMENT_PARAMETERS, dvcDateRange, dvcSessionLabel,
+  DVC_PAYMENT_PARAMETERS, dvcDateRange, dvcSessionLabel, WESTPAC_DVC_PAYEE, westpacDvcReference,
   // steps 12-16, the Tramada Issue Payment half; step 18, the email
   DVC_ISSUE_PAYMENT_OPTIONS, ISSUE_PAYMENT_COLUMNS, ISSUE_PAYMENT_REQUIRED_COLUMNS, DVC_COMMIT,
   resolveSelectOption, assertCardLabel, parseIssuePaymentRows, issuePaymentRowLabel,

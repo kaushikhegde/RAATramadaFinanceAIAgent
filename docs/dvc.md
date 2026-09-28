@@ -358,13 +358,29 @@ of that header are the agent's —
 - **Amount Of Payment** is `commit.paidCents` — the run's own allocated total,
   not the report's total, which a partial commit would not match.
 
-— and both are set by `tramada-dvc.fillPaymentHeader`, discovered by label
-exactly as the Credit Card field is, right after the grid is ticked and
-verified and immediately before Session is pressed. Payee Name, Reference and
-Payment Notes are left blank on purpose: typing one would be inventing a
-reference (§3), and RAA was explicit that these are for Travel Accounts to
-fill before Issue, not for the agent. Bank Account, Document Template,
-Document Heading and Document Type are already right and are not touched.
+— both set by `tramada-dvc.fillPaymentHeader`, discovered by label exactly as
+the Credit Card field is, right after the grid is ticked and verified and
+immediately before Session is pressed. Payment Notes is left blank on
+purpose: typing one would be inventing a note (§3), and RAA was explicit that
+Payment Notes is for Travel Accounts to fill before Issue, not for the agent.
+Bank Account, Document Template, Document Heading and Document Type are
+already right and are not touched.
+
+**RAA, 28-09-2026: Payee Name and Reference are now the agent's to fill too**,
+for this screen only — a reversal of the line above, because this time RAA
+supplied the exact value rather than the agent guessing one (§3 bans
+inventing a number, not typing one you were handed):
+
+- **Payee Name** is always `Westpac DVC`.
+- **Reference** is `Westpac DVC_YYYYMMDD`, where the date comes from whatever
+  the form's own Date Of Payment field already reads — read back, not
+  computed independently, so the reference can never name a different day
+  than the payment sits under.
+
+Both live in `recon-core.js` as `WESTPAC_DVC_PAYEE` and
+`westpacDvcReference(dateOfPayment)`, and both are still verified by
+read-back the same way Transaction Type and Amount Of Payment are. This does
+not extend to any other reimbursement or payment screen in this project.
 
 `tools/probe-dvc-payment.js` now prints this header read-only (selector,
 current value, options) via `tramada-issue-payments.describeFields`, so the
