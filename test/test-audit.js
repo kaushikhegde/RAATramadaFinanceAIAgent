@@ -212,6 +212,132 @@ check("a failed-logon event defaults to outcome 'failure'", () => {
   assert.strictEqual(audit.buildEvent("signin.success", GOOD).outcome, "success");
 });
 
+console.log("\n§3.1.1 — the hash chain (direct changes to log data)");
+
+check("each line links to the one before it", () => {
+  audit._resetChainForTests();
+  const a = audit.record("signin.success", GOOD);
+  const b = audit.record("run.started", GOOD);
+  assert.strictEqual(a.seq, 1);
+  assert.strictEqual(b.seq, 2);
+  assert.strictEqual(b.prev, a.hash);
+  assert.strictEqual(audit.verifyChain([a, b]).ok, true);
+});
+
+check("an EDITED line is detected, and named", () => {
+  audit._resetChainForTests();
+  const a = audit.record("signin.success", GOOD);
+  const b = audit.record("statement.committed", { ...GOOD, transactions: 18 });
+  // Somebody changing what a committed page said it committed.
+  const faked = { ...b, detail: { ...b.detail, transactions: 0 } };
+  const r = audit.verifyChain([a, faked]);
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, "edited");
+  assert.strictEqual(r.index, 1);
+});
+
+check("a DELETED line is detected at the gap", () => {
+  audit._resetChainForTests();
+  const a = audit.record("signin.success", GOOD);
+  audit.record("receipt.filed", GOOD);          // the one somebody removes
+  const c = audit.record("signout", GOOD);
+  const r = audit.verifyChain([a, c]);
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, "deleted");
+});
+
+check("REORDERED lines are detected", () => {
+  audit._resetChainForTests();
+  const a = audit.record("signin.success", GOOD);
+  const b = audit.record("run.started", GOOD);
+  const c = audit.record("signout", GOOD);
+  // b and c swapped: the hashes are all genuine, the order is not.
+  assert.strictEqual(audit.verifyChain([a, c, b]).ok, false);
+});
+
+check("a line written before the chain existed is 'unsealed', not tampering", () => {
+  /* An old file is not an attack, and calling it one would train whoever runs
+     the verifier to ignore it. */
+  const r = audit.verifyChain([{ at: "2026-01-01T00:00:00.000Z", event: "run.started" }]);
+  assert.strictEqual(r.reason, "unsealed");
+});
+
+check("the chain survives a restart by resuming from the last line", () => {
+  audit._resetChainForTests();
+  const a = audit.record("signin.success", GOOD);
+  const b = audit.record("run.started", GOOD);
+  audit._resetChainForTests();                   // as if the process restarted
+  assert.strictEqual(audit.resumeChain(b), true);
+  const c = audit.record("signout", GOOD);
+  assert.strictEqual(audit.verifyChain([a, b, c]).ok, true,
+    "a restart broke the chain — every restart would look like a deletion");
+});
+
+check("resuming from nothing refuses rather than pretending", () => {
+  assert.strictEqual(audit.resumeChain(null), false);
+  assert.strictEqual(audit.resumeChain({ hash: "short" }), false);
+});
+
+check("the hash does not depend on the order fields were set", () => {
+  /* JSON.stringify keeps insertion order, so without a stable stringify the
+     same event built two ways would hash differently and a clean chain would
+     read as broken. */
+  const one = audit.stableStringify({ b: 1, a: { d: 4, c: 3 } });
+  const two = audit.stableStringify({ a: { c: 3, d: 4 }, b: 1 });
+  assert.strictEqual(one, two);
+});
+
+console.log("\nretention — nothing is deleted until RAA names a period");
+
+const core = require("../recon-core");
+const FILES = ["audit-2026-06-01.jsonl", "audit-2026-09-20.jsonl",
+  "audit-2026-09-28.jsonl", "notes.txt"];
+
+check("no policy set, nothing is pruned", () => {
+  /* The default has to be keep-everything. A log kept too long is an
+     inconvenience; one deleted too early is the question nobody can answer. */
+  for (const days of [null, undefined, 0, "", "abc", -5]) {
+    assert.deepStrictEqual(core.auditFilesToPrune(FILES, { days, today: "2026-09-28" }), [],
+      `days=${days} deleted something`);
+  }
+});
+
+check("90 days keeps the last 90 and prunes the rest", () => {
+  assert.deepStrictEqual(core.auditFilesToPrune(FILES, { days: 90, today: "2026-09-28" }),
+    ["audit-2026-06-01.jsonl"]);
+});
+
+check("the period is inclusive of today", () => {
+  // 1 day means today only.
+  assert.deepStrictEqual(core.auditFilesToPrune(FILES, { days: 1, today: "2026-09-28" }),
+    ["audit-2026-06-01.jsonl", "audit-2026-09-20.jsonl"]);
+});
+
+check("it never touches a file that is not an audit log", () => {
+  const out = core.auditFilesToPrune(["notes.txt", "uploads.csv", "audit-2020-01-01.jsonl"],
+    { days: 1, today: "2026-09-28" });
+  assert.deepStrictEqual(out, ["audit-2020-01-01.jsonl"]);
+});
+
+check("it decides from the DAY IN THE NAME, never a file's mtime", () => {
+  /* A restore, a backup or an rsync rewrites mtime, which would silently make
+     last year's log look like today's — or today's look like last year's. */
+  const src = fs.readFileSync(path.join(ROOT, "recon-core.js"), "utf8");
+  const at = src.indexOf("function auditFilesToPrune");
+  const body = src.slice(at, at + 900);
+  assert.ok(/f\.slice\(6, 16\)/.test(body), "the day is no longer read from the filename");
+  assert.ok(!/mtime/i.test(body), "mtime has crept into the retention decision");
+});
+
+check("deleting log data is itself written down, before it happens", () => {
+  const store = fs.readFileSync(path.join(ROOT, "run-store.js"), "utf8");
+  const at = store.indexOf("function pruneAudit");
+  const recordAt = store.indexOf('audit.record("audit.pruned"', at);
+  const unlinkAt = store.indexOf("fs.unlinkSync", at);
+  assert.ok(recordAt > at && recordAt < unlinkAt,
+    "the prune is recorded after the files are gone — possibly into one of them");
+});
+
 console.log("\nevery catalogued event is actually emitted somewhere");
 {
   const files = ["server.js", "azure-auth.js", "run-store.js"]

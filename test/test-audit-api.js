@@ -174,6 +174,38 @@ async function waitForServer(child, tries = 40) {
         "an unredacted secret-named field reached the log file");
     });
 
+    check("the file's chain verifies end to end", () => {
+      /* The unit test seals lines in memory. This proves the lines that
+         actually reached the disk, through the real sink, hash together. */
+      const audit = require("../audit");
+      const dir = path.join(STORE, "logs");
+      const f = fs.readdirSync(dir).filter((x) => x.endsWith(".jsonl")).sort().pop();
+      const lines = fs.readFileSync(path.join(dir, f), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      const r = audit.verifyChain(lines);
+      assert.strictEqual(r.ok, true, `chain broken at line ${r.index}: ${r.reason}`);
+      assert.ok(lines.length >= 2, "not enough lines to prove a chain");
+    });
+
+    check("and the verifier CATCHES a line removed from that file", () => {
+      /* The check above passes trivially if verifyChain always said yes. */
+      const audit = require("../audit");
+      const dir = path.join(STORE, "logs");
+      const f = fs.readdirSync(dir).filter((x) => x.endsWith(".jsonl")).sort().pop();
+      const lines = fs.readFileSync(path.join(dir, f), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      if (lines.length < 3) return;                       // nothing to remove in the middle
+      const gapped = [...lines.slice(0, 1), ...lines.slice(2)];
+      assert.strictEqual(audit.verifyChain(gapped).ok, false,
+        "a deleted line went undetected");
+    });
+
+    check("the retention sweep deletes nothing when RAA has set no period", () => {
+      /* AUDIT_RETENTION_DAYS is unset in this run, as it is in production
+         until RAA names a number. */
+      const store = require("../run-store");
+      assert.strictEqual(store.RETENTION_DAYS, null,
+        "a retention period has been hard-coded — it must come from the environment");
+    });
+
     console.log("\n  " + n + " checks passed\n");
   } catch (err) {
     console.error(err);

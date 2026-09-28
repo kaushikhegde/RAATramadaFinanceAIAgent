@@ -4049,6 +4049,269 @@ function askMarkStale(){
      panel's own file input. `go()` and `mountNav()` already switch on
      `[data-go]`/`.screen` generically — nothing there has to know this screen
      exists. */
+/* ── THE SECURITY AUDIT LOG, ON A SCREEN ─────────────────────────────────────
+ *
+ * RAA Logging and Monitoring Standard v1.1 §3.1.3. The log was an API and
+ * nothing else, which satisfies the letter of "logs must be captured" and none
+ * of §1's point — that RAA "can promptly identify security incidents, assess
+ * their impact, and take appropriate corrective actions". Nobody curls a
+ * finance system at 9am.
+ *
+ * WHAT THIS SCREEN IS NOT: a live feed. It is a thing you come to with a
+ * question — who committed that statement page, who signed in on the 12th, what
+ * changed the cheat sheet — so it opens on a filter row, not on a scroll.
+ *
+ * Opening it is itself an audited event (§3.1.1, "direct changes made to log
+ * data"), which is recorded server-side by the route, not claimed here.
+ */
+  function mountAuditScreen() {
+    if ($('#s-audit')) return;
+
+    const rail = document.querySelector('.rail .spacer');
+    if (rail) rail.insertAdjacentHTML('beforebegin',
+      '<button class="rbtn" data-go="audit" title="Security audit log">\u26ca</button>');
+
+    const supNav = document.querySelector('.nav-item[data-go="suppliers"]');
+    const anchor = supNav || document.querySelector('.nav-item[data-go="inbox"]');
+    if (anchor) anchor.insertAdjacentHTML('afterend',
+      '<button class="nav-item" data-go="audit"><span class="ico">\u26ca</span> Security audit log</button>');
+
+    const wrap = document.querySelector('.wrap');
+    if (!wrap) return;
+
+    const css = document.createElement('style');
+    css.textContent = [
+      '#s-audit .au-filters{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px}',
+      '#s-audit .au-filters label{font-size:11px;font-weight:600;display:block;margin-bottom:3px;color:var(--ink-2,#5a5a72)}',
+      '#s-audit .au-filters input,#s-audit .au-filters select{padding:6px 8px;font:inherit;font-size:12.5px}',
+      '#s-audit .au-scroll{overflow:auto;max-height:62vh;border:1px solid var(--line,#e3e3ee);border-radius:8px}',
+      /* FIXED LAYOUT, and the widths are declared. Left to the browser, the
+         Category column — the longest literal string on every row, because it
+         is the standard's own wording — took most of the table and squeezed
+         Target, From and Detail into four-character columns that wrapped into
+         inch-tall rows. The three columns a reviewer actually reads are the
+         last three. */
+      '#s-audit table.au-tbl{border-collapse:collapse;width:100%;font-size:12px;table-layout:fixed}',
+      '#s-audit .au-tbl col.c-when{width:132px}',
+      '#s-audit .au-tbl col.c-event{width:200px}',
+      '#s-audit .au-tbl col.c-cat{width:150px}',
+      '#s-audit .au-tbl col.c-user{width:186px}',
+      '#s-audit .au-tbl col.c-target{width:210px}',
+      '#s-audit .au-tbl col.c-from{width:160px}',
+      '#s-audit .au-tbl th{position:sticky;top:0;background:#f6f6fb;text-align:left;padding:7px 9px;',
+      '  font-weight:600;white-space:nowrap;border-bottom:1px solid var(--line,#e3e3ee)}',
+      '#s-audit .au-tbl td{padding:6px 9px;border-bottom:1px solid var(--line-2,#f1f1f7);',
+      '  vertical-align:top;white-space:normal;word-break:break-word;line-height:1.5}',
+      '#s-audit .au-tbl td.cat{color:var(--ink-2,#5a5a72);font-size:11px}',
+      /* The detail is the widest thing on the row and the one worth reading —
+         capped in height rather than in width, so a long before/after does not
+         make one row as tall as the screen. */
+      '#s-audit .au-tbl td.detail{font-size:11px;max-height:74px;overflow:auto;display:block}',
+      '#s-audit .au-tbl tr.is-high{background:#fffaf0}',
+      '#s-audit .au-tbl tr.is-fail{background:#fdf3f2}',
+      '#s-audit .au-pill{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:600;white-space:nowrap}',
+      '#s-audit .au-pill.high{background:#fdecc8;color:#8a5a00}',
+      '#s-audit .au-pill.normal{background:#eeeef4;color:#5a5a72}',
+      '#s-audit .au-pill.fail{background:#fbd9d5;color:#8c1d18}',
+      '#s-audit .au-when{white-space:nowrap;font-variant-numeric:tabular-nums}',
+      '#s-audit .au-tbl td:nth-child(6){white-space:pre-line}',
+      '#s-audit .au-counts{display:flex;gap:18px;flex-wrap:wrap;margin:12px 0;font-size:12.5px}',
+      '#s-audit .au-counts b{font-size:17px;display:block}',
+      '#s-audit .au-note{font-size:11.5px;color:var(--ink-2,#5a5a72);margin-top:10px;line-height:1.6}',
+    ].join('\n');
+    document.head.appendChild(css);
+
+    const section = document.createElement('section');
+    section.className = 'screen';
+    section.id = 's-audit';
+    section.innerHTML =
+      '<div class="page-h"><div><h2>Security audit log</h2>' +
+      '<p>Every sign-in, every run, and every write into Tramada \u2014 against RAA\u2019s ' +
+      'Logging and Monitoring Standard \u00a73.1. Append-only: nothing here can be edited ' +
+      'or deleted from this app, and opening this screen is itself recorded.</p>' +
+      '</div><div class="spacer"></div>' +
+      '<div style="display:flex;gap:8px"><button class="btn sm" id="auExport">Export CSV</button>' +
+      '<button class="btn sm indigo" id="auRefresh">Refresh</button></div></div>' +
+      '<div class="card">' +
+        '<div class="au-filters">' +
+          '<div><label for="auFrom">From</label><input type="date" id="auFrom"></div>' +
+          '<div><label for="auTo">To</label><input type="date" id="auTo"></div>' +
+          '<div><label for="auEvent">Event</label><select id="auEvent"></select></div>' +
+          '<div><label for="auRisk">Risk</label><select id="auRisk">' +
+            '<option value="">Any</option><option value="high">High-risk actions only</option>' +
+            '<option value="normal">Normal</option></select></div>' +
+          '<div><label for="auUser">Account</label><input id="auUser" placeholder="name or email" size="18"></div>' +
+          '<div><label for="auLimit">Show</label><select id="auLimit">' +
+            '<option>200</option><option>500</option><option>1000</option><option>2000</option>' +
+          '</select></div>' +
+        '</div>' +
+        '<div id="auBody"></div>' +
+      '</div>';
+    wrap.appendChild(section);
+
+    for (const id of ['auFrom', 'auTo', 'auEvent', 'auRisk', 'auLimit']) {
+      const el = document.getElementById(id);
+      if (el) el.onchange = loadAudit;
+    }
+    const box = document.getElementById('auUser');
+    if (box) {
+      let t = null;
+      box.oninput = () => { clearTimeout(t); t = setTimeout(loadAudit, 300); };
+    }
+    const r = document.getElementById('auRefresh');
+    if (r) r.onclick = loadAudit;
+    const x = document.getElementById('auExport');
+    if (x) x.onclick = exportAudit;
+  }
+
+  /* What came back last, kept so Export CSV hands over exactly what is on
+     screen rather than re-querying and possibly exporting a different set. */
+  let auditRows = [];
+
+  function auditQuery() {
+    const v = (id) => (document.getElementById(id) || {}).value || '';
+    const q = [];
+    /* A date box gives a day; the log holds timestamps. `to` is pushed to the
+       end of its day or "from 1st to 1st" would return nothing, which reads as
+       "nothing happened" rather than as an off-by-one. */
+    if (v('auFrom')) q.push('from=' + encodeURIComponent(v('auFrom') + 'T00:00:00.000Z'));
+    if (v('auTo')) q.push('to=' + encodeURIComponent(v('auTo') + 'T23:59:59.999Z'));
+    if (v('auEvent')) q.push('event=' + encodeURIComponent(v('auEvent')));
+    if (v('auRisk')) q.push('risk=' + encodeURIComponent(v('auRisk')));
+    if (v('auUser')) q.push('user=' + encodeURIComponent(v('auUser')));
+    q.push('limit=' + encodeURIComponent(v('auLimit') || '200'));
+    return q.join('&');
+  }
+
+  async function loadAudit() {
+    const body = document.getElementById('auBody');
+    if (!body) return;
+    body.innerHTML = '<div class="muted" style="padding:20px">Reading the log\u2026</div>';
+    let data;
+    try {
+      data = await fetch('/api/audit?' + auditQuery()).then((r) => r.json());
+    } catch (err) {
+      body.innerHTML = '<div style="padding:20px;color:var(--err,#b3261e)">Could not read the log: ' +
+        esc(err.message) + '</div>';
+      return;
+    }
+    if (data.error) {
+      body.innerHTML = '<div style="padding:20px;color:var(--err,#b3261e)">' + esc(data.error) + '</div>';
+      return;
+    }
+
+    /* The event dropdown is built from the CATALOGUE the server sends, not from
+       what happens to be in the results. Built the other way it would offer
+       only the events that had already occurred — so you could never filter to
+       "failed sign-ins" until one had happened, which is exactly when you want
+       to. Events with nothing in this window are marked, not hidden. */
+    const sel = document.getElementById('auEvent');
+    if (sel && data.catalogue && !sel.dataset.filled) {
+      const here = new Set((data.events || []).map((e) => e.event));
+      sel.innerHTML = '<option value="">Any event</option>' +
+        Object.keys(data.catalogue).sort().map((k) =>
+          '<option value="' + esc(k) + '">' + esc(k) + (here.has(k) ? '' : ' \u2014 none') + '</option>').join('');
+      sel.dataset.filled = '1';
+    }
+
+    auditRows = data.events || [];
+    const high = auditRows.filter((e) => e.risk === 'high').length;
+    const failed = auditRows.filter((e) => e.outcome === 'failure').length;
+    const people = new Set(auditRows.map((e) => e.user).filter((u) => u && u !== 'system')).size;
+
+    const when = (at) => String(at || '').replace('T', ' ').replace(/\.\d+Z?$/, '').slice(0, 19);
+    const whereOf = (e) => {
+      const w = e.where || {};
+      // The address first: it is the field somebody scans down the column for.
+      return [w.ip, [w.method, w.url].filter(Boolean).join(' ')].filter(Boolean).join('\n');
+    };
+    /* The detail as text, so the one column that carries "what actually
+       changed" is readable without opening a console. before/after are pulled
+       out in front of it because a configuration change is the case §3.1.1
+       names by itself. */
+    const detailOf = (e) => {
+      const bits = [];
+      if (e.before !== undefined || e.after !== undefined) {
+        bits.push('was ' + JSON.stringify(e.before) + ' \u2192 now ' + JSON.stringify(e.after));
+      }
+      if (e.detail) {
+        for (const [k, v] of Object.entries(e.detail)) {
+          bits.push(k + ': ' + (typeof v === 'object' ? JSON.stringify(v) : String(v)));
+        }
+      }
+      return bits.join(' \u00b7 ');
+    };
+
+    body.innerHTML =
+      '<div class="au-counts">' +
+        '<div><b>' + auditRows.length + '</b>events shown</div>' +
+        '<div><b>' + high + '</b>high-risk</div>' +
+        '<div><b>' + failed + '</b>failed</div>' +
+        '<div><b>' + people + '</b>accounts</div>' +
+        (data.total > auditRows.length
+          ? '<div><b>' + data.total + '</b>matched \u2014 raise Show to see more</div>' : '') +
+      '</div>' +
+      (auditRows.length
+        ? '<div class="au-scroll"><table class="au-tbl">' +
+            '<colgroup><col class="c-when"><col class="c-event"><col class="c-cat">' +
+            '<col class="c-user"><col class="c-target"><col class="c-from"><col></colgroup>' +
+            '<thead><tr>' +
+            '<th>When (UTC)</th><th>Event</th><th>Category</th><th>Account</th>' +
+            '<th>Target</th><th>From</th><th>Detail</th></tr></thead><tbody>' +
+          auditRows.map((e) => {
+            const cls = e.outcome === 'failure' ? 'is-fail' : e.risk === 'high' ? 'is-high' : '';
+            const pill = e.outcome === 'failure'
+              ? '<span class="au-pill fail">failed</span>'
+              : '<span class="au-pill ' + esc(e.risk || 'normal') + '">' + esc(e.risk || 'normal') + '</span>';
+            return '<tr class="' + cls + '">' +
+              '<td class="au-when">' + esc(when(e.at)) + '</td>' +
+              '<td><b>' + esc(e.event) + '</b> ' + pill + '</td>' +
+              '<td class="cat">' + esc(e.category || '') + '</td>' +
+              '<td>' + esc(e.user || '') + '</td>' +
+              '<td>' + esc(e.target || '') + '</td>' +
+              '<td>' + esc(whereOf(e)) + '</td>' +
+              '<td class="detail">' + esc(detailOf(e)) + '</td>' +
+            '</tr>';
+          }).join('') + '</tbody></table></div>'
+        : '<div class="muted" style="padding:26px;text-align:center">Nothing matches those filters.</div>') +
+      '<div class="au-note">' +
+        'The screen reads the most recent events the server holds in memory. ' +
+        'Anything older is in the daily files on the data volume, and ' +
+        '<code>npm run audit:verify</code> checks those have not been tampered with. ' +
+        'Account lockouts, password resets and account changes are Microsoft Entra\u2019s ' +
+        'to log, not this app\u2019s.' +
+      '</div>';
+  }
+
+  /* A reviewer wants a file, not a screenshot. Built in the browser from what
+     is already on screen — the server's export endpoint is for a run's working
+     spreadsheet and has nothing to do with this. */
+  function exportAudit() {
+    if (!auditRows.length) return;
+    const cols = ['at', 'event', 'outcome', 'category', 'risk', 'user', 'target',
+      'ip', 'method', 'url', 'detail'];
+    const cell = (e, c) => {
+      if (c === 'ip' || c === 'method' || c === 'url') return (e.where || {})[c] || '';
+      if (c === 'detail') {
+        const d = { ...(e.detail || {}) };
+        if (e.before !== undefined) d.before = e.before;
+        if (e.after !== undefined) d.after = e.after;
+        return Object.keys(d).length ? JSON.stringify(d) : '';
+      }
+      return e[c] == null ? '' : String(e[c]);
+    };
+    const q = (v) => '"' + String(v).replace(/"/g, '""') + '"';
+    const csv = '\ufeff' + [cols.join(',')]
+      .concat(auditRows.map((e) => cols.map((c) => q(cell(e, c))).join(',')))
+      .join('\r\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'audit-log-' + new Date().toISOString().slice(0, 10) + '.csv';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
   function mountCheatSheetScreen() {
     if ($('#s-suppliers')) return;
 
@@ -6011,7 +6274,7 @@ function askMarkStale(){
      here: show one screen, light the matching sidebar item and rail button,
      retitle the top bar. Same class names, same behaviour, no demo state. */
   const TITLES = { overview: 'Run overview', sources: 'Sources & upload', inbox: 'Reconciliation report',
-    suppliers: 'Supplier cheat sheet' };
+    suppliers: 'Supplier cheat sheet', audit: 'Security audit log' };
 
   function go(screen) {
     document.querySelectorAll('.screen').forEach((s) => s.classList.toggle('on', s.id === 's-' + screen));
@@ -6022,6 +6285,10 @@ function askMarkStale(){
     document.querySelectorAll('.nav-item[data-go]').forEach((n) => n.classList.toggle('on', n.dataset.go === screen));
     const t = document.getElementById('topTitle');
     if (t && TITLES[screen]) t.textContent = TITLES[screen];
+    /* Read on arrival, not on a timer. The log is a thing you come to with a
+       question, and a page that polls it would record a read every few seconds
+       under whoever happened to leave the tab open. */
+    if (screen === 'audit') loadAudit();
     window.scrollTo({ top: 0 });
   }
 
@@ -6891,7 +7158,7 @@ function askMarkStale(){
     // s-overview joined these once its last invented panel was wired. The
     // banner is not decoration — it is a claim, and it stops being true the
     // moment every figure on a screen comes from a run.
-    const WIRED = ['s-sources', 's-inbox', 's-overview', 's-suppliers'];
+    const WIRED = ['s-sources', 's-inbox', 's-overview', 's-suppliers', 's-audit'];
     for (const sec of document.querySelectorAll('section.screen')) {
       if (WIRED.includes(sec.id)) continue;
       if (sec.querySelector('.sample-tag')) continue;
@@ -7801,6 +8068,7 @@ function askMarkStale(){
     // renderOverview first: the overview is wired now, and markSamples is only
     // allowed to be right about screens that still are not.
     mountCheatSheetScreen();
+    mountAuditScreen();
     mountNav(); mountSources(); renderOverview(); markSamples(); hideUnwired();
     mountTokio(); mountTokioReport();
     mountAccountNav();

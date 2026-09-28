@@ -20,6 +20,7 @@
     "shots": "node shots/shot-recon.js && node shots/shot-recon-run.js && node shots/shot-mint-run.js && node shots/shot-overview.js && node shots/shot-both.js && node shots/shot-bpay-rules.js && node shots/shot-login-screen.js",
     "test:phases": "node test/test-run-phases.js",
     "test:audit": "node test/test-audit.js && node test/test-audit-api.js",
+    "audit:verify": "node tools/verify-audit-log.js",
     "test:store": "node test/test-run-store.js",
     "test:store:pg": "node test/test-store-pg.js",
     "smoke": "node test/smoke-store.js",

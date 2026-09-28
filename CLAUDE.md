@@ -255,6 +255,14 @@ including the clauses this app does NOT satisfy and who owns them instead.
 - **Reading the log is an event.** Nothing here edits an audit line, so §3.1.1's
   "direct changes made to log data" is answered by recording who went looking,
   before the results are built.
+- **The chain is what makes append-only true.** Each line hashes the one before
+  it, with `seq` and `prev` INSIDE the hashed body — beside it they could be
+  renumbered. It resumes from disk at boot, because a fresh chain per restart is
+  indistinguishable from a deletion. `npm run audit:verify`. It is a tripwire,
+  not a signature, and it is described that way.
+- **Nothing is deleted until RAA names a retention period.** The mechanism is
+  built (`AUDIT_RETENTION_DAYS`); the default is keep-everything. The sweep
+  decides from the day in the filename, never mtime — a restore rewrites mtime.
 
 ---
 

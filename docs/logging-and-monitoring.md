@@ -15,8 +15,10 @@ Where the code is:
 | What an event *is* | `audit.js` — pure, no I/O, tested offline |
 | Where an event *lands* | `run-store.js` — `appendAudit` / `readAudit` |
 | Where events are *raised* | `server.js`, `azure-auth.js` |
-| Reading it back | `GET /api/audit` |
-| Tests | `test/test-audit.js` (31 checks), `test/test-audit-api.js` (10, end to end) |
+| Reading it back | `GET /api/audit`, and the **Security audit log** screen |
+| Checking it was not tampered with | `npm run audit:verify` → `tools/verify-audit-log.js` |
+| Retention | `AUDIT_RETENTION_DAYS` (unset = keep everything) |
+| Tests | `test/test-audit.js` (45 checks), `test/test-audit-api.js` (13, end to end) |
 
 ---
 
@@ -70,6 +72,32 @@ insert-only and the files are opened for append. So what there is to capture is
 event carrying the filter used, recorded *before* the results are built so a
 read that then fails still leaves a trace. A daily file roll writes
 `audit.rotated` as the first line of the new file, naming the one it followed.
+
+**And a hash chain**, because append-only by file mode is not append-only in
+fact. Each line carries the hash of the one before it, and the sequence number
+and the link are *inside* the hashed body rather than beside it. Editing a line
+changes its hash and orphans everything after it; deleting one breaks the link
+at exactly that point; reordering breaks the sequence. `npm run audit:verify`
+walks the files — across day boundaries, so a whole day deleted is caught too —
+and says which line broke and how:
+
+```
+  ✓ audit-2026-09-27.jsonl — 412 lines, chain intact
+  ✗ audit-2026-09-28.jsonl — line 3: the link to the previous line is broken — a line was removed
+      2026-09-28T09:16:24.486Z  run.started  kaushik.hegde@raa.com.au
+```
+
+Exit code 1 on any failure, so it can sit in a cron or a health check. The chain
+is picked up from the last line of the newest file at boot — without that, every
+restart would start a fresh chain, and a fresh chain is indistinguishable from
+somebody having deleted everything before it. If it cannot be picked up, an
+`audit.chain.broken` line is written *at the gap*, because a break nobody can
+date is worse than one that is labelled.
+
+**This is a tripwire, not proof.** Anyone with write access to the volume could
+recompute the chain from the line they changed onwards. It catches the realistic
+case — one file opened, one line deleted — and it is described that way here
+rather than as something stronger.
 
 > **"The scope of logging … must be reviewed annually or whenever a threat
 > environment changes."**
@@ -175,9 +203,19 @@ a getter that throws and a cyclic object.
 
 ## Reading it
 
-`GET /api/audit`, behind the same Entra sign-in as everything else — this is the
-most sensitive screen in the app, because it is the one that says what everybody
-else did.
+**The Security audit log screen**, in the sidebar, behind the same Entra sign-in
+as everything else — this is the most sensitive screen in the app, because it is
+the one that says what everybody else did. Filters by date range, event type,
+risk and account; shows failures and high-risk actions in their own colours; and
+exports what is on screen to CSV, because a reviewer wants a file rather than a
+screenshot. It reads on arrival rather than polling — a page that polled would
+record a read every few seconds under whoever left the tab open.
+
+The event dropdown is built from the **catalogue**, not from what happens to be
+in the results, so you can filter to "failed sign-ins" before one has ever
+happened — which is exactly when you want to.
+
+Underneath it is `GET /api/audit`:
 
 ```
 GET /api/audit?from=2026-09-01&to=2026-09-30&risk=high&user=kaushik&limit=500
@@ -197,28 +235,32 @@ is in the files on the volume** — that is what they are for.
 
 Stated rather than left to be discovered.
 
-1. **Retention and archival are not implemented.** Files accumulate daily and
-   nothing prunes them; the `audit_log` table grows without bound. The
-   standard's retention section is not in the extract this was built from — RAA
-   needs to state the retention period, and then it is a scheduled job plus a
-   `DELETE … WHERE at < …`. Until then nothing is deleted, which is the safe
-   direction to be wrong in.
+1. **The retention PERIOD has not been set** — RAA has to name it. The
+   mechanism is built and tested: set `AUDIT_RETENTION_DAYS` and the sweep runs
+   at boot and daily, deleting whole day-files older than the window and the
+   matching rows. With it unset **nothing is deleted**, which is the safe
+   direction to be wrong in — a log kept too long is an inconvenience, one
+   deleted too early is the question nobody can answer. The sweep decides from
+   the day in the filename, never a file's mtime, because a restore or an rsync
+   rewrites mtime. Deleting log data is itself a change to log data, so the
+   prune is recorded *before* the files go.
 2. **No forwarding to a SIEM.** Nothing ships to Azure Monitor, Log Analytics or
    Sentinel. `audit.addSink()` exists for exactly this — a forwarder is one
    function, and it needs a workspace and a key from RAA before it can be
    tested against anything real.
 3. **No alerting.** The standard's DETECT/RESPOND framing implies someone or
    something is watching. Right now the log is a record to be read, not a
-   trigger. `risk: "high"` is on every line so a rule has something to key on.
-4. **No integrity seal.** The files are append-only by convention and file mode,
-   not by cryptography. Anyone with write access to the volume could edit one
-   and nothing would detect it. A per-line hash chain would fix that; it has not
-   been built.
-5. **No log-review UI.** `GET /api/audit` is an API. There is no screen.
-6. **§3.1.2 (operating system logs) is out of scope here** — see above.
+   trigger. `risk: "high"` is on every line so a rule has something to key on,
+   and the Security audit log screen filters to high-risk in one click — but
+   somebody has to open it.
+4. **§3.1.2 (operating system logs) is out of scope here** — see above.
+5. **The hash chain is a tripwire, not a signature** — see above. A signature
+   would need a key this process does not hold, and would still be re-appliable
+   by anyone holding it.
 
 ---
 
 *Built 28-Sep-2026 against Logging and Monitoring Standard v1.1, pages 4–5.
+Hash chain, retention mechanism and review screen added the same day.
 Sections beyond §3.1.3 were not in the extract supplied; anything they require
 is not covered here and has not been assessed.*

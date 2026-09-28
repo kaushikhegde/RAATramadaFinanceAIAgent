@@ -36,6 +36,8 @@
 
 "use strict";
 
+const crypto = require("crypto");
+
 /* ── §3.1.1: what every event must carry ─────────────────────────────────────
  *
  *   "Where feasible, logs captured must contain the following details for each
@@ -116,6 +118,14 @@ const EVENTS = {
      say who read it is missing the one event an insider cares about. */
   "audit.read": { row: "Direct changes made to log data", risk: "normal" },
   "audit.rotated": { row: "Direct changes made to log data", risk: "normal" },
+  /* The chain below could not be picked up where the last run left it — the
+     newest file was unreadable, or its last line was not one whole object.
+     Not proof of tampering, but the only honest thing to do about a gap is to
+     write one down where the gap is. */
+  "audit.chain.broken": { row: "Direct changes made to log data", risk: "high" },
+  /* Retention. §3.1.1 again: deleting log data is a direct change to it, so
+     the deletion is the last thing written about what was deleted. */
+  "audit.pruned": { row: "Direct changes made to log data", risk: "high" },
 };
 
 /* ── redaction ───────────────────────────────────────────────────────────────
@@ -242,6 +252,114 @@ function fieldsPresent(line) {
   };
 }
 
+/* ── the hash chain ──────────────────────────────────────────────────────────
+ *
+ * §3.1.1: "Direct changes made to log data must be captured."
+ *
+ * Append-only by file mode and by convention is not the same as append-only in
+ * fact. Anyone who can write to the volume can open a .jsonl, delete the line
+ * that incriminates them, and nothing about the file afterwards looks wrong —
+ * which is the whole problem with an audit log as a plain list of events.
+ *
+ * So each line carries the hash of the one before it. Editing a line changes
+ * its hash and orphans every line after it; deleting one breaks the link at
+ * that exact point; reordering breaks the sequence numbers, which are inside
+ * the hashed body rather than beside it. None of that stops somebody with write
+ * access — nothing on the same disk can — but it moves tampering from
+ * undetectable to obvious, and it names the line where it happened.
+ *
+ * NOT a signature. A signature would need a key this process does not have and
+ * would still be re-appliable by anyone holding it. This is a tripwire, and it
+ * is described as one in docs/logging-and-monitoring.md rather than as proof.
+ */
+const GENESIS = "0".repeat(64);
+
+let chain = { seq: 0, hash: GENESIS };
+
+/**
+ * Deterministic JSON: keys in sorted order at every level.
+ *
+ * `JSON.stringify` preserves insertion order, so the same event built by two
+ * code paths that set the fields in a different order would hash differently
+ * and the chain would read as broken when nothing was wrong.
+ */
+function stableStringify(v) {
+  if (v === null || typeof v !== "object") return JSON.stringify(v === undefined ? null : v);
+  if (Array.isArray(v)) return "[" + v.map(stableStringify).join(",") + "]";
+  const keys = Object.keys(v).sort();
+  return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableStringify(v[k])).join(",") + "}";
+}
+
+function sha256(s) { return crypto.createHash("sha256").update(s, "utf8").digest("hex"); }
+
+/**
+ * Link one line to the chain. `seq` and `prev` go INSIDE the hashed body —
+ * beside it they could be renumbered without the hash noticing.
+ */
+function sealLine(line, prev = chain) {
+  const linked = { ...line, seq: (prev.seq || 0) + 1, prev: prev.hash || GENESIS };
+  return { ...linked, hash: sha256(stableStringify(linked)) };
+}
+
+/**
+ * Pick the chain up where the last process left it.
+ *
+ * Called by `run-store` at boot with the last line of the newest audit file.
+ * Without this every restart would begin a fresh chain, and a fresh chain is
+ * indistinguishable from somebody deleting everything before it.
+ */
+function resumeChain(last) {
+  if (last && typeof last.hash === "string" && last.hash.length === 64) {
+    chain = { seq: Number(last.seq) || 0, hash: last.hash };
+    return true;
+  }
+  return false;
+}
+
+function chainState() { return { ...chain }; }
+
+/** For tests, and for a store that has just been reset. */
+function _resetChainForTests() { chain = { seq: 0, hash: GENESIS }; }
+
+/**
+ * Check a run of lines, in file order. Returns the first break and why.
+ *
+ * Three ways a chain breaks, and they are reported apart because they mean
+ * different things to whoever is reading:
+ *
+ *   edited     the line does not hash to its own recorded hash
+ *   deleted    `prev` does not match the previous line's hash
+ *   reordered  `seq` did not go up by one
+ *
+ * A line with no hash at all is reported as `unsealed` rather than as tampering
+ * — an old file written before this existed is not an attack.
+ */
+function verifyChain(lines) {
+  let prev = null;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (!l || typeof l.hash !== "string") {
+      return { ok: false, index: i, reason: "unsealed", line: l || null };
+    }
+    const { hash, ...body } = l;
+    if (sha256(stableStringify(body)) !== hash) {
+      return { ok: false, index: i, reason: "edited", line: l };
+    }
+    if (prev === null) {
+      // The first line of the run being checked. It may legitimately be
+      // mid-chain — a day's file starts wherever the previous day ended.
+      prev = l;
+      continue;
+    }
+    if (l.prev !== prev.hash) return { ok: false, index: i, reason: "deleted", line: l };
+    if (Number(l.seq) !== Number(prev.seq) + 1) {
+      return { ok: false, index: i, reason: "reordered", line: l };
+    }
+    prev = l;
+  }
+  return { ok: true, checked: lines.length, last: prev };
+}
+
 /* ── sinks ───────────────────────────────────────────────────────────────── */
 
 /* Installed by server.js at boot; empty in the offline suite, which is what
@@ -267,6 +385,16 @@ function record(name, fields, now) {
       category: "Uncategorised", risk: "unknown", user: "anonymous",
       target: "recon-agent", buildError: String(err && err.message) };
   }
+  /* SEALED BEFORE THE SINKS, so the file, the database and the caller all hold
+     the same bytes — a hash computed over one shape and verified against
+     another reads as tampering on every single line. Sealing cannot throw
+     either: a line that could not be hashed is still written, unsealed, and
+     `verifyChain` reports it as `unsealed` rather than as an attack. */
+  try {
+    line = sealLine(line);
+    chain = { seq: line.seq, hash: line.hash };
+  } catch (_) { /* an unsealed line beats no line */ }
+
   for (const sink of sinks) {
     try { sink(line); } catch (_) { /* §6b: losing the archive copy is not a reason to stop */ }
   }
@@ -277,5 +405,7 @@ module.exports = {
   STANDARD_FIELDS, WHERE_FIELDS, EVENTS,
   buildEvent, fieldsPresent, redact, record,
   addSink, clearSinks,
+  sealLine, verifyChain, resumeChain, chainState, stableStringify, GENESIS,
+  _resetChainForTests,
   REDACTED,
 };

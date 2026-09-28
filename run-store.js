@@ -211,6 +211,14 @@ CREATE INDEX IF NOT EXISTS audit_log_event ON audit_log(event, at);
 async function init() {
   if (ready) return ready;
   ready = (async () => {
+    // Before the first event of this process — see resumeAuditChain.
+    resumeAuditChain();
+    /* Then the retention sweep, at boot and daily after. A server that is
+       restarted every day would otherwise never prune, and one that runs for
+       months would prune only once. */
+    pruneAudit();
+    const daily = setInterval(() => pruneAudit(), 24 * 60 * 60 * 1000);
+    if (daily.unref) daily.unref();      // never hold the process open for this
     if (!haveDb()) {
       console.warn("  ⚠ no DATABASE_URL — runs are kept in memory only and will not survive a restart.");
       return;
@@ -706,6 +714,47 @@ const auditCache = [];
 
 let _auditDay = null;
 
+/**
+ * Pick the hash chain up where the last process left it.
+ *
+ * Without this, every restart would begin a fresh chain — and a fresh chain is
+ * indistinguishable from somebody having deleted everything before it, which
+ * is the one thing the chain exists to tell apart. Called from `init()`.
+ *
+ * Reads the LAST LINE of the NEWEST file. Cheap enough at this volume to read
+ * the file whole; a day's audit file is thousands of lines, not millions.
+ */
+function resumeAuditChain() {
+  const audit = require("./audit");
+  try {
+    if (!fs.existsSync(LOGS)) return;                    // nothing yet: genesis is right
+    const files = fs.readdirSync(LOGS)
+      .filter((f) => /^audit-\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort();
+    if (!files.length) return;
+    const newest = files[files.length - 1];
+    _auditDay = newest.slice(6, 16);
+    const lines = fs.readFileSync(path.join(LOGS, newest), "utf8").trim().split("\n").filter(Boolean);
+    const last = JSON.parse(lines[lines.length - 1]);
+    if (audit.resumeChain(last)) return;
+    /* A file that exists but whose last line carries no hash. An older file
+       written before the chain existed is the benign case and the common one,
+       so this is not called tampering — but a gap in the chain gets a line
+       written at the gap either way, because the alternative is a break
+       nobody can date. */
+    audit.record("audit.chain.broken", {
+      user: "system", target: `logs/${newest}`, outcome: "failure",
+      reason: "the newest audit file's last line carries no hash — a new chain starts here",
+    });
+  } catch (err) {
+    try {
+      audit.record("audit.chain.broken", {
+        user: "system", target: "logs/", outcome: "failure",
+        reason: `could not read the previous chain: ${err.message}`,
+      });
+    } catch (_) { /* a log about a log */ }
+  }
+}
+
 /** `logs/audit-2026-09-28.jsonl` — one file per day, opened lazily. */
 function auditFileFor(at) {
   const day = String(at || "").slice(0, 10) || new Date().toISOString().slice(0, 10);
@@ -781,12 +830,63 @@ function readAudit(q = {}) {
   return { total: hits.length, events: hits.slice(-limit).reverse() };
 }
 
+/* ── retention ───────────────────────────────────────────────────────────────
+ *
+ * RAA has not stated a period yet, so `AUDIT_RETENTION_DAYS` is unset and
+ * NOTHING IS DELETED. When they state one it is one environment variable, and
+ * the arithmetic it turns into is `core.auditFilesToPrune`, which is pure and
+ * tested — because "which files would this policy delete" is not a question to
+ * answer by trying it on the volume.
+ *
+ * Runs at boot and then daily. Deleting an audit file is itself a change to log
+ * data (§3.1.1), so the deletion is written down before it happens — in the
+ * file that survives it.
+ */
+const RETENTION_DAYS = parseInt(process.env.AUDIT_RETENTION_DAYS || "", 10) || null;
+
+function pruneAudit(today = new Date().toISOString().slice(0, 10)) {
+  if (!RETENTION_DAYS) return { policy: null, deleted: [] };
+  const audit = require("./audit");
+  let deleted = [];
+  try {
+    if (!fs.existsSync(LOGS)) return { policy: RETENTION_DAYS, deleted: [] };
+    const doomed = core.auditFilesToPrune(fs.readdirSync(LOGS), { days: RETENTION_DAYS, today });
+    if (!doomed.length) return { policy: RETENTION_DAYS, deleted: [] };
+
+    /* WRITTEN FIRST. A prune recorded after the fact is a line in a file that
+       might itself have been the one deleted, and a deletion nobody can date
+       is the gap this whole chain exists to prevent. */
+    audit.record("audit.pruned", {
+      user: "system", target: "logs/",
+      retentionDays: RETENTION_DAYS, files: doomed, count: doomed.length,
+    });
+
+    for (const f of doomed) {
+      try { fs.unlinkSync(path.join(LOGS, f)); deleted.push(f); }
+      catch (err) { console.error(`  ⚠ could not delete ${f}: ${err.message}`); }
+    }
+  } catch (err) {
+    console.error(`  ⚠ audit retention did not run: ${err.message}`);
+  }
+
+  /* The database copy, on the same policy. Enqueued, not awaited — a DELETE
+     that cannot run is a reason to keep rows, never a reason to stop a run. */
+  persist("the audit retention sweep", async () => {
+    const cutoff = new Date(`${today}T00:00:00Z`);
+    cutoff.setUTCDate(cutoff.getUTCDate() - (RETENTION_DAYS - 1));
+    await pool.query("DELETE FROM audit_log WHERE at < $1", [cutoff.toISOString().slice(0, 10)]);
+  });
+
+  return { policy: RETENTION_DAYS, deleted };
+}
+
 /** For the tests, which must not read or write the repo's own log folder. */
 function _resetAuditForTests() { auditCache.length = 0; _auditDay = null; }
 
 module.exports = {
   UPLOADS,
-  appendAudit, readAudit, _resetAuditForTests,
+  appendAudit, readAudit, resumeAuditChain, pruneAudit, RETENTION_DAYS,
+  _resetAuditForTests,
   init, flush, close,
   saveUpload, startRun, patchRow, appendActivity, finishRun,
   listRuns, getRun, overview, reconcileOrphans,
