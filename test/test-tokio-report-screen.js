@@ -53,7 +53,13 @@ function parseReply() {
       retail: con.retail.length, exceptions: con.exceptions.length,
       undocumented: con.rows.filter((r) => r.undocumented).length,
     },
-    rows: con.rows,
+    /* Mapped the way server.js maps them — `source: r.row` and the policy
+       lifted to the top level. The raw tokio-core row has neither, so a
+       fixture that skipped this step tested a shape the page never sees. */
+    rows: con.rows.map((r) => ({
+      line: r.line, policy: r.policy, outcome: r.outcome,
+      undocumented: r.undocumented, source: r.row, appended: r.appended,
+    })),
   };
 }
 
@@ -277,6 +283,74 @@ async function main() {
     const pane = doc.getElementById("triagePane").textContent;
     assert.ok(/monthly creditor reconciliation/.test(pane),
       "the statement-line table says nothing about why it is empty");
+  });
+
+  check("the screen's own filter row drives the Tokio card", () => {
+    /* Asked for 28-Sep-2026: the filter row at the top of the Reconciliation
+       report did nothing for Tokio, on the one screen whose whole job is
+       narrowing a result down. */
+    const chips = [...doc.querySelectorAll("#inboxGrid .triage .tri")];
+    assert.ok(chips.length >= 5, "no Tokio chips: " + chips.map((c) => c.textContent).join("|"));
+    const labels = chips.map((c) => c.textContent.replace(/\s+/g, " ").trim());
+    for (const want of ["Travel", "Retail", "Exceptions", "Ticked in Tramada", "Not ticked"]) {
+      assert.ok(labels.some((l) => l.startsWith(want)), want + " is not offered: " + labels.join(" | "));
+    }
+    // Both fixture rows are Travel, and both were ticked.
+    assert.ok(/All lines 2/.test(labels[0]), labels[0]);
+    assert.ok(labels.some((l) => /^Ticked in Tramada 2/.test(l)), labels.join(" | "));
+    assert.ok(labels.some((l) => /^Not ticked 0/.test(l)), labels.join(" | "));
+  });
+
+  check("a row with no readable policy counts as NEITHER ticked nor not-ticked", () => {
+    /* Counting it as "not ticked" would report a row nobody could judge as a
+       row that failed — and on a screen of counts, nobody re-adds one. */
+    const wire = fs.readFileSync(path.join(ROOT, "public", "index.html"), "utf8");
+    const at = wire.indexOf("'ticked', 'Ticked in Tramada'");
+    const block = wire.slice(at, at + 320);
+    assert.ok(/!!r\.policy && tokioTickedKeys/.test(block),
+      "the ticked chip no longer requires a policy: " + block.slice(0, 120));
+    assert.ok(/!!r\.policy && r\.outcome === 'Travel'/.test(block),
+      "the not-ticked chip counts rows it cannot judge: " + block.slice(0, 200));
+  });
+
+  check("the Status dropdown carries the same options, not the statement-line ones", () => {
+    /* It is the same control as the chips, for a narrow screen. Left on
+       "Receipted / Reconciled" it would offer three filters that mean nothing
+       to a monthly creditor reconciliation. */
+    const st = doc.getElementById("ibState");
+    assert.deepStrictEqual([...st.options].map((o) => o.value),
+      ["all", "travel", "retail", "exception", "ticked", "unticked"]);
+  });
+
+  check("picking a chip narrows the consolidated sheet", () => {
+    const retail = [...doc.querySelectorAll("#inboxGrid .triage .tri")]
+      .find((c) => /^Retail/.test(c.textContent.trim()));
+    retail.click();
+    const card = doc.getElementById("tokioReportCard");
+    assert.ok(/Nothing matches that filter/.test(card.textContent),
+      "filtering to Retail still shows the Travel rows");
+    // and back
+    [...doc.querySelectorAll("#inboxGrid .triage .tri")][0].click();
+    assert.ok(doc.getElementById("tokioReportCard").textContent.includes("21922098"));
+  });
+
+  check("the search box searches the sheet AND the ticked table", () => {
+    const box = doc.getElementById("ibSearch");
+    box.value = "21922235";
+    box.dispatchEvent(new win.Event("input", { bubbles: true }));
+    const card = doc.getElementById("tokioReportCard");
+    assert.ok(card.textContent.includes("21922235"), "the row searched for is gone");
+    assert.ok(!card.textContent.includes("21922098"),
+      "the search did not narrow anything — other policies are still shown");
+    assert.ok(/showing 1 of 2/.test(card.textContent),
+      "the sheet does not say how much of it is hidden");
+    box.value = "";
+    box.dispatchEvent(new win.Event("input", { bubbles: true }));
+  });
+
+  check("the search placeholder names the columns it searches", () => {
+    assert.ok(/policy/i.test(doc.getElementById("ibSearch").placeholder),
+      doc.getElementById("ibSearch").placeholder);
   });
 
   sel.value = "ipsi";

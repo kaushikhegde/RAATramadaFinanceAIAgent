@@ -5578,14 +5578,40 @@ function askMarkStale(){
       const rp0 = $('#reportPane');
       if (rp0) rp0.style.display = 'none';
       pane.style.display = '';
+      const rows0 = tokioSheetRows();
+      if (!TOKIO_TABS.some(([k]) => k === tokioFilter)) tokioFilter = 'all';
+
+      /* The same chips the other reports get, counting the same way: what is
+         left after the chip's own test, before the search box narrows it. */
       const tri0 = $('#inboxGrid .triage');
       if (tri0) {
-        tri0.innerHTML = '<div class="spacer"></div><span class="badge ' +
+        tri0.innerHTML = TOKIO_TABS.map(([k, label, fn]) =>
+          '<button class="tri' + (tokioFilter === k ? ' on' : '') + '" data-tf="' + k + '">' +
+          label + ' <span class="n">' + rows0.filter(fn).length + '</span></button>').join('') +
+          '<div class="spacer"></div><span class="badge ' +
           (tokio.run && tokio.run.savedSession ? 'b-ok' : 'b-mute') +
           '" style="margin-bottom:8px">' +
-          (tokio.result || tokio.run ? 'Tokio Marine \u00b7 monthly' : 'no Tokio run yet') +
+          (tokio.run && tokio.run.savedSession
+            ? 'session ' + esc(tokio.run.label) + ' saved'
+            : tokio.result ? 'Tokio Marine \u00b7 monthly' : 'no Tokio run yet') +
           '</span>';
+        tri0.querySelectorAll('.tri').forEach((b) => {
+          b.onclick = () => { tokioFilter = b.dataset.tf; render(); };
+        });
       }
+      /* The Status dropdown is the same control as the chips — it exists for
+         the narrow screens where the chip row wraps — so it carries the same
+         options rather than the statement-line ones, which mean nothing here. */
+      const st0 = $('#ibState');
+      if (st0) {
+        st0.innerHTML = TOKIO_TABS.map(([k, label]) =>
+          '<option value="' + k + '">' + (k === 'all' ? 'Any outcome' : label) + '</option>').join('');
+        st0.value = tokioFilter;
+        st0.onchange = () => { tokioFilter = st0.value; render(); };
+      }
+      const box0 = $('#ibSearch');
+      if (box0) box0.placeholder = 'Search policy, booking, branch or reference\u2026';
+      renderTokioReport();
       pane.innerHTML = '<table><tbody><tr><td class="muted" ' +
         'style="padding:22px;text-align:center">' +
         (tokio.result || tokio.run
@@ -7522,6 +7548,75 @@ function askMarkStale(){
     renderTokioReport();
   }
 
+  /* ── THE REPORT SCREEN'S OWN FILTERS, APPLIED TO TOKIO ──────────────────────
+     Asked for 28-Sep-2026: the filter row at the top of the Reconciliation
+     report does nothing for Tokio. It should — it is the same screen and the
+     same question ("show me the exceptions", "find this policy").
+
+     So the row drives the Tokio card too: the status chips become Tokio's own
+     outcomes, and the search box searches the columns a person actually has in
+     front of them. The run picker (#ibDate) is deliberately left alone — a
+     Tokio run is monthly and is not in runs.json, so offering "this run / that
+     run" there would be a control with one option that never changes.
+
+     The chips are counts of the CONSOLIDATED SHEET, not of the Tramada run:
+     Travel/Retail/Exception is what steps 7-8 decided, and it is the split
+     Finance works from. Ticked / Not ticked come from the run when there has
+     been one, because after a run that is the question. */
+  const TOKIO_TABS = [
+    ['all', 'All lines', () => true],
+    ['travel', 'Travel', (r) => r.outcome === 'Travel'],
+    ['retail', 'Retail — removed', (r) => r.outcome === 'Retail'],
+    ['exception', 'Exceptions', (r) => r.outcome === 'Exception'],
+    /* A row with no readable policy number is in NEITHER of these. It cannot
+       be matched against what the run ticked, and counting it as "not ticked"
+       would report a row nobody judged as a row that failed — on the one
+       screen whose being wrong is invisible, because every count on it looks
+       like a count (CLAUDE.md §6b). */
+    ['ticked', 'Ticked in Tramada', (r) => !!r.policy && tokioTickedKeys().has(String(r.policy))],
+    ['unticked', 'Not ticked', (r) => !!r.policy && r.outcome === 'Travel' &&
+      !tokioTickedKeys().has(String(r.policy))],
+  ];
+  let tokioFilter = 'all';
+
+  /* Which policies the run actually ticked, as a set, so the two chips above
+     are a lookup rather than a scan of `ticked` per row. Rebuilt per render —
+     the run changes underneath this. */
+  function tokioTickedKeys() {
+    const r = tokio.run;
+    return new Set(((r && r.ticked) || []).map((t) => String(t.policy || '')));
+  }
+
+  /* The rows of the consolidated sheet, flattened enough to filter and search.
+
+     `policy` is taken from the row the SERVER built, not hunted for among the
+     spreadsheet's own headings. tokio-core already decided which column is the
+     policy number — that is `policyKey`, and it knows that "21922098 - …" and
+     a bare number are the same policy. Re-deriving it here from a /policy/i
+     heading match would be a second opinion that can disagree with the one the
+     run actually ticked on. */
+  function tokioSheetRows() {
+    const res = tokio.result;
+    if (!res || !res.rows) return [];
+    return res.rows.map((r) => ({
+      row: r,
+      outcome: r.outcome,
+      policy: r.policy,
+      // Everything a person might type into the box, joined once.
+      haystack: [
+        ...Object.values(r.source || {}),
+        ...Object.values(r.appended || {}),
+      ].map((v) => (v == null ? '' : String(v))).join(' ').toLowerCase(),
+    }));
+  }
+
+  function tokioMatches(row) {
+    const fn = (TOKIO_TABS.find((t) => t[0] === tokioFilter) || TOKIO_TABS[0])[2];
+    if (!fn(row)) return false;
+    if (!search) return true;
+    return row.haystack.includes(search);
+  }
+
   /* Shown when there is a Tokio run or sheet to show AND the payment-type
      filter is either "all" or Tokio. Hidden otherwise — a person filtering
      the screen to IPSI is not asking to read Tokio underneath it. */
@@ -7587,7 +7682,11 @@ function askMarkStale(){
       counts +
       tokioRunBlock() +
       tokioChecklist() +
-      tokioSheetTable(tokioReportActions());
+      /* The filter row above the card narrows the sheet. `tokioSheetRows`
+         carries the server's original row alongside what it is searched on, so
+         the table is still built from those rows and nothing is re-derived. */
+      tokioSheetTable(tokioReportActions(),
+        tokioSheetRows().filter(tokioMatches).map((x) => x.row));
 
     const exp = card.querySelector('#tokioReportExport');
     if (exp) exp.onclick = tokioExportCsv;
@@ -7630,15 +7729,21 @@ function askMarkStale(){
      report screen shows the same sheet with a read-only bar: the run is
      started from Sources & upload, and two Reconcile buttons on two screens
      is two ways to write to Tramada. */
-  function tokioSheetTable(extra) {
+  function tokioSheetTable(extra, only) {
     const res = tokio.result;
     if (!res || !res.rows || !res.rows.length) return '';
+    /* `only` is the filtered subset when the report screen's filter row is
+       narrowing it; the upload card passes nothing and shows the lot. The
+       COLUMNS still come from the whole sheet — read off the first VISIBLE
+       row instead, a filter that left only exceptions could change the table's
+       shape, which reads as the file having changed. */
+    const shown = only || res.rows;
 
     const srcCols = Object.keys(res.rows[0].source || {});
     const appCols = Object.keys(res.rows[0].appended || {});
     const head = ['#', 'Outcome'].concat(srcCols, appCols);
 
-    const body = res.rows.map((r) => {
+    const body = shown.map((r) => {
       const cls = r.outcome === 'Retail' ? 'is-retail'
         : r.outcome === 'Exception' ? 'is-exception' : '';
       const pill = '<span class="tk-pill ' + esc(String(r.outcome || '').toLowerCase()) + '">' +
@@ -7660,7 +7765,13 @@ function askMarkStale(){
     return '<div class="tk-sheet">' +
       '<div style="font-size:12px;font-weight:600;margin-bottom:7px">Consolidated working sheet ' +
         '<span style="font-weight:400;color:var(--ink-2,#5a5a72)">— Tokio\u2019s own columns, then the ' +
-        'calculated and lookup columns, then Remarks</span></div>' +
+        'calculated and lookup columns, then Remarks' +
+        (shown.length !== res.rows.length
+          ? ' \u00b7 showing ' + shown.length + ' of ' + res.rows.length
+          : '') +
+        '</span></div>' +
+      (shown.length ? ''
+        : '<div class="muted" style="padding:18px;text-align:center">Nothing matches that filter.</div>') +
       '<div class="tk-scroll"><table class="tk-tbl"><thead><tr>' +
         head.map((h) => '<th>' + esc(h) + '</th>').join('') +
       '</tr></thead><tbody>' + body + '</tbody></table></div>' +
@@ -7742,6 +7853,14 @@ function askMarkStale(){
     const nothingFound = r.empty === true || (!r.ticked.length && r.mismatched.length &&
       r.mismatched.every((m) => /not found in Tramada/i.test(m.remark || '')));
 
+    /* Narrowed by the search box only, and only on the report screen — the
+       upload card has no filter row, and `search` is empty there. */
+    const hit = (o) => !search ||
+      Object.values(o || {}).map((v) => String(v == null ? '' : v)).join(' ')
+        .toLowerCase().includes(search);
+    const tickedShown = (r.ticked || []).filter(hit);
+    const missShown = (r.mismatched || []).filter(hit);
+
     const emailBlock =
       (tokio.emailError ? '<div class="tk-err">Step 15 — ' + esc(tokio.emailError) + '</div>' : '') +
       (tokio.emailResult
@@ -7779,11 +7898,15 @@ function askMarkStale(){
          the sheet expected can be read against each other. It is also where
          BR13 becomes visible — 416.21 against 416.213 is a match, and seeing
          the two numbers is what makes that legible rather than magic. */
-      (r.ticked && r.ticked.length
+      /* The search box narrows these two as well — "where is 21922235" is the
+         same question whether it ended up ticked or flagged. The CHIPS do not
+         apply here: they split the consolidated sheet by outcome, and a ticked
+         line is Travel by definition. */
+      (tickedShown.length
         ? '<div class="tk-scroll" style="margin-top:10px"><table class="tk-tbl"><thead><tr>' +
             '<th>Policy</th><th>Booking</th><th class="num">Tramada</th>' +
             '<th class="num">Sheet</th><th>Reference</th></tr></thead><tbody>' +
-            r.ticked.map((t) => {
+            tickedShown.map((t) => {
               const drift = (t.differenceCents == null || t.differenceCents === 0)
                 ? 'exact'
                 : '±' + (Math.abs(t.differenceCents) / 100).toFixed(2);
@@ -7796,10 +7919,10 @@ function askMarkStale(){
             }).join('') +
           '</tbody></table></div>'
         : '') +
-      (r.mismatched.length
+      (missShown.length
         ? '<div class="tk-scroll" style="margin-top:10px"><table class="tk-tbl"><thead><tr>' +
             '<th>Policy</th><th>Remark</th></tr></thead><tbody>' +
-            r.mismatched.map((m) =>
+            missShown.map((m) =>
               '<tr class="is-exception"><td>' + esc(m.policy || '') + '</td>' +
               '<td class="rk">' + esc(m.remark || '') + '</td></tr>').join('') +
           '</tbody></table></div>'
