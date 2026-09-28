@@ -160,7 +160,7 @@ async function main() {
        the result is read on the Reconciliation report screen. Tokio drew the
        tables on BOTH, which is two places to read one run. */
     const up = doc.getElementById("tokioCard").textContent;
-    for (const claim of ["Consolidated working sheet", "Steps taken", "The guide\u2019s 15 steps"]) {
+    for (const claim of ["Consolidated working sheet", "Steps taken"]) {
       assert.ok(!up.includes(claim), "the upload card still shows: " + claim);
     }
   });
@@ -233,11 +233,25 @@ async function main() {
     assert.ok(/2\s*ticked/.test(t), "the ticked count is missing");
   });
 
-  check("the fifteen-step checklist is there, and counts what happened", () => {
+  check("the fifteen-step checklist is GONE", () => {
+    /* Removed 28-Sep-2026. It restated the guide on every run — fifteen rows
+       of which only three ever changed — above a step log that says what
+       actually happened, in the run's own words. Two accounts of one run, and
+       the longer one was the one that could not surprise you.
+
+       Asserted rather than just deleted: "add the checklist back" should be a
+       decision with a test to change, not a quiet re-render. */
     const t = doc.getElementById("tokioReportCard").textContent;
-    assert.ok(/The guide.s 15 steps/.test(t), "no checklist");
-    assert.ok(/14 of 15 done/.test(t), "the checklist did not derive 14 of 15: " +
-      (t.match(/\d+ of 15 done/) || ["nothing"])[0]);
+    assert.ok(!/15 steps/.test(t), "the checklist is back");
+    assert.ok(!/not reached/.test(t), "the checklist's rows are back");
+  });
+
+  check("...but the step log, which says what the run DID, stays", () => {
+    /* The guide's "Other features" asks to show the steps the agent took.
+       That is this, not the checklist: it is the run's own account, and on a
+       run that stopped it is the only thing that explains where. */
+    const t = doc.getElementById("tokioReportCard").textContent;
+    assert.ok(/Steps taken \(\d+\)/.test(t), "the step log went with the checklist");
   });
 
   check("the step log is there, in order", () => {
