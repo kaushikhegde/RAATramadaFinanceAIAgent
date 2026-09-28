@@ -2302,7 +2302,7 @@ async function handleMintRun(session, msg) {
      both look identical from the outside — an app that opens straight onto the
      reconciliation screen. One of them is a deliberate local run; the other is a
      shared server whose front door never got installed. */
-  const authProblem = azureAuth.configProblem();
+  const authProblem = azureAuth.configProblem(PORT);
   if (authProblem) console.log(`  ⚠ ${authProblem}`);
   else if (!azureAuth.enabled()) console.log("  ⚠ No Entra sign-in configured — anyone who can reach this port can use the app.");
   /* The one address to use, taken from AZURE_REDIRECT_URI itself rather than

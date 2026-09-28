@@ -40,7 +40,24 @@ const enabled = () => !!(TENANT_ID && CLIENT_ID && CLIENT_SECRET);
 
 /* Reported by server.js on startup so a broken config cannot look like a
    deliberate one. */
-function configProblem() {
+function configProblem(listeningPort) {
+  /* The port the app listens on and the port Microsoft sends people back to
+     are two separate settings, and nothing connects them. Get them apart and
+     sign-in ends at "this site can't be reached" on a port nothing serves --
+     while the app runs perfectly on another one, so every log looks healthy.
+
+     Checked before the "is it even configured" branch below: a mismatched port
+     is wrong whether or not the rest is filled in. */
+  if (enabled() && listeningPort) {
+    let want;
+    try { want = new URL(REDIRECT_URI); } catch (_) { want = null; }
+    const named = want && (want.port || (want.protocol === "https:" ? "443" : "80"));
+    if (named && String(named) !== String(listeningPort)) {
+      return `AZURE_REDIRECT_URI points at port ${named} but this app is listening on ${listeningPort}. ` +
+             `Sign-in will end on a port nothing serves. Set both to the same value ` +
+             `(APP_PORT in .env under Docker) and add that URI to the app registration.`;
+    }
+  }
   if (enabled()) return null;
   const present = [
     TENANT_ID && "AZURE_TENANT_ID", CLIENT_ID && "AZURE_CLIENT_ID", CLIENT_SECRET && "AZURE_CLIENT_SECRET",

@@ -189,7 +189,12 @@ console.log("\nthe container advertises the screen it runs");
 const compose = read("docker-compose.yml");
 const dockerfile = read("Dockerfile");
 const entry = read("docker-entrypoint.sh");
-ok("docker-compose.yml sets NOVNC_PORT", /NOVNC_PORT:\s*"?6080"?/.test(compose));
+/* Accepts the ${NOVNC_PORT:-6080} form as well as a bare 6080. The port became
+   a variable so the published port and the one inside the container cannot
+   drift apart; what this check is for is that 6080 is still the number the
+   image and websockify agree on, which the default carries. */
+ok("docker-compose.yml sets NOVNC_PORT, defaulting to 6080",
+  /NOVNC_PORT:\s*"?(?:6080|\$\{NOVNC_PORT:-6080\})"?/.test(compose));
 ok("the Dockerfile sets it too, so a plain `docker run` works", /NOVNC_PORT=6080/.test(dockerfile));
 ok("and it matches the port websockify is actually told to serve",
   /websockify --web=\/usr\/share\/novnc 6080/.test(entry),
