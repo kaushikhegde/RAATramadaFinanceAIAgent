@@ -4428,6 +4428,15 @@ header.top { display: none !important }
       '.tk-host .tk-pill.travel{background:#e7f5ec;color:#1b5e33}',
       '.tk-host .tk-pill.retail{background:#eeeef4;color:#5a5a72}',
       '.tk-host .tk-pill.exception{background:#fdecc8;color:#8a5a00}',
+      '.tk-host .tk-filters{display:flex;gap:6px;flex-wrap:wrap;align-items:center;',
+      '  margin-top:14px;padding-top:12px;border-top:1px solid var(--line-2,#ececf4)}',
+      '.tk-host .tk-chip{border:1px solid var(--line,#e3e3ee);background:#fff;border-radius:999px;',
+      '  padding:4px 11px;font:inherit;font-size:11.5px;cursor:pointer;color:var(--ink-2,#5a5a72)}',
+      '.tk-host .tk-chip:hover{background:#f6f6fb}',
+      '.tk-host .tk-chip.on{background:#1b1b46;border-color:#1b1b46;color:#fff;font-weight:600}',
+      '.tk-host .tk-chip .n{opacity:.7;margin-left:3px;font-variant-numeric:tabular-nums}',
+      '.tk-host .tk-search{padding:5px 11px;font:inherit;font-size:12px;',
+      '  border:1px solid var(--line,#e3e3ee);border-radius:999px;min-width:260px}',
       '.tk-host .tk-status{margin-top:14px;padding-top:12px;font-size:12.5px;',
       '  border-top:1px solid var(--line-2,#ececf4);color:var(--ink-2,#5a5a72)}',
       '.tk-host .tk-status a{margin-left:6px;white-space:nowrap}',
@@ -4631,7 +4640,7 @@ header.top { display: none !important }
 
   /* Read-only bar. Export and the step-15 email are both reads of a run that
      already happened; neither touches Tramada. */
-  function tokioReportActions() {
+  function tokioReportActions(shownCount) {
     const res = tokio.result;
     if (!res || !res.rows || !res.rows.length) return '';
     return '<div class="tk-acts">' +
@@ -4640,8 +4649,43 @@ header.top { display: none !important }
         ? '<button class="btn sm" id="tokioReportEmail"' + (tokio.emailing ? ' disabled' : '') + '>' +
             (tokio.emailing ? 'Preparing\u2026' : 'Email Travel Accounts') + '</button>'
         : '') +
+      /* THE EXPORT IS THE WHOLE SHEET, WHATEVER THE FILTER SAYS. BR17 hands
+         Travel Accounts the consolidated working file, not whichever slice of
+         it somebody was looking at — and "showing 3 of 10" sitting beside a
+         button labelled Export CSV is exactly how a person ends up sending
+         three rows and believing they sent ten. So the bar says which it is. */
       '<span style="font-size:11.5px;color:var(--ink-2,#5a5a72)">' + res.rows.length +
-        ' row(s) \u00b7 this is the sheet that goes to Travel Accounts</span>' +
+        ' row(s) \u00b7 ' +
+        (shownCount != null && shownCount !== res.rows.length
+          ? 'Export hands over all ' + res.rows.length + ', not the ' + shownCount + ' on screen'
+          : 'this is the sheet that goes to Travel Accounts') +
+        '</span>' +
+      '</div>';
+  }
+
+  /* ── THE CARD'S OWN FILTER BAR ───────────────────────────────────────────────
+     The row at the top of the screen only reaches Tokio when the payment-type
+     picker is set to Tokio Marine. On "All payment types" — which is how the
+     screen opens — those chips are the statement-line ones and the card below
+     them has no filter at all. And on a run that STOPPED, which is when a
+     person most wants to pick the exceptions out, the card can be the only
+     thing worth reading on the screen.
+
+     So the card carries its own. Same six outcomes, same search, bound to the
+     SAME `tokioFilter` and `search` — two controls for one state, never two
+     states, because a card saying "Exceptions" under a row saying "All lines"
+     is a screen nobody can trust. */
+  function tokioReportFilters() {
+    const rows = tokioSheetRows();
+    if (!rows.length) return '';
+    return '<div class="tk-filters">' +
+      TOKIO_TABS.map(([k, label, fn]) =>
+        '<button class="tk-chip' + (tokioFilter === k ? ' on' : '') + '" data-tkf="' + k + '">' +
+          esc(label) + ' <span class="n">' + rows.filter(fn).length + '</span></button>').join('') +
+      '<div style="flex:1"></div>' +
+      '<input class="tk-search" id="tokioSearch" ' +
+        'placeholder="Search policy, booking, branch or reference\u2026" ' +
+        'value="' + esc(search || '') + '">' +
       '</div>';
   }
 
@@ -4684,18 +4728,51 @@ header.top { display: none !important }
         'monthly creditor reconciliation. Read-only here \u2014 the run is started from ' +
         '<a href="#" data-go="sources">Sources &amp; upload</a>.</p>' +
       counts +
+      tokioReportFilters() +
       tokioRunBlock() +
       tokioChecklist() +
       /* The filter row above the card narrows the sheet. `tokioSheetRows`
          carries the server's original row alongside what it is searched on, so
          the table is still built from those rows and nothing is re-derived. */
-      tokioSheetTable(tokioReportActions(),
-        tokioSheetRows().filter(tokioMatches).map((x) => x.row));
+      (() => {
+        const visible = tokioSheetRows().filter(tokioMatches).map((x) => x.row);
+        return tokioSheetTable(tokioReportActions(visible.length), visible);
+      })();
 
     const exp = card.querySelector('#tokioReportExport');
     if (exp) exp.onclick = tokioExportCsv;
     const em = card.querySelector('#tokioReportEmail');
     if (em) em.onclick = tokioEmail;
+
+    /* Through render(), not straight to renderTokioReport(), so the row at the
+       top of the screen redraws with the same selection. Two controls, one
+       state. */
+    card.querySelectorAll('[data-tkf]').forEach((b) => {
+      b.onclick = () => { tokioFilter = b.getAttribute('data-tkf'); render(); };
+    });
+    const box = card.querySelector('#tokioSearch');
+    if (box) {
+      let t = null;
+      box.oninput = () => {
+        clearTimeout(t);
+        t = setTimeout(() => {
+          search = box.value.trim().toLowerCase();
+          // Keep the screen's own box showing the same thing.
+          const top = $('#ibSearch');
+          if (top && top.value !== box.value) top.value = box.value;
+          render();
+          /* Typing rebuilt the card, so the box being typed into is a NEW
+             element. Without this the caret leaves after one character and the
+             field looks like it stopped accepting input — the same bug the
+             balance fields had, see renderSource's focusWas. */
+          const again = document.querySelector('#tokioReportCard #tokioSearch');
+          if (again && document.activeElement !== again) {
+            again.focus({ preventScroll: true });
+            try { again.setSelectionRange(again.value.length, again.value.length); } catch (e) { /* ok */ }
+          }
+        }, 250);
+      };
+    }
   }
 
   function pickTokioFile(kind) {

@@ -353,6 +353,83 @@ async function main() {
       doc.getElementById("ibSearch").placeholder);
   });
 
+  check("the card carries its OWN filter bar, not only the row above", () => {
+    /* The row above only reaches Tokio when the payment-type picker is set to
+       Tokio Marine. On "All payment types" — how the screen opens — those
+       chips are the statement-line ones and the card had no filter at all. */
+    const card = doc.getElementById("tokioReportCard");
+    const chips = [...card.querySelectorAll(".tk-filters [data-tkf]")];
+    assert.ok(chips.length === 6, "expected six chips on the card, found " + chips.length);
+    assert.ok(card.querySelector("#tokioSearch"), "no search box on the card");
+  });
+
+  check("its chips and the row above are ONE state, never two", () => {
+    /* A card saying "Exceptions" under a row saying "All lines" is a screen
+       nobody can trust. */
+    const card = doc.getElementById("tokioReportCard");
+    const travel = [...card.querySelectorAll("[data-tkf]")].find((c) => /^Travel/.test(c.textContent.trim()));
+    travel.click();
+    const onCard = [...card.querySelectorAll("[data-tkf].on")].map((c) => c.getAttribute("data-tkf"));
+    const onRow = [...doc.querySelectorAll("#inboxGrid .triage .tri.on")].map((c) => c.dataset.tf);
+    assert.deepStrictEqual(onCard, ["travel"]);
+    assert.deepStrictEqual(onRow, ["travel"], "the row above did not follow the card");
+    [...card.querySelectorAll("[data-tkf]")][0].click();     // back to All
+  });
+
+  await (async () => {
+    const card = () => doc.getElementById("tokioReportCard");
+    card().querySelector("#tokioSearch").value = "21922235";
+    card().querySelector("#tokioSearch").dispatchEvent(new win.Event("input", { bubbles: true }));
+    await sleep(400);                       // the box is debounced
+
+    check("typing in the card's own box narrows the sheet", () => {
+      assert.ok(card().textContent.includes("21922235"), "the row searched for is gone");
+      assert.ok(!card().textContent.includes("21922098"), "nothing was narrowed");
+    });
+
+    check("...and the box still holds what was typed afterwards", () => {
+      /* Typing rebuilds the card, so the input is a NEW element. Rendered
+         without its value the field blanks itself after one character and
+         reads as broken — the same bug the balance fields had. */
+      assert.strictEqual(card().querySelector("#tokioSearch").value, "21922235",
+        "the card's search box emptied itself on re-render");
+    });
+
+    check("the bar says Export hands over the WHOLE sheet, not the filtered view", () => {
+      /* BR17 gives Travel Accounts the consolidated file, not whichever slice
+         somebody was looking at. "showing 1 of 2" beside a button marked
+         Export CSV is how a person sends one row believing they sent two. */
+      assert.ok(/Export hands over all 2, not the 1 on screen/.test(card().textContent),
+        "the action bar does not say what Export will actually send");
+    });
+
+    check("...and the screen's own box was kept in step", () => {
+      assert.strictEqual(doc.getElementById("ibSearch").value, "21922235",
+        "the two search boxes disagree about what is being searched for");
+    });
+
+    card().querySelector("#tokioSearch").value = "";
+    card().querySelector("#tokioSearch").dispatchEvent(new win.Event("input", { bubbles: true }));
+    await sleep(400);
+  })();
+
+  check("the card's filter works with the payment type back on All", () => {
+    sel.value = "";
+    sel.dispatchEvent(new win.Event("change", { bubbles: true }));
+    const card = doc.getElementById("tokioReportCard");
+    assert.notStrictEqual(card.style.display, "none", "the card hid on All payment types");
+    const retail = [...card.querySelectorAll("[data-tkf]")].find((c) => /^Retail/.test(c.textContent.trim()));
+    assert.ok(retail, "no chips on the card when the row above is showing statement lines");
+    retail.click();
+    assert.ok(/Nothing matches that filter/.test(doc.getElementById("tokioReportCard").textContent),
+      "the card's own chip did not narrow the sheet");
+    [...doc.getElementById("tokioReportCard").querySelectorAll("[data-tkf]")][0].click();
+  });
+
+  sel.value = "tokio";
+  sel.dispatchEvent(new win.Event("change", { bubbles: true }));
+  await sleep(30);
+
   sel.value = "ipsi";
   sel.dispatchEvent(new win.Event("change", { bubbles: true }));
   await sleep(30);
