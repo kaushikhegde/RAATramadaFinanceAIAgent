@@ -86,6 +86,21 @@ let _sessionMiddleware = null;
  * Session + auth routes onto the express app. Call before the static handler,
  * or the login page is served to people who are already signed in.
  */
+/* RAA Logging and Monitoring Standard v1.1 §3.1.3 — "Log on, log off." and
+   "Failed logon attempts." are the first two rows of the Account Usage
+   Information table, and this file is the only place either can be observed.
+
+   `req.audit` is installed by server.js and carries the request's address, URL
+   and method (§3.1.1). The fallback matters: this module is required by the
+   offline suite and by tools, where no middleware has run, and a sign-in event
+   lost because a helper was missing is the event you most wanted. */
+function say(req, name, fields) {
+  try {
+    if (req && typeof req.audit === "function") return req.audit(name, fields);
+    return require("./audit").record(name, fields);
+  } catch (_) { /* never let logging break a sign-in */ }
+}
+
 function install(app) {
   const session = require("express-session");
 
@@ -132,6 +147,8 @@ function install(app) {
       });
       res.redirect(url);
     } catch (err) {
+      say(req, "signin.failure", { outcome: "failure", target: "Microsoft Entra ID",
+        stage: "authorization request", reason: err.message });
       res.status(500).send(`Could not start sign-in: ${err.message}`);
     }
   });
@@ -163,9 +180,20 @@ function install(app) {
         if (err) return res.status(500).send(`Could not start your session: ${err.message}`);
         req.session.user = { email, name: claims.name || email };
         pkceDone();
+        /* AFTER regenerate, so the id in the log is the id the person will
+           carry. Logged before the redirect rather than after, because the
+           redirect is the last thing this handler controls. */
+        say(req, "signin.success", { user: email, target: "Microsoft Entra ID",
+          sessionId: req.sessionID });
         req.session.save(() => res.redirect("/"));
       });
     } catch (err) {
+      /* The reason is kept. "Failed logon attempts" as a count answers nothing:
+         a bad state parameter is somebody being walked through a sign-in they
+         did not start, and an account with no email is a tenant misconfigured.
+         Those are two different pages of the incident report. */
+      say(req, "signin.failure", { outcome: "failure", target: "Microsoft Entra ID",
+        stage: "authorization callback", reason: err.message });
       res.status(401).send(
         `<h3>Sign-in failed</h3><p>${escapeHtml(err.message)}</p><p><a href="/auth/login">Try again</a></p>`
       );
@@ -173,6 +201,9 @@ function install(app) {
   });
 
   app.post("/auth/logout", (req, res) => {
+    // BEFORE destroy — afterwards there is no session to read the account off,
+    // and a logout event that cannot name who logged out is not one.
+    say(req, "signout", { target: "Microsoft Entra ID", sessionId: req.sessionID });
     req.session.destroy(() => {
       /* Ends the session HERE and at Entra. Dropping only ours would leave the
          next click on "sign in" going straight back through without a prompt,
@@ -187,6 +218,11 @@ function install(app) {
 function requireAuth(req, res, next) {
   if (!enabled()) return next();
   if (userFromSession(req.session)) return next();
+  /* §3.1.3's "Failed logon attempts" row, read the way a reviewer reads it:
+     who is reaching this app without a session, and for what. A bounce to the
+     login page is normal traffic; an unauthenticated POST to a run endpoint is
+     not, and only the log can tell them apart afterwards. */
+  say(req, "access.denied", { outcome: "failure", target: req.path });
   if (req.path.startsWith("/api/")) return res.status(401).json({ error: "not signed in" });
   /* To OUR page, not straight to Microsoft. A bounce to login.microsoftonline.com
      from a bare URL gives no clue what asked for the sign-in, which is exactly
