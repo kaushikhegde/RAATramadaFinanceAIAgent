@@ -7477,12 +7477,11 @@ function askMarkStale(){
 
     // Export and the step-15 email are wired on the report card, with the
     // result they act on.
+    /* The literal the server insists on, typed here in full rather than
+       assembled so grepping for it finds every place it is spoken. Sent on the
+       one button now: the run's job is to leave the session saved. */
     const run = card.querySelector('#tokioRun');
-    if (run) run.onclick = () => tokioReconcile(null);
-    const sv = card.querySelector('#tokioSave');
-    // The literal the server insists on. Typed here in full rather than
-    // assembled, so grepping for it finds every place it is spoken.
-    if (sv) sv.onclick = () => tokioReconcile('SAVE SESSION');
+    if (run) run.onclick = () => tokioReconcile('SAVE SESSION');
     card.querySelectorAll('[data-tokio-pick]').forEach((b) => {
       b.onclick = () => pickTokioFile(b.getAttribute('data-tokio-pick'));
     });
@@ -7683,7 +7682,8 @@ function askMarkStale(){
       : r && r.savedSession ? 'Session <b>' + esc(r.label) + '</b> saved \u2014 ' +
           (r.ticked || []).length + ' ticked, ' + (r.mismatched || []).length +
           ' not ticked. Issue was NOT clicked.'
-      : r ? (r.ticked || []).length + ' ticked in Tramada \u2014 nothing saved yet.'
+      : r ? (r.ticked || []).length + ' ticked in Tramada, but the session was NOT saved \u2014 ' +
+          'read the step log on the report.'
       : 'Consolidated. Not run in Tramada yet.';
     return '<div class="tk-status">' + line +
       ' <a href="#" data-go="inbox">See the report \u2192</a></div>' +
@@ -7697,16 +7697,30 @@ function askMarkStale(){
   function tokioActions() {
     const res = tokio.result;
     if (!res || !res.rows || !res.rows.length) return '';
+    /* ONE BUTTON. Steps 9-14 are one job and it finishes with the session
+       saved — that is what the guide asks the agent to do.
+
+       It used to be two: tick and stop, then a second click to save. That was
+       my caution, not a business rule, and on a real run it read as a job
+       half done — the session label sitting on a button nobody was told to
+       press, and a Tramada window holding ticks that vanish if the tab is
+       closed. Asked for 28-Sep-2026: one click.
+
+       WHAT HAS NOT CHANGED IS THE ONE THAT MATTERS. Issue is still never
+       clicked — BR16 puts it in a person's hands and BR18 leaves them the
+       total — and the server still refuses to save without the exact literal
+       (tramada-tokio.SAVE_LITERAL), which the page now always sends because
+       saving is the point of the run rather than an extra step. */
     return '<div class="tk-acts">' +
-        /* Steps 9-14 without a terminal. Two buttons, not one: the first ticks
-           and stops, the second saves the session. Issue is never offered —
-           BR16 puts it in a human's hands and BR18 leaves them the total. */
         '<button class="btn sm indigo" id="tokioRun"' + (tokio.running ? ' disabled' : '') + '>' +
-          (tokio.running ? 'Running in Tramada\u2026' : 'Reconcile in Tramada') + '</button>' +
-        (tokio.run && !tokio.run.savedSession
-          ? '<button class="btn sm" id="tokioSave"' + (tokio.running ? ' disabled' : '') + '>' +
-              'Save session ' + esc(tokio.run.label) + '</button>'
-          : '') +
+          (tokio.running
+            ? 'Running in Tramada\u2026'
+            : 'Reconcile in Tramada &amp; save session' +
+              (res.labels && res.labels.sessionLabel ? ' ' + esc(res.labels.sessionLabel) : '')) +
+        '</button>' +
+        '<span style="font-size:11.5px;color:var(--ink-2,#5a5a72)">' +
+          'Ticks the matching lines and saves the session. Issue is never pressed \u2014 ' +
+          'that stays a person\u2019s click (BR16/BR18).</span>' +
       '</div>';
   }
 

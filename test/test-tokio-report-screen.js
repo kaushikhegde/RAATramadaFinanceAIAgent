@@ -172,10 +172,40 @@ async function main() {
     // Writing stays where the files were dropped.
     assert.ok(up.querySelector("#tokioRun"), "no Reconcile button on the upload card");
     assert.ok(!rep.querySelector("#tokioRun"), "a second Reconcile button on the report screen");
-    assert.ok(!rep.querySelector("#tokioSave"), "a second Save Session button");
     // Reading — export, and the step-15 mail — goes with the result.
     assert.ok(rep.querySelector("#tokioReportExport"), "no Export CSV on the report screen");
     assert.ok(!up.querySelector("#tokioExport"), "Export is still on the upload card too");
+  });
+
+  check("ONE button: reconciling and saving the session are one click", () => {
+    /* It used to be two — tick and stop, then a second click to save — which
+       read as a job half done and left a Tramada window holding ticks that
+       vanish if the tab is closed. Asked for 28-Sep-2026. */
+    const up = doc.getElementById("tokioCard");
+    const buttons = [...up.querySelectorAll(".tk-acts button")];
+    assert.strictEqual(buttons.length, 1,
+      "expected one action button, found: " + buttons.map((b) => b.textContent.trim()).join(" | "));
+    assert.ok(!up.querySelector("#tokioSave"), "the separate Save Session button is back");
+    assert.ok(/save session/i.test(buttons[0].textContent),
+      "the button does not say it saves: " + buttons[0].textContent);
+  });
+
+  check("...and it sends the literal the server insists on", () => {
+    /* The two-button flow was the only thing that used to send it. If the one
+       button sends nothing, every run is a dry run and NOTHING is ever saved —
+       which would look exactly like success on this screen. */
+    const wire = fs.readFileSync(path.join(ROOT, "public", "index.html"), "utf8");
+    const at = wire.indexOf("card.querySelector('#tokioRun')");
+    assert.ok(at > 0, "the Reconcile button is not wired at all");
+    assert.ok(/tokioReconcile\('SAVE SESSION'\)/.test(wire.slice(at, at + 160)),
+      "the button runs a dry run: " + wire.slice(at, at + 130));
+  });
+
+  check("BR16 is still stated where the button is", () => {
+    // The one thing the merge must not quietly drop.
+    const acts = doc.getElementById("tokioCard").querySelector(".tk-acts");
+    assert.ok(/Issue is never pressed/i.test(acts.textContent),
+      "nothing beside the button says Issue is not pressed");
   });
 
   check("both cards use the same badge words as every other source card", () => {
