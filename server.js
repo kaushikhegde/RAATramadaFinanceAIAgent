@@ -2305,6 +2305,20 @@ async function handleMintRun(session, msg) {
   const authProblem = azureAuth.configProblem();
   if (authProblem) console.log(`  ⚠ ${authProblem}`);
   else if (!azureAuth.enabled()) console.log("  ⚠ No Entra sign-in configured — anyone who can reach this port can use the app.");
+  /* The one address to use, taken from AZURE_REDIRECT_URI itself rather than
+     guessed. localhost and 127.0.0.1 are different cookie origins, so a banner
+     that names the other spelling than the redirect URI is how an afternoon
+     goes: sign-in succeeds, lands, and drops you back with no error anywhere. */
+  if (azureAuth.enabled()) {
+    try {
+      const origin = new URL(azureAuth.REDIRECT_URI).origin;
+      console.log(`  \u2713 Entra sign-in is on. OPEN ${origin} \u2014 the other spelling of`);
+      console.log(`    this machine is a different cookie origin (we redirect, but start here).`);
+    } catch (_) {
+      console.log(`  \u26a0 AZURE_REDIRECT_URI is not a URL: ${azureAuth.REDIRECT_URI}`);
+    }
+  }
+
   if (azureAuth.enabled() && !creds.configured()) {
     console.log("  ⚠ Signed-in users have no Tramada credentials in a vault — each run still waits for a human to sign into Tramada.");
   }

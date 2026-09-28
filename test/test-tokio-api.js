@@ -85,7 +85,16 @@ async function waitForServer(child, tries = 40) {
 (async () => {
   const child = spawn(process.execPath, ["server.js"], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), DATABASE_URL: "", NOVNC_PORT: "" },
+    /* AZURE_* blanked on purpose. dotenv does not overwrite a key that is
+       already in the environment, and an empty string counts as present — so
+       this stops the developer's own .env from switching Entra on inside the
+       child. Without it these routes answer 401 on any machine that has
+       sign-in configured, and the suite starts failing for a reason that has
+       nothing to do with the code under test. */
+    env: {
+      ...process.env, PORT: String(PORT), DATABASE_URL: "", NOVNC_PORT: "",
+      AZURE_TENANT_ID: "", AZURE_CLIENT_ID: "", AZURE_CLIENT_SECRET: "",
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";

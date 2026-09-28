@@ -3,8 +3,15 @@
 # Nothing needed on the host but Docker — no Chrome, no database to install.
 #
 #   docker compose up --build          # or: npm run docker:up
-#   → app           http://127.0.0.1:3000
+#   → app           http://localhost:3000
 #   → login screen  http://127.0.0.1:6080/vnc.html   (SIGN INTO TRAMADA HERE)
+#
+# BROWSE localhost, NOT 127.0.0.1. The ports below bind to 127.0.0.1 so
+# nothing outside this machine can reach them, but the two spellings are
+# DIFFERENT COOKIE ORIGINS to a browser. AZURE_REDIRECT_URI names one of
+# them, and a session cookie set on the other is invisible to your tab --
+# so sign-in succeeds, lands, and silently drops you back with nothing.
+# /auth/login redirects between the two spellings now, so either works.
 services:
   recon:
     build: .

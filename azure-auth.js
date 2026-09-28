@@ -101,6 +101,32 @@ function say(req, name, fields) {
   } catch (_) { /* never let logging break a sign-in */ }
 }
 
+/* localhost and 127.0.0.1 are the same machine and DIFFERENT COOKIE ORIGINS.
+   A session cookie set while being sent back to localhost:3001 is invisible to
+   a tab sitting on 127.0.0.1:3001, so sign-in "works", lands, and drops you
+   back at the login page with nothing to show for it. There is no error
+   anywhere: each half did its job.
+
+   Rather than make people memorise which spelling is the blessed one, send
+   them to it. Returns the URL to bounce to, or null when we are already on the
+   right origin. Only the HOST is compared -- the port is part of the host
+   header, and the scheme is not ours to change behind a proxy. */
+function canonicalRedirect(req) {
+  let want;
+  try { want = new URL(REDIRECT_URI); } catch (_) { return null; }
+  const have = String((req.headers && req.headers.host) || "");
+  if (!have || have.toLowerCase() === want.host.toLowerCase()) return null;
+  /* Only between spellings of this machine. Honouring the Host header in
+     general would let any host header rewrite where people are sent, which is
+     an open redirect with extra steps. */
+  const local = (h) => /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(:\d+)?$/i.test(h);
+  if (!local(have) || !local(want.host)) return null;
+  /* Same port, or this is a different service and not our business. */
+  const port = (h) => (h.split(":")[1] || "");
+  if (port(have) !== port(want.host)) return null;
+  return `${want.protocol}//${want.host}${req.originalUrl || req.url}`;
+}
+
 function install(app) {
   const session = require("express-session");
 
@@ -127,9 +153,51 @@ function install(app) {
   });
   app.use(_sessionMiddleware);
 
-  if (!enabled()) return;
+  if (!enabled()) {
+    /* Sign-in is off in THIS process. Answering /auth/* with nothing makes that
+       state indistinguishable from a stale image, a second app on the port, or
+       a typo in the route — the same bare 404 for all four. So say which it is.
+
+       It matters most for the callback: by then Microsoft has already issued a
+       code, so the registration and the secret are provably fine and the only
+       thing wrong is the process that got the redirect. A 404 there sends you
+       back to re-check Azure, which is the one place that is working. */
+    const missing = [
+      !TENANT_ID && "AZURE_TENANT_ID", !CLIENT_ID && "AZURE_CLIENT_ID",
+      !CLIENT_SECRET && "AZURE_CLIENT_SECRET",
+    ].filter(Boolean);
+    const why =
+      `<h3>Entra sign-in is not configured in this process</h3>` +
+      `<p>Missing: <code>${missing.map(escapeHtml).join("</code>, <code>")}</code></p>` +
+      `<p>The app is running, so these never reached it. Most often the process ` +
+      `is older than the config, or is not the one you think it is:</p>` +
+      `<ul><li>Docker reuses a built image — <code>docker compose up --build</code>, ` +
+      `then <code>docker compose exec recon env | grep AZURE_</code> to see what it got.</li>` +
+      `<li><code>.dockerignore</code> keeps <code>.env</code> out of the image on purpose; ` +
+      `compose forwards it instead, so it must sit beside docker-compose.yml.</li>` +
+      `<li>Something else may hold this port. A 404 shaped like JSON is not this app.</li></ul>` +
+      `<p>See docs/azure-setup.md.</p>`;
+
+    // 503, not 404: the route exists and the app is the right one. It cannot
+    // serve this yet. A 404 says "no such thing here" and sends you looking in
+    // Azure; this says "wrong process" and sends you to the process.
+    for (const route of ["/auth/login", "/auth/callback"]) {
+      app.get(route, (req, res) => {
+        say(req, "signin.failure", { outcome: "failure", detail: `sign-in not configured: missing ${missing.join(", ")}` });
+        res.status(503).type("html").send(why);
+      });
+    }
+    return;
+  }
 
   app.get("/auth/login", async (req, res) => {
+    /* Before anything is signed or staged: if this tab is on the other
+       spelling of localhost, move it. Doing it here rather than after the
+       callback matters -- the pkce verifier and the CSRF state below are
+       written into the session, and a session started on the wrong origin is
+       thrown away by the browser on the way back. */
+    const elsewhere = canonicalRedirect(req);
+    if (elsewhere) return res.redirect(elsewhere);
     try {
       const { CryptoProvider } = require("@azure/msal-node");
       const { verifier, challenge } = await new CryptoProvider().generatePkceCodes();
@@ -252,4 +320,4 @@ function escapeHtml(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-module.exports = { enabled, configProblem, install, requireAuth, userFromSession, userForUpgrade, REDIRECT_URI };
+module.exports = { enabled, configProblem, install, requireAuth, userFromSession, userForUpgrade, canonicalRedirect, REDIRECT_URI };
