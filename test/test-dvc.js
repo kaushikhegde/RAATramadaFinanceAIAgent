@@ -507,6 +507,16 @@ check("it reads a Tramada-shaped date too", C.dvcSessionLabel("04-09-2026"), "DV
 // date must not stop it — it just does not carry a date nobody entered.
 check("no date, no invented date", C.dvcSessionLabel(""), "DVC");
 
+console.log("\nthe Issue Agency Credit Card Reimbursement header's Payee Name and Reference");
+// RAA, 28-09-2026: Payee is always "Westpac DVC"; Reference is that name plus
+// the Date Of Payment field's own value, compact, not this project's usual ISO.
+check("the reference", C.westpacDvcReference("2026-09-26"), "Westpac DVC_20260926");
+check("it reads a Tramada-shaped date too", C.westpacDvcReference("26-09-2026"), "Westpac DVC_20260926");
+// Same defensive contract as dvcSessionLabel — an unreadable Date Of Payment
+// must not produce "Westpac DVC_undefined" on a field Session validates.
+check("no date, no invented date", C.westpacDvcReference(""), "Westpac DVC");
+check("the payee is fixed", C.WESTPAC_DVC_PAYEE, "Westpac DVC");
+
 console.log("\nthe report is registered, and cannot be swept into a browser run");
 check("DVC is a report", C.REPORTS.dvc.title, "DVC card reconciliation");
 check("it has no statement page", C.REPORTS.dvc.recPayType, null);
@@ -614,8 +624,12 @@ console.log("\na wrong amount on a hotel + flight booking — a person decides (
      BR13's harmless leftovers — the very costings a person has to check. */
   const mail = C.dvcEmail({ statementDate: "2026-09-24", summary: out.summary, rows: out.rows,
     unmatchedTramada: out.unmatchedTramada, payment: null });
-  ok("the email names both hotels as exceptions", /booking 90001 \$150\.00/.test(mail.text) &&
-    /booking 90002 \$214\.50/.test(mail.text), mail.text);
+  /* The per-line breakdown is not in the email any more (RAA, 24-09-2026) —
+     it is the attachment's Remarks/Reconciled/Why columns for every row — so
+     what is left to check here is the count, and that leftovers (below)
+     never claims these two as harmless. */
+  ok("the email points at the attachment for both hotels' exceptions",
+    /See the attachment for the 2 lines not ticked/.test(mail.text), mail.text);
   ok("...and never calls their costings expected leftovers", !/nothing on the report paid/.test(mail.text), mail.text);
   ok("...and counts them as two lines, not one thing", /found 2 lines that do not reconcile/.test(mail.text), mail.text);
 }

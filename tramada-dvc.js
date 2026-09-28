@@ -432,6 +432,117 @@ async function pressAndCheck(page, wantText, what, say) {
 }
 
 /**
+ * The results page's OWN payment header — "Issue Agency Credit Card
+ * Reimbursement" over Payment Overview / Payment Details / Document Details —
+ * separate from the search parameters `fillSearch` already set two clicks ago.
+ *
+ * NEVER MEASURED UNTIL A SESSION SAVE FAILED ON IT (RAA, 25-09-2026):
+ * "Amount Of Payment must equal the allocated amount" and "Transaction Type
+ * must be selected", on a screen `tramada-dvc.js`'s own header used to say
+ * stopped at Round Remaining, Session and Issue. It does not: Session
+ * validates this header too, even though nothing here is Issued.
+ *
+ * FOUR OF THESE ARE THE AGENT'S TO FILL. Payment Notes is left exactly as it
+ * loads — blank — for Travel Accounts to fill before Issue. Bank Account,
+ * Document Template, Document Heading and Document Type are read-only or
+ * already correct and are not touched.
+ *
+ *   Transaction Type    always EFT — DVC's only committed a Payment Session
+ *                       when the run's own money agrees to the cent, so a
+ *                       cheque or a card is never in play here.
+ *   Amount Of Payment   the allocated amount, which on this screen means
+ *                       `commit.paidCents` — the same figure the email and
+ *                       the run record already call "ticked total", not the
+ *                       report's own total, which a partial commit would not
+ *                       match.
+ *   Payee Name          always "Westpac DVC" (RAA, 28-09-2026).
+ *   Reference           "Westpac DVC_YYYYMMDD", built from whatever Date Of
+ *                       Payment already reads on the form — read back, not
+ *                       computed independently, so it can never disagree with
+ *                       the date sitting next to it. `core.westpacDvcReference`.
+ *
+ * Payee Name and Reference were left blank until 28-09-2026: RAA's original
+ * word was that these were for Travel Accounts to fill before Issue, and
+ * typing one would be inventing it (§3). RAA has since named the exact payee
+ * and reference pattern to use for this screen, which is a value supplied,
+ * not one guessed — so this is the one screen where those two fields are now
+ * filled. That instruction does not extend to any other reimbursement or
+ * payment screen.
+ *
+ * Discovered by label (§6), same as the Credit Card field two steps back —
+ * this part of the page has never been probed, so a hard-coded id would be a
+ * guess wearing a selector's clothes.
+ */
+async function fillTextAndVerify(page, selector, value, field) {
+  await page.fill(selector, "").catch(() => {});
+  await page.fill(selector, value).catch(() => {});
+  let got = await page.inputValue(selector).catch(() => "");
+  if (got !== value) {
+    await page.click(selector).catch(() => {});
+    await page.fill(selector, "").catch(() => {});
+    await page.type(selector, value, { delay: 40 });
+    got = await page.inputValue(selector).catch(() => "");
+  }
+  if (got !== value) {
+    throw new Error(`${field} did not stick: set "${value}", the form reads "${got}".`);
+  }
+  return got;
+}
+
+async function fillPaymentHeader(page, { paidCents }, say = () => {}) {
+  const txn = await screen.findControl(page, { label: "Transaction Type", idHint: "transactionType", tag: "select" });
+  if (!txn.selector) {
+    const seen = (txn.seen || []).map((s) => s.selector).join(", ");
+    throw new Error(
+      `No Transaction Type field on the results page — Session cannot save without it. ` +
+      `Selects seen: ${seen || "(none)"}`);
+  }
+  const setTxn = await screen.setByLabel(page, txn.selector, "EFT", null, "Transaction Type", core);
+  say(`Transaction Type set to "${setTxn.text}".`, true);
+
+  const amt = await screen.findControl(page, { label: "Amount Of Payment", idHint: "paymentAmount", tag: "input" });
+  if (!amt.selector) {
+    throw new Error(`No Amount Of Payment field on the results page — Session cannot save without it.`);
+  }
+  const amount = core.money(paidCents);
+  await page.fill(amt.selector, "").catch(() => {});
+  await page.fill(amt.selector, amount).catch(() => {});
+  let got = await page.inputValue(amt.selector).catch(() => "");
+  if (core.cents(got) !== paidCents) {
+    await page.click(amt.selector).catch(() => {});
+    await page.fill(amt.selector, "").catch(() => {});
+    await page.type(amt.selector, amount, { delay: 40 });
+    got = await page.inputValue(amt.selector).catch(() => "");
+  }
+  if (core.cents(got) !== paidCents) {
+    throw new Error(
+      `Amount Of Payment would not take "${amount}" (the allocated total) — the field ` +
+      `(${amt.selector}) reads "${got}". Nothing has been saved.`);
+  }
+  say(`Amount Of Payment set to $${amount} — the allocated total.`, true);
+
+  const dateField = await screen.findControl(page, { label: "Date Of Payment", idHint: "paymentDate", tag: "input" });
+  const dateOfPayment = dateField.selector ? await page.inputValue(dateField.selector).catch(() => "") : "";
+  const reference = core.westpacDvcReference(dateOfPayment);
+
+  const payee = await screen.findControl(page, { label: "Payee Name", idHint: "payeeName", tag: "input" });
+  if (!payee.selector) {
+    throw new Error(`No Payee Name field on the results page — Session cannot save without it.`);
+  }
+  await fillTextAndVerify(page, payee.selector, core.WESTPAC_DVC_PAYEE, "Payee Name");
+  say(`Payee Name set to "${core.WESTPAC_DVC_PAYEE}".`, true);
+
+  const ref = await screen.findControl(page, { label: "Reference", idHint: "reference", tag: "input" });
+  if (!ref.selector) {
+    throw new Error(`No Reference field on the results page — Session cannot save without it.`);
+  }
+  await fillTextAndVerify(page, ref.selector, reference, "Reference");
+  say(`Reference set to "${reference}".`, true);
+
+  return { transactionType: setTxn, amount, payee: core.WESTPAC_DVC_PAYEE, reference };
+}
+
+/**
  * Step 16 — type the session label, prove it took, press Session.
  *
  * The label box is found by what it is called rather than by an id nobody had
@@ -683,6 +794,10 @@ async function runDvcPayment(o = {}) {
     if (commit.wanted === core.DVC_COMMIT.session) {
       ticked = await tickPlannedRows(page, plan, say);
       if (commit.action === core.DVC_COMMIT.session) {
+        // The page's own header validates on Session too, not only on Issue —
+        // see `fillPaymentHeader`. After ticking, so nothing left to touch the
+        // page runs between filling it and pressing Session.
+        await fillPaymentHeader(page, { paidCents: commit.paidCents }, say);
         saved = await saveSession(page, commit.sessionLabel, say);
       }
     } else {
@@ -727,6 +842,7 @@ module.exports = {
   chooseCreditCard,
   readGrid,
   tickPlannedRows,
+  fillPaymentHeader,
   saveSession,
   findSessionLabel,
   findSavedSessions,

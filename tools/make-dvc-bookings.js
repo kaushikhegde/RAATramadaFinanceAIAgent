@@ -6,8 +6,9 @@
  *   npm run fixtures:dvc:tramada -- --dry-run      # say what it would create, touch nothing
  *   npm run fixtures:dvc:tramada -- --limit 1      # one booking — try the chain small
  *   npm run fixtures:dvc:tramada                   # all of them
- *   npm run fixtures:dvc:tramada -- --date 2026-09-24   # a new settlement day; only plans not yet
- *                                                       # made are created — made ones are never re-made
+ *   npm run fixtures:dvc:tramada -- --date 2026-09-24   # a settlement day not run before gets a fresh
+ *                                                       # batch of real bookings; a day already run is
+ *                                                       # resumed, never re-booked or duplicated
  *
  *   --date YYYY-MM-DD   settlement date written into the Westpac file (default today)
  *   --account retail|corporate   default retail — see ACCOUNTS
@@ -572,7 +573,15 @@ async function oneMulti(plan, rec, records) {
 
   const records = loadRecords();
   for (const [i, p] of plan.entries()) {
-    let rec = records.find((r) => r.label === p.label && (r.account || "retail") === ACCOUNT);
+    /* KEYED ON SETTLEMENT TOO, NOT JUST LABEL + ACCOUNT. Matching on label alone
+       meant a brand new --date still found the previous day's already-`charged`
+       record and skipped it — the run never re-booked, and writeCsvs (which
+       DOES filter by settlement) then had nothing dated today to write, so the
+       CSV came out as a header with no rows. Every settlement date the plan has
+       not yet been run for gets its own fresh set of real bookings; the same
+       date re-run still resumes the partial one instead of duplicating it. */
+    let rec = records.find((r) => r.label === p.label && (r.account || "retail") === ACCOUNT &&
+      (r.settlement || "2026-09-23") === SETTLEMENT);
     if (!rec) {
       rec = p.lines
         ? { label: p.label, account: ACCOUNT, settlement: SETTLEMENT, client: CLIENT, index: i, initials: p.initials, shop: p.shop,

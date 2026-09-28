@@ -524,8 +524,15 @@ console.log("\nstep 18 — the email to Travel Accounts");
   ok("...and the first line says nothing is in Tramada and what to do",
     /^The 04\/09\/2026 DVC reconciliation found 13 lines that do not reconcile\. Nothing has been entered in Tramada\. Please fix the Westpac discrepancies/.test(errs.text),
     errs.text);
-  ok("...naming every line to fix", run.rows.filter((r) => !r.matched || r.remark)
-    .every((r) => errs.text.includes(`booking ${r.bookingNo || "(none)"} $${r.amount}`)), errs.text);
+  /* THE PER-LINE BREAKDOWN IS NOT IN THE EMAIL — RAA, 24-09-2026: it is
+     already the attachment's Remarks/Reconciled/Why columns for every row
+     (dvcReportCsv), and repeating it back in the body just duplicated the
+     spreadsheet. The email points at it instead. */
+  const nExceptions = run.rows.filter((r) => !r.matched || r.remark).length;
+  ok("...pointing at the attachment for the lines to fix, not repeating them",
+    errs.text.includes(`See the attachment for the ${nExceptions} lines not ticked`) &&
+      !run.rows.some((r) => errs.text.includes(`booking ${r.bookingNo || "(none)"} $${r.amount} —`)),
+    errs.text);
   ok("...and lists BR13's leftovers as expected, not as errors", /nothing on the report paid \(expected/.test(errs.text));
 
   /* THE SPREADSHEETS AGREED, TRAMADA RAISED SOMETHING — the session is saved

@@ -100,6 +100,27 @@ const say = (m, ok) => line(`  ${ok === false ? "!" : "·"} ${m}`);
       }
     }
 
+    /* ---- the Payment Overview / Credit Card / Payment / Document block ---
+       Screenshotted 25-09-2026 raising "Amount Of Payment must equal the
+       allocated amount" and "Transaction Type must be selected" on a Session
+       save — this run had never looked at this part of the page at all.
+       `dvc.saveSession` only knows the label box and the Session button, so if
+       these fields do need filling before Session validates, this is what
+       has to fill them, and this section is what finds out what they really
+       are before anything guesses at an id. */
+    line("\n=== the Payment Overview / Credit Card / Payment / Document block ===");
+    const described = await screen.describeFields(page, [
+      "Transaction Type", "Bank Account", "Credit Card", "Authorisation Number",
+      "Payee Name", "Date Of Payment", "Amount Of Payment", "Reference",
+      "Document Template", "Document Heading", "Document Type", "Email", "Payment Notes",
+    ]);
+    for (const f of described) {
+      if (!f.selector) { line(`  ${f.label.padEnd(20)} NOT FOUND (${f.how})`); continue; }
+      line(`  ${f.label.padEnd(20)} ${f.selector}  value="${f.value}"` +
+        (f.readOnly ? " READONLY" : "") + (f.disabled ? " DISABLED" : ""));
+      if (f.options.length) line(`  ${"".padEnd(20)} options: ${f.options.join(" | ")}`);
+    }
+
     /* ---- the buttons and boxes steps 16 and 17 need --------------------- */
     line("\n=== what steps 16 and 17 will reach for ===");
     for (const [what, pattern] of [["Session", "session"], ["Issue", "^issue$"], ["Go", "^go$"]]) {
