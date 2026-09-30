@@ -109,8 +109,24 @@ function persist(label, fn) {
     // Reported, not thrown. Losing the archive copy of a row is survivable;
     // crashing a run with receipts already filed is not (CLAUDE.md §6b).
     console.error(`  ⚠ could not persist ${label}: ${err.message}`);
+    /* RAA Logging and Monitoring Standard v1.1 §3.1.3, "Database transaction
+       logs". A swallowed write is exactly the failure nobody notices — the run
+       carries on, the screen looks right, and the archive quietly has a hole in
+       it. The audit log is where that becomes visible.
+
+       NEVER for the audit write itself: recording "the audit insert failed" by
+       enqueueing another audit insert against the same dead database is a loop
+       that writes until the process dies. */
+    if (label !== AUDIT_LABEL) {
+      try { require("./audit").record("store.write.failed", {
+        user: "system", target: `Postgres · ${label}`, outcome: "failure", reason: err.message,
+      }); } catch (_) { /* a log about a log is not worth a throw */ }
+    }
   });
 }
+
+// Named once, because the loop guard above depends on it matching exactly.
+const AUDIT_LABEL = "an audit event";
 
 /** Await the outstanding database writes. For graceful shutdown and for tests. */
 function flush() {
@@ -162,6 +178,27 @@ CREATE TABLE IF NOT EXISTS cheat_sheets (
   source     TEXT PRIMARY KEY,
   data       JSONB
 );
+/* RAA Logging and Monitoring Standard v1.1 §3.1.3 — the security audit log.
+   APPEND ONLY: nothing in this app updates or deletes a row here, and §3.1.1
+   ("direct changes made to log data must be captured") is why. The columns the
+   standard names are columns rather than keys inside the JSON, so a reviewer
+   can ask 'every high-risk action by this account last month' in SQL instead
+   of reading JSON; the line column carries the whole event, so nothing is lost
+   by the flattening. */
+CREATE TABLE IF NOT EXISTS audit_log (
+  seq       BIGSERIAL PRIMARY KEY,
+  at        TEXT NOT NULL,
+  event     TEXT NOT NULL,
+  outcome   TEXT,
+  category  TEXT,
+  risk      TEXT,
+  user_id   TEXT,
+  target    TEXT,
+  line      JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS audit_log_at ON audit_log(at);
+CREATE INDEX IF NOT EXISTS audit_log_user ON audit_log(user_id, at);
+CREATE INDEX IF NOT EXISTS audit_log_event ON audit_log(event, at);
 `;
 
 /**
@@ -174,6 +211,14 @@ CREATE TABLE IF NOT EXISTS cheat_sheets (
 async function init() {
   if (ready) return ready;
   ready = (async () => {
+    // Before the first event of this process — see resumeAuditChain.
+    resumeAuditChain();
+    /* Then the retention sweep, at boot and daily after. A server that is
+       restarted every day would otherwise never prune, and one that runs for
+       months would prune only once. */
+    pruneAudit();
+    const daily = setInterval(() => pruneAudit(), 24 * 60 * 60 * 1000);
+    if (daily.unref) daily.unref();      // never hold the process open for this
     if (!haveDb()) {
       console.warn("  ⚠ no DATABASE_URL — runs are kept in memory only and will not survive a restart.");
       return;
@@ -641,8 +686,207 @@ function _resetForTests() {
   ready = null;
 }
 
+/* ── the audit log ───────────────────────────────────────────────────────────
+ *
+ * RAA Logging and Monitoring Standard v1.1 §3.1.3. `audit.js` decides WHAT an
+ * event is; this decides where it lands.
+ *
+ * TWO PLACES, ON PURPOSE. The file is the record: one JSON object per line,
+ * one file per day, on the same `RECON_STORE_DIR` volume as the uploaded
+ * report bytes — so an audit trail survives a database that was never
+ * configured, which is exactly the deployment where somebody is most likely to
+ * be poking around. The database copy is what makes the log queryable, and it
+ * is enqueued on the same swallow-failures chain as everything else: losing it
+ * is survivable, stopping a run is not (CLAUDE.md §6b).
+ *
+ * Neither write is allowed to throw. `audit.record` swallows a sink's failure
+ * too, so this is belt and braces — but a sink that throws on a full disk would
+ * otherwise put an error into every single event, which is how a log becomes
+ * the outage.
+ */
+const LOGS = path.join(ROOT, "logs");
+
+// Bounded, because /api/audit answers from it and an unbounded array is the
+// same leak the activity cap exists to prevent. The FILES hold everything; this
+// is a read model of the recent past, which is what a screen ever shows.
+const AUDIT_CACHE_CAP = 5000;
+const auditCache = [];
+
+let _auditDay = null;
+
+/**
+ * Pick the hash chain up where the last process left it.
+ *
+ * Without this, every restart would begin a fresh chain — and a fresh chain is
+ * indistinguishable from somebody having deleted everything before it, which
+ * is the one thing the chain exists to tell apart. Called from `init()`.
+ *
+ * Reads the LAST LINE of the NEWEST file. Cheap enough at this volume to read
+ * the file whole; a day's audit file is thousands of lines, not millions.
+ */
+function resumeAuditChain() {
+  const audit = require("./audit");
+  try {
+    if (!fs.existsSync(LOGS)) return;                    // nothing yet: genesis is right
+    const files = fs.readdirSync(LOGS)
+      .filter((f) => /^audit-\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort();
+    if (!files.length) return;
+    const newest = files[files.length - 1];
+    _auditDay = newest.slice(6, 16);
+    const lines = fs.readFileSync(path.join(LOGS, newest), "utf8").trim().split("\n").filter(Boolean);
+    const last = JSON.parse(lines[lines.length - 1]);
+    if (audit.resumeChain(last)) return;
+    /* A file that exists but whose last line carries no hash. An older file
+       written before the chain existed is the benign case and the common one,
+       so this is not called tampering — but a gap in the chain gets a line
+       written at the gap either way, because the alternative is a break
+       nobody can date. */
+    audit.record("audit.chain.broken", {
+      user: "system", target: `logs/${newest}`, outcome: "failure",
+      reason: "the newest audit file's last line carries no hash — a new chain starts here",
+    });
+  } catch (err) {
+    try {
+      audit.record("audit.chain.broken", {
+        user: "system", target: "logs/", outcome: "failure",
+        reason: `could not read the previous chain: ${err.message}`,
+      });
+    } catch (_) { /* a log about a log */ }
+  }
+}
+
+/** `logs/audit-2026-09-28.jsonl` — one file per day, opened lazily. */
+function auditFileFor(at) {
+  const day = String(at || "").slice(0, 10) || new Date().toISOString().slice(0, 10);
+  return { day, file: path.join(LOGS, `audit-${day}.jsonl`) };
+}
+
+/**
+ * Write one event. Called from the sink `server.js` installs on `audit.js`.
+ * Returns nothing and throws nothing.
+ */
+function appendAudit(line) {
+  try {
+    auditCache.push(line);
+    if (auditCache.length > AUDIT_CACHE_CAP) auditCache.splice(0, auditCache.length - AUDIT_CACHE_CAP);
+  } catch (_) { /* nothing here is worth a throw */ }
+
+  try {
+    const { day, file } = auditFileFor(line && line.at);
+    if (!fs.existsSync(LOGS)) fs.mkdirSync(LOGS, { recursive: true, mode: 0o750 });
+    /* The roll is itself an audit event (§3.1.1, "direct changes made to log
+       data"), written as the first line of the new file rather than the last of
+       the old one — a reader who has only today's file should still be able to
+       see where it came from. Recorded inline, not through `audit.record`,
+       because calling back into the recorder from inside a sink is a loop. */
+    if (_auditDay && _auditDay !== day) {
+      fs.appendFileSync(file, JSON.stringify({
+        at: line.at, event: "audit.rotated", outcome: "success",
+        category: "Direct changes made to log data", risk: "normal",
+        user: "system", target: `logs/audit-${day}.jsonl`,
+        detail: { previous: `audit-${_auditDay}.jsonl` },
+      }) + "\n", { mode: 0o640 });
+    }
+    _auditDay = day;
+    fs.appendFileSync(file, JSON.stringify(line) + "\n", { mode: 0o640 });
+  } catch (err) {
+    console.error(`  ⚠ could not write the audit log: ${err.message}`);
+  }
+
+  persist(AUDIT_LABEL, async () => {
+    await pool.query(
+      `INSERT INTO audit_log (at, event, outcome, category, risk, user_id, target, line)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [line.at, line.event, line.outcome || null, line.category || null,
+       line.risk || null, line.user || null, line.target || null, JSON.stringify(line)]
+    );
+  });
+}
+
+/**
+ * Read events back, newest first. Serves `/api/audit`.
+ *
+ * From the cache, never the database, for the same reason every other read
+ * here does: the store's public functions are synchronous and the screens
+ * depend on that. A query that has to reach further back than the cache reads
+ * the files on the volume — that is what they are for.
+ */
+function readAudit(q = {}) {
+  const limit = Math.min(Math.max(parseInt(q.limit, 10) || 200, 1), 2000);
+  const from = q.from ? String(q.from) : null;
+  const to = q.to ? String(q.to) : null;
+  const event = q.event ? String(q.event) : null;
+  const user = q.user ? String(q.user).toLowerCase() : null;
+  const risk = q.risk ? String(q.risk) : null;
+
+  const hits = auditCache.filter((l) => {
+    if (from && String(l.at) < from) return false;
+    if (to && String(l.at) > to) return false;
+    if (event && l.event !== event) return false;
+    if (risk && l.risk !== risk) return false;
+    if (user && String(l.user || "").toLowerCase().indexOf(user) < 0) return false;
+    return true;
+  });
+  return { total: hits.length, events: hits.slice(-limit).reverse() };
+}
+
+/* ── retention ───────────────────────────────────────────────────────────────
+ *
+ * RAA has not stated a period yet, so `AUDIT_RETENTION_DAYS` is unset and
+ * NOTHING IS DELETED. When they state one it is one environment variable, and
+ * the arithmetic it turns into is `core.auditFilesToPrune`, which is pure and
+ * tested — because "which files would this policy delete" is not a question to
+ * answer by trying it on the volume.
+ *
+ * Runs at boot and then daily. Deleting an audit file is itself a change to log
+ * data (§3.1.1), so the deletion is written down before it happens — in the
+ * file that survives it.
+ */
+const RETENTION_DAYS = parseInt(process.env.AUDIT_RETENTION_DAYS || "", 10) || null;
+
+function pruneAudit(today = new Date().toISOString().slice(0, 10)) {
+  if (!RETENTION_DAYS) return { policy: null, deleted: [] };
+  const audit = require("./audit");
+  let deleted = [];
+  try {
+    if (!fs.existsSync(LOGS)) return { policy: RETENTION_DAYS, deleted: [] };
+    const doomed = core.auditFilesToPrune(fs.readdirSync(LOGS), { days: RETENTION_DAYS, today });
+    if (!doomed.length) return { policy: RETENTION_DAYS, deleted: [] };
+
+    /* WRITTEN FIRST. A prune recorded after the fact is a line in a file that
+       might itself have been the one deleted, and a deletion nobody can date
+       is the gap this whole chain exists to prevent. */
+    audit.record("audit.pruned", {
+      user: "system", target: "logs/",
+      retentionDays: RETENTION_DAYS, files: doomed, count: doomed.length,
+    });
+
+    for (const f of doomed) {
+      try { fs.unlinkSync(path.join(LOGS, f)); deleted.push(f); }
+      catch (err) { console.error(`  ⚠ could not delete ${f}: ${err.message}`); }
+    }
+  } catch (err) {
+    console.error(`  ⚠ audit retention did not run: ${err.message}`);
+  }
+
+  /* The database copy, on the same policy. Enqueued, not awaited — a DELETE
+     that cannot run is a reason to keep rows, never a reason to stop a run. */
+  persist("the audit retention sweep", async () => {
+    const cutoff = new Date(`${today}T00:00:00Z`);
+    cutoff.setUTCDate(cutoff.getUTCDate() - (RETENTION_DAYS - 1));
+    await pool.query("DELETE FROM audit_log WHERE at < $1", [cutoff.toISOString().slice(0, 10)]);
+  });
+
+  return { policy: RETENTION_DAYS, deleted };
+}
+
+/** For the tests, which must not read or write the repo's own log folder. */
+function _resetAuditForTests() { auditCache.length = 0; _auditDay = null; }
+
 module.exports = {
   UPLOADS,
+  appendAudit, readAudit, resumeAuditChain, pruneAudit, RETENTION_DAYS,
+  _resetAuditForTests,
   init, flush, close,
   saveUpload, startRun, patchRow, appendActivity, finishRun,
   listRuns, getRun, overview, reconcileOrphans,

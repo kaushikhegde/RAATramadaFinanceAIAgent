@@ -56,6 +56,7 @@ const tramadaTokio = require("./tramada-tokio");
 const tokioEmail = require("./tokio-email");
 const paymentsCore = require("./payments-core");
 const azureAuth = require("./azure-auth");
+const audit = require("./audit");
 const creds = require("./tramada-creds");
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
@@ -78,6 +79,37 @@ const app = express();
    protection: express.static serves index.html to anyone who asks for it by
    name, so mounting it first would leave the entire app reachable without a
    session while the routes below looked guarded. */
+/* RAA Logging and Monitoring Standard v1.1 §3.1.3 — the audit log's sink,
+   installed before anything can emit an event. `audit.js` decides what an event
+   IS and is tested offline with no sink at all; `run-store` decides where it
+   lands. Neither can throw back into a run (CLAUDE.md §6b). */
+audit.addSink(store.appendAudit);
+
+/* §3.1.1's "Originating IP Address/ Web URL/ source/ destination/ and Port
+   Number", captured once per request rather than remembered at each of the
+   twenty places that record an event. `req.audit(name, fields)` fills the
+   where-clause and the user from the request it was called on, so a hook site
+   only has to say what happened and to what.
+
+   Mounted BEFORE the session middleware, so an event is still attributable by
+   address on a request that has no session — which is precisely the request a
+   reviewer reading "Failed logon attempts" is looking for. */
+app.use((req, res, next) => {
+  req.audit = (name, fields = {}) => audit.record(name, {
+    /* `req.ip` honours the trust-proxy setting; behind the container's proxy
+       the socket address is the proxy's, which would make every event in the
+       log come from one machine. */
+    ip: req.ip || (req.socket && req.socket.remoteAddress) || "",
+    port: (req.socket && req.socket.localPort) || PORT,
+    url: req.originalUrl || req.url,
+    method: req.method,
+    userAgent: req.get ? req.get("user-agent") : "",
+    user: (req.session && req.session.user && req.session.user.email) || fields.user || "anonymous",
+    ...fields,
+  });
+  next();
+});
+
 azureAuth.install(app);
 
 // The two things an unauthenticated browser is allowed: the login page itself,
@@ -98,6 +130,45 @@ app.get("/", (req, res) => res.sendFile(path.join(PUBLIC, "index.html")));
 // right on a page that was opened long after the run finished, and a frame only
 // reaches a page that was listening at the time.
 app.get("/api/overview", (req, res) => res.json(store.overview()));
+
+/* ── the audit log, read back ────────────────────────────────────────────────
+ *
+ * RAA Logging and Monitoring Standard v1.1 §3.1.3. A log nobody can read is a
+ * log nobody checks, and §3 exists so that RAA "can promptly identify security
+ * incidents, assess their impact, and take appropriate corrective actions" —
+ * none of which happens through a file on a volume alone.
+ *
+ * READING IT IS ITSELF AN EVENT. §3.1.1: "Direct changes made to log data must
+ * be captured." Nothing in this app edits or deletes an audit line — the table
+ * is insert-only and the files are opened for append — so the change worth
+ * capturing is who went looking, and with what filter. Recorded BEFORE the
+ * answer is built, so a read that then fails is still on the record.
+ *
+ * Behind `requireAuth` like everything else: this is the most sensitive screen
+ * in the app, because it is the one that says what everybody else did.
+ */
+app.get("/api/audit", (req, res) => {
+  req.audit("audit.read", {
+    target: "audit_log",
+    query: {
+      from: req.query.from || null, to: req.query.to || null,
+      event: req.query.event || null, user: req.query.user || null,
+      risk: req.query.risk || null, limit: req.query.limit || null,
+    },
+  });
+  try {
+    res.json({
+      ...store.readAudit(req.query || {}),
+      /* The catalogue travels with the answer so a reader does not need this
+         repo open to know which clause of the standard an event satisfies, or
+         which events exist but have not happened yet. */
+      catalogue: audit.EVENTS,
+      standardFields: audit.STANDARD_FIELDS,
+    });
+  } catch (err) {
+    res.status(500).json({ error: reconCore.tidyError(err.message) });
+  }
+});
 app.get("/api/runs", (req, res) => res.json(store.listRuns()));
 app.get("/api/runs/:id", (req, res) => {
   const run = store.getRun(req.params.id);
@@ -112,7 +183,16 @@ app.get("/api/runs/:id", (req, res) => {
 app.get("/api/ipsi/unresolved", (req, res) => res.json(store.listUnresolved("ipsi")));
 app.post("/api/runs/:id/resolve", (req, res) => {
   const run = store.markResolved(req.params.id);
-  if (!run) return res.status(404).json({ error: "no such run" });
+  if (!run) {
+    req.audit("row.resolved", { outcome: "failure", target: `run ${req.params.id}`,
+      reason: "no such run" });
+    return res.status(404).json({ error: "no such run" });
+  }
+  /* Somebody declaring a settlement finished. It takes the run off the
+     unresolved list, which is the list the accounts team works from, so it is
+     a decision with a name on it. */
+  req.audit("row.resolved", { target: `run ${run.id}`,
+    report: run.source, statementDate: run.statementDate });
   res.json(run);
 });
 
@@ -460,6 +540,20 @@ app.post("/api/tokio/reconcile", express.json({ limit: "24mb" }), async (req, re
     } catch (err) {
       email = { sent: false, why: reconCore.tidyError(err.message) };
     }
+    /* §3.1.3 "High-risk user actions". Only a SAVE is one: a run that ticked
+       and stopped has written nothing that outlives the page. BR16 is on the
+       line because "Issue was not pressed" is the claim this whole flow is
+       built to be able to make, and an audit log is where it has to be
+       provable six months later. */
+    if (out.savedSession) {
+      req.audit("tokio.session.saved", {
+        target: `Tramada payment session ${out.label}`,
+        reference: out.reference,
+        ticked: (out.ticked || []).length,
+        mismatched: (out.mismatched || []).length,
+        issueClicked: false,
+      });
+    }
     res.json({
       reference: out.reference,
       label: out.label,
@@ -473,6 +567,8 @@ app.post("/api/tokio/reconcile", express.json({ limit: "24mb" }), async (req, re
       confirmLiteral: tramadaTokio.SAVE_LITERAL,
     });
   } catch (err) {
+    req.audit("run.refused", { outcome: "failure", target: "Tramada Issue Payments · Tokio Marine",
+      reason: err.message });
     // The steps matter most when it failed — they say how far it got.
     res.status(500).json({ error: err.message, steps: err.steps || steps });
   }
@@ -517,8 +613,23 @@ app.post("/api/tokio/email", express.json({ limit: "48mb" }), async (req, res) =
       confirm: body.confirm || null,
       dir: path.join(__dirname, "csv_uploads"),
     });
+    /* §3.1.3 "High-risk user actions". A DRAFT written to disk is not a
+       transmission and is not recorded as one — `sent` comes from
+       tokio-email.js and says which of the two actually happened. The
+       recipient is on the line: "who was told, and when" is the whole
+       question about an outbound mail. */
+    req.audit("email.sent", {
+      target: out && out.to ? String(out.to) : tokioEmail.TRAVEL_ACCOUNTS,
+      outcome: out && out.sent ? "success" : "success",
+      transmitted: !!(out && out.sent),
+      subject: out && out.subject,
+      attachment: attachment.filename,
+      draftPath: out && out.sent ? undefined : (out && out.path) || undefined,
+    });
     res.json({ ...out, sendLiteral: tokioEmail.SEND_LITERAL });
   } catch (err) {
+    req.audit("email.sent", { outcome: "failure",
+      target: (req.body && req.body.to) || tokioEmail.TRAVEL_ACCOUNTS, reason: err.message });
     res.status(400).json({ error: err.message });
   }
 });
@@ -563,9 +674,13 @@ app.post("/api/export", express.json({ limit: "12mb" }), (req, res) => {
       res.setHeader("Content-Type",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       res.setHeader("Content-Disposition", `attachment; filename="${stem}-reconciled.xlsx"`);
+      req.audit("export.downloaded", { target: `${stem}-reconciled.xlsx`,
+        format: "xlsx", rows: rows.length });
       return res.send(buf);
     }
 
+    req.audit("export.downloaded", { target: `${stem}-reconciled.csv`,
+      format: "csv", rows: rows.length });
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="${stem}-reconciled.csv"`);
     // A BOM, so Excel on Windows opens a UTF-8 CSV without mangling a name like
@@ -667,10 +782,32 @@ function handleCheatSheetSave(session, msg) {
     // shipped file's name.
     const existing = cheatSheetFor();
     const name = existing && existing.name && !existing.shipped ? existing.name : "Edited by hand";
-    reply({
-      ...store.saveCheatSheet(CHEAT_SHEET_KEY, { name, pairs, problems }),
-      problems,
-    });
+    const saved = store.saveCheatSheet(CHEAT_SHEET_KEY, { name, pairs, problems });
+    /* §3.1.1 — "Where logging of configuration changes is allowed by the system
+       the old and new configuration must be captured." The cheat sheet is the
+       only configuration a person can change from inside this app, and it
+       decides which supplier a settlement line is matched to — so an edit to it
+       changes what future runs reconcile. Counts and the changed KEYS, not both
+       whole sheets: the sheet is hundreds of pairs and a log that copies it on
+       every keystroke is a log nobody can read. */
+    try {
+      const was = (existing && existing.pairs) || {};
+      const now = pairs || {};
+      const keys = [...new Set([...Object.keys(was), ...Object.keys(now)])];
+      const changed = keys.filter((k) => was[k] !== now[k]);
+      wsAudit(session, "config.changed", {
+        target: `supplier cheat sheet (${CHEAT_SHEET_KEY})`,
+        before: { name: (existing && existing.name) || null, pairs: was ? Object.keys(was).length : 0,
+          values: changed.slice(0, 50).reduce((a, k) => (a[k] = was[k] === undefined ? null : was[k], a), {}) },
+        after: { name, pairs: Object.keys(now).length,
+          values: changed.slice(0, 50).reduce((a, k) => (a[k] = now[k] === undefined ? null : now[k], a), {}) },
+        changedKeys: changed.length,
+        truncated: changed.length > 50,
+      });
+    } catch (err) {
+      console.error(`  ⚠ could not record the cheat-sheet change: ${err.message}`);
+    }
+    reply({ ...saved, problems });
   } catch (err) {
     reply({ error: reconCore.tidyError(err.message) });
   }
@@ -769,7 +906,11 @@ const runLock = {
 };
 
 wss.on("connection", (ws, req, user) => {
-  const session = { ws, active: true, user };
+  /* The peer address and agent, kept for the life of the socket — see wsAudit.
+     Read here because this is the only moment the HTTP request exists. */
+  const session = { ws, active: true, user,
+    ip: (req.socket && req.socket.remoteAddress) || "",
+    userAgent: (req.headers && req.headers["user-agent"]) || "" };
   console.log(`🔌 page connected${user && user.email ? ` — ${user.email}` : ""}`);
 
   /* What this deployment can do, told to the page rather than guessed at by it.
@@ -835,7 +976,26 @@ function handleReconEdit(session, msg) {
   if (!Object.keys(patch).length) return;
 
   try {
+    /* READ FIRST. §3.1.1 wants the old value as well as the new, and after the
+       patch lands there is nothing left to read it from — `patchRow` writes
+       through the cache the row is read out of. */
+    const was = (() => {
+      try {
+        const run = store.getRun(runId);
+        const old = run && (run.rows || []).find((r) => Number(r.n) === n);
+        if (!old) return null;
+        return Object.keys(patch).reduce((a, k) => (a[k] = old[k] === undefined ? null : old[k], a), {});
+      } catch (_) { return null; }
+    })();
     const row = store.patchRow(runId, n, patch);
+    /* A person overwriting a verdict the agent reached is a change to the
+       record of a financial run, so it is audited like one. §3.1.3's "Usage
+       information (… profile updates)". */
+    wsAudit(session, "row.edited", {
+      target: `run ${runId} row ${n}`,
+      outcome: row ? "success" : "failure",
+      before: was, after: patch,
+    });
     // Told, rather than assumed. A silent failure here looks exactly like a
     // successful edit until the page is reloaded and the correction is gone.
     if (!row) send(session, { type: "recon_progress", ok: false,
@@ -943,6 +1103,14 @@ function keep(session, source, name, buf) {
     session.files = session.files || {};
     session.files[source] = file;
     console.log(`📁 stored ${file.stored} (${file.bytes} bytes)`);
+    /* §3.1.3 "Usage information (transactions…)". The NAME and the size, never
+       the contents: a settlement file is a list of somebody's payments and the
+       audit log is not where it belongs. The bytes are already kept, under
+       `uploads/`, with the run that used them (CLAUDE.md §6b). */
+    wsAudit(session, "upload.received", {
+      target: `uploads/${file.stored}`,
+      report: source, originalName: name, bytes: file.bytes,
+    });
     return file;
   } catch (err) {
     console.error(`  ⚠ could not store ${name}: ${err.message}`);
@@ -1011,6 +1179,27 @@ async function tramadaAuthFor(session) {
   return creds.credentialsFor(email);
 }
 
+/**
+ * An audit event from the websocket side.
+ *
+ * `req.audit` belongs to an express request and there is none here: `recon_run`
+ * — the frame that files real receipts — arrives down a socket that was
+ * upgraded once, minutes ago. So the address is remembered at upgrade time and
+ * the account comes off the session, and §3.1.1's where-clause is answered for
+ * the socket rather than left blank on exactly the events that matter most.
+ */
+function wsAudit(session, name, fields = {}) {
+  return audit.record(name, {
+    user: (session && session.user && session.user.email) || "anonymous",
+    ip: (session && session.ip) || "",
+    port: PORT,
+    url: "/ws",
+    method: "WS",
+    userAgent: (session && session.userAgent) || "",
+    ...fields,
+  });
+}
+
 const callbacks = (session, run) => ({
   // To the page AND to disk. A progress line that lives only in a websocket
   // frame is gone the moment the tab is closed, which is why the overview's
@@ -1025,6 +1214,28 @@ const callbacks = (session, run) => ({
   onRow: (n, row) => {
     send(session, { type: "recon_row", n, row });
     if (run) { try { store.patchRow(run.id, n, row); } catch { /* the run matters more */ } }
+    /* §3.1.3 "High-risk user actions". A receipt number coming back means a
+       REAL receipt now exists in Tramada against a real booking, and nothing
+       rolls it back — that is the single most consequential thing this app
+       does, so it gets its own line rather than being a column inside the run
+       record.
+
+       ONCE PER RECEIPT. `onRow` fires several times for one row as its
+       verdicts land, and the receipt number is carried on every patch after
+       the first; auditing on presence alone would write the same filing four
+       or five times and make the log a poor count of what happened. */
+    if (run && row && row.receiptNo) {
+      run._audited = run._audited || new Set();
+      const key = `${n}:${row.receiptNo}`;
+      if (!run._audited.has(key)) {
+        run._audited.add(key);
+        wsAudit(session, "receipt.filed", {
+          target: `Tramada receipt ${row.receiptNo}`,
+          runId: run.id, row: n, bookingNo: row.bookingNo,
+          amount: row.amount, report: row.src || run.source,
+        });
+      }
+    }
   },
   // Its own frame, not a progress line. This is the one message during a run
   // that needs someone to go and DO something, and a run waits five minutes for
@@ -1836,6 +2047,28 @@ function openRun(session, source, msg, rows) {
     // The page needs the id before the run ends: an edited Consultant cell has
     // to be able to say which run it belongs to while the run is still going.
     if (run) send(session, { type: "recon_started", runId: run.id });
+    /* WHO started it, carried on the run object for closeRun to attribute the
+       finish and the commit to. NON-ENUMERABLE deliberately: the store's run
+       shape is compared field-for-field by the offline suite and serialised to
+       the overview, and an extra key there would change both. The audit log
+       wants this; the dashboard does not. */
+    if (run) {
+      Object.defineProperty(run, "startedBy", {
+        value: (session.user && session.user.email) || "anonymous",
+        enumerable: false, configurable: true, writable: true,
+      });
+    }
+    /* §3.1.3 "High-risk user actions". A live run files real receipts into
+       Tramada and commits a bank statement page; a dry run does not, and the
+       flag is on the line because those are two different events to a
+       reviewer, not one event with a detail. */
+    wsAudit(session, "run.started", {
+      target: `Tramada TTMS · ${source}`,
+      runId: run ? run.id : null,
+      dryRun: !!msg.dryRun,
+      statementDate: msg.statementDate,
+      rows: Array.isArray(rows) ? rows.length : 0,
+    });
     return run;
   } catch (err) {
     console.error(`  ⚠ could not open the run record: ${err.message}`);
@@ -1881,6 +2114,56 @@ function settlementComplete(run, out) {
 
 function closeRun(run, out, error) {
   if (!run) return;
+  /* §3.1.3. FIRST, before the store write — `finishRun` is wrapped in a
+     try/catch that reports and carries on (§6b), and a run whose record failed
+     to close is exactly the run whose audit line has to exist anyway.
+
+     `committed` is the one figure worth having: it is how many transactions
+     this run ticked onto a bank statement page it then pressed Done on. */
+  try {
+    const committed = (out && out.committed && out.committed.ticked)
+      || (out && out.finished && out.finished.done ? (out.selection && out.selection.ticked || []).length : 0);
+    audit.record(error ? "run.refused" : "run.finished", {
+      user: run.startedBy || "anonymous",
+      target: `Tramada TTMS · ${run.source}`,
+      outcome: error ? "failure" : "success",
+      runId: run.id,
+      dryRun: !!run.dryRun,
+      statementDate: run.statementDate,
+      pageNumber: out && out.pageNumber,
+      committed,
+      reason: error || undefined,
+    });
+    /* §3.1.3 "High-risk user actions". The IPSI merchant receipt — one receipt
+       covering a whole settlement, issued in Tramada, irreversible. Read from
+       whichever of the two shapes this run has: `out.ipsi` when IPSI ran
+       alongside the statement-page reports, `out` itself when an IPSI file ran
+       on its own (see settlementComplete for why there are two). A dry run
+       returns `issued: false` and is not an issue. */
+    const ipsiRuns = Array.isArray(out && out.ipsi) ? out.ipsi : (out ? [out] : []);
+    for (const r of ipsiRuns) {
+      if (r && r.issued && r.issued.issued === true) {
+        audit.record("ipsi.receipt.issued", {
+          user: run.startedBy || "anonymous",
+          target: `Tramada Finance Merchant Payment Receipt${r.issued.receiptNo ? ` ${r.issued.receiptNo}` : ""}`,
+          runId: run.id, amount: r.issued.amount, statementDate: run.statementDate,
+        });
+      }
+    }
+    /* And the commit itself as its own event, because "a run finished" and
+       "a bank statement page was committed" are different claims and only the
+       second one is irreversible. Nothing matched means Done was never pressed
+       (CLAUDE.md §6), so there is nothing to record. */
+    if (!error && out && out.finished && out.finished.done) {
+      audit.record("statement.committed", {
+        user: run.startedBy || "anonymous",
+        target: `Tramada bank statement page ${out.pageNumber}`,
+        runId: run.id, transactions: committed, statementDate: run.statementDate,
+      });
+    }
+  } catch (err) {
+    console.error(`  ⚠ could not record the run's audit events: ${err.message}`);
+  }
   try {
     store.finishRun(run.id, {
       pageNumber: out && out.pageNumber,

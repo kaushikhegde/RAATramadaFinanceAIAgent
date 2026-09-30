@@ -25,7 +25,7 @@ The root holds **the app and nothing else**. A new file belongs in a folder:
 | `cheat-sheets/` | the supplier name sheet | — |
 
 At the root: `server.js`, `recon-core.js`, `recon-run.js`, `run-store.js`,
-`xlsx-lite.js`, `xlsx-write.js`, `tramada-*.js`, and the config.
+`audit.js`, `xlsx-lite.js`, `xlsx-write.js`, `tramada-*.js`, and the config.
 
 **Do not put a test, a shot or a tool in the root**, even if a `package.json`
 script would still find it there. It was flat once, the folders were added
@@ -224,6 +224,45 @@ un-persisted — which is what keeps the test suite offline (§7).
   the one screen whose being wrong is invisible — every figure on it looks like a
   figure, and nobody
   re-adds one.
+
+---
+
+## 6c. Every security-relevant action is audited
+
+`audit.js` + `run-store.appendAudit`, against **RAA Logging and Monitoring
+Standard v1.1 §3.1**. `docs/logging-and-monitoring.md` maps it clause by clause,
+including the clauses this app does NOT satisfy and who owns them instead.
+
+- **`audit.js` decides what an event IS; `run-store.js` decides where it lands.**
+  The first is pure and tested offline with no sink at all — that separation is
+  why the whole event model can be asserted without a disk or a database.
+- **Recording an event can never stop a run.** Same trade as §6b. `record()`
+  hands the line to each sink inside a catch that swallows, and has no throwing
+  path — asserted against a throwing sink, a throwing getter and a cyclic
+  object.
+- **Nothing secret is ever written.** §4 and §5 end at a log file if nothing
+  stops them. Two guards: by field NAME, and by VALUE shape (Luhn for a PAN, a
+  JWT pattern for a token), nested objects included. Luhn and not
+  "long number", because a receipt number is digits too and a log that redacts
+  the reference a dispute is about answers nothing.
+- **A declared event that nothing emits is a lie.** `/api/audit` publishes the
+  catalogue as "this is what the app logs", so `test/test-audit.js` fails if an
+  entry is never recorded anywhere — and fails the other way too, if something
+  is emitted that the catalogue cannot explain.
+- **Don't claim a row of §3.1.3 this app cannot answer.** Account lockout,
+  password reset and the account lifecycle belong to Entra. The test fails if
+  the catalogue starts claiming one.
+- **Reading the log is an event.** Nothing here edits an audit line, so §3.1.1's
+  "direct changes made to log data" is answered by recording who went looking,
+  before the results are built.
+- **The chain is what makes append-only true.** Each line hashes the one before
+  it, with `seq` and `prev` INSIDE the hashed body — beside it they could be
+  renumbered. It resumes from disk at boot, because a fresh chain per restart is
+  indistinguishable from a deletion. `npm run audit:verify`. It is a tripwire,
+  not a signature, and it is described that way.
+- **Nothing is deleted until RAA names a retention period.** The mechanism is
+  built (`AUDIT_RETENTION_DAYS`); the default is keep-everything. The sweep
+  decides from the day in the filename, never mtime — a restore rewrites mtime.
 
 ---
 

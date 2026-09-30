@@ -4064,6 +4064,269 @@ function askMarkStale(){
      panel's own file input. `go()` and `mountNav()` already switch on
      `[data-go]`/`.screen` generically — nothing there has to know this screen
      exists. */
+/* ── THE SECURITY AUDIT LOG, ON A SCREEN ─────────────────────────────────────
+ *
+ * RAA Logging and Monitoring Standard v1.1 §3.1.3. The log was an API and
+ * nothing else, which satisfies the letter of "logs must be captured" and none
+ * of §1's point — that RAA "can promptly identify security incidents, assess
+ * their impact, and take appropriate corrective actions". Nobody curls a
+ * finance system at 9am.
+ *
+ * WHAT THIS SCREEN IS NOT: a live feed. It is a thing you come to with a
+ * question — who committed that statement page, who signed in on the 12th, what
+ * changed the cheat sheet — so it opens on a filter row, not on a scroll.
+ *
+ * Opening it is itself an audited event (§3.1.1, "direct changes made to log
+ * data"), which is recorded server-side by the route, not claimed here.
+ */
+  function mountAuditScreen() {
+    if ($('#s-audit')) return;
+
+    const rail = document.querySelector('.rail .spacer');
+    if (rail) rail.insertAdjacentHTML('beforebegin',
+      '<button class="rbtn" data-go="audit" title="Security audit log">\u26ca</button>');
+
+    const supNav = document.querySelector('.nav-item[data-go="suppliers"]');
+    const anchor = supNav || document.querySelector('.nav-item[data-go="inbox"]');
+    if (anchor) anchor.insertAdjacentHTML('afterend',
+      '<button class="nav-item" data-go="audit"><span class="ico">\u26ca</span> Security audit log</button>');
+
+    const wrap = document.querySelector('.wrap');
+    if (!wrap) return;
+
+    const css = document.createElement('style');
+    css.textContent = [
+      '#s-audit .au-filters{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px}',
+      '#s-audit .au-filters label{font-size:11px;font-weight:600;display:block;margin-bottom:3px;color:var(--ink-2,#5a5a72)}',
+      '#s-audit .au-filters input,#s-audit .au-filters select{padding:6px 8px;font:inherit;font-size:12.5px}',
+      '#s-audit .au-scroll{overflow:auto;max-height:62vh;border:1px solid var(--line,#e3e3ee);border-radius:8px}',
+      /* FIXED LAYOUT, and the widths are declared. Left to the browser, the
+         Category column — the longest literal string on every row, because it
+         is the standard's own wording — took most of the table and squeezed
+         Target, From and Detail into four-character columns that wrapped into
+         inch-tall rows. The three columns a reviewer actually reads are the
+         last three. */
+      '#s-audit table.au-tbl{border-collapse:collapse;width:100%;font-size:12px;table-layout:fixed}',
+      '#s-audit .au-tbl col.c-when{width:132px}',
+      '#s-audit .au-tbl col.c-event{width:200px}',
+      '#s-audit .au-tbl col.c-cat{width:150px}',
+      '#s-audit .au-tbl col.c-user{width:186px}',
+      '#s-audit .au-tbl col.c-target{width:210px}',
+      '#s-audit .au-tbl col.c-from{width:160px}',
+      '#s-audit .au-tbl th{position:sticky;top:0;background:#f6f6fb;text-align:left;padding:7px 9px;',
+      '  font-weight:600;white-space:nowrap;border-bottom:1px solid var(--line,#e3e3ee)}',
+      '#s-audit .au-tbl td{padding:6px 9px;border-bottom:1px solid var(--line-2,#f1f1f7);',
+      '  vertical-align:top;white-space:normal;word-break:break-word;line-height:1.5}',
+      '#s-audit .au-tbl td.cat{color:var(--ink-2,#5a5a72);font-size:11px}',
+      /* The detail is the widest thing on the row and the one worth reading —
+         capped in height rather than in width, so a long before/after does not
+         make one row as tall as the screen. */
+      '#s-audit .au-tbl td.detail{font-size:11px;max-height:74px;overflow:auto;display:block}',
+      '#s-audit .au-tbl tr.is-high{background:#fffaf0}',
+      '#s-audit .au-tbl tr.is-fail{background:#fdf3f2}',
+      '#s-audit .au-pill{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:600;white-space:nowrap}',
+      '#s-audit .au-pill.high{background:#fdecc8;color:#8a5a00}',
+      '#s-audit .au-pill.normal{background:#eeeef4;color:#5a5a72}',
+      '#s-audit .au-pill.fail{background:#fbd9d5;color:#8c1d18}',
+      '#s-audit .au-when{white-space:nowrap;font-variant-numeric:tabular-nums}',
+      '#s-audit .au-tbl td:nth-child(6){white-space:pre-line}',
+      '#s-audit .au-counts{display:flex;gap:18px;flex-wrap:wrap;margin:12px 0;font-size:12.5px}',
+      '#s-audit .au-counts b{font-size:17px;display:block}',
+      '#s-audit .au-note{font-size:11.5px;color:var(--ink-2,#5a5a72);margin-top:10px;line-height:1.6}',
+    ].join('\n');
+    document.head.appendChild(css);
+
+    const section = document.createElement('section');
+    section.className = 'screen';
+    section.id = 's-audit';
+    section.innerHTML =
+      '<div class="page-h"><div><h2>Security audit log</h2>' +
+      '<p>Every sign-in, every run, and every write into Tramada \u2014 against RAA\u2019s ' +
+      'Logging and Monitoring Standard \u00a73.1. Append-only: nothing here can be edited ' +
+      'or deleted from this app, and opening this screen is itself recorded.</p>' +
+      '</div><div class="spacer"></div>' +
+      '<div style="display:flex;gap:8px"><button class="btn sm" id="auExport">Export CSV</button>' +
+      '<button class="btn sm indigo" id="auRefresh">Refresh</button></div></div>' +
+      '<div class="card">' +
+        '<div class="au-filters">' +
+          '<div><label for="auFrom">From</label><input type="date" id="auFrom"></div>' +
+          '<div><label for="auTo">To</label><input type="date" id="auTo"></div>' +
+          '<div><label for="auEvent">Event</label><select id="auEvent"></select></div>' +
+          '<div><label for="auRisk">Risk</label><select id="auRisk">' +
+            '<option value="">Any</option><option value="high">High-risk actions only</option>' +
+            '<option value="normal">Normal</option></select></div>' +
+          '<div><label for="auUser">Account</label><input id="auUser" placeholder="name or email" size="18"></div>' +
+          '<div><label for="auLimit">Show</label><select id="auLimit">' +
+            '<option>200</option><option>500</option><option>1000</option><option>2000</option>' +
+          '</select></div>' +
+        '</div>' +
+        '<div id="auBody"></div>' +
+      '</div>';
+    wrap.appendChild(section);
+
+    for (const id of ['auFrom', 'auTo', 'auEvent', 'auRisk', 'auLimit']) {
+      const el = document.getElementById(id);
+      if (el) el.onchange = loadAudit;
+    }
+    const box = document.getElementById('auUser');
+    if (box) {
+      let t = null;
+      box.oninput = () => { clearTimeout(t); t = setTimeout(loadAudit, 300); };
+    }
+    const r = document.getElementById('auRefresh');
+    if (r) r.onclick = loadAudit;
+    const x = document.getElementById('auExport');
+    if (x) x.onclick = exportAudit;
+  }
+
+  /* What came back last, kept so Export CSV hands over exactly what is on
+     screen rather than re-querying and possibly exporting a different set. */
+  let auditRows = [];
+
+  function auditQuery() {
+    const v = (id) => (document.getElementById(id) || {}).value || '';
+    const q = [];
+    /* A date box gives a day; the log holds timestamps. `to` is pushed to the
+       end of its day or "from 1st to 1st" would return nothing, which reads as
+       "nothing happened" rather than as an off-by-one. */
+    if (v('auFrom')) q.push('from=' + encodeURIComponent(v('auFrom') + 'T00:00:00.000Z'));
+    if (v('auTo')) q.push('to=' + encodeURIComponent(v('auTo') + 'T23:59:59.999Z'));
+    if (v('auEvent')) q.push('event=' + encodeURIComponent(v('auEvent')));
+    if (v('auRisk')) q.push('risk=' + encodeURIComponent(v('auRisk')));
+    if (v('auUser')) q.push('user=' + encodeURIComponent(v('auUser')));
+    q.push('limit=' + encodeURIComponent(v('auLimit') || '200'));
+    return q.join('&');
+  }
+
+  async function loadAudit() {
+    const body = document.getElementById('auBody');
+    if (!body) return;
+    body.innerHTML = '<div class="muted" style="padding:20px">Reading the log\u2026</div>';
+    let data;
+    try {
+      data = await fetch('/api/audit?' + auditQuery()).then((r) => r.json());
+    } catch (err) {
+      body.innerHTML = '<div style="padding:20px;color:var(--err,#b3261e)">Could not read the log: ' +
+        esc(err.message) + '</div>';
+      return;
+    }
+    if (data.error) {
+      body.innerHTML = '<div style="padding:20px;color:var(--err,#b3261e)">' + esc(data.error) + '</div>';
+      return;
+    }
+
+    /* The event dropdown is built from the CATALOGUE the server sends, not from
+       what happens to be in the results. Built the other way it would offer
+       only the events that had already occurred — so you could never filter to
+       "failed sign-ins" until one had happened, which is exactly when you want
+       to. Events with nothing in this window are marked, not hidden. */
+    const sel = document.getElementById('auEvent');
+    if (sel && data.catalogue && !sel.dataset.filled) {
+      const here = new Set((data.events || []).map((e) => e.event));
+      sel.innerHTML = '<option value="">Any event</option>' +
+        Object.keys(data.catalogue).sort().map((k) =>
+          '<option value="' + esc(k) + '">' + esc(k) + (here.has(k) ? '' : ' \u2014 none') + '</option>').join('');
+      sel.dataset.filled = '1';
+    }
+
+    auditRows = data.events || [];
+    const high = auditRows.filter((e) => e.risk === 'high').length;
+    const failed = auditRows.filter((e) => e.outcome === 'failure').length;
+    const people = new Set(auditRows.map((e) => e.user).filter((u) => u && u !== 'system')).size;
+
+    const when = (at) => String(at || '').replace('T', ' ').replace(/\.\d+Z?$/, '').slice(0, 19);
+    const whereOf = (e) => {
+      const w = e.where || {};
+      // The address first: it is the field somebody scans down the column for.
+      return [w.ip, [w.method, w.url].filter(Boolean).join(' ')].filter(Boolean).join('\n');
+    };
+    /* The detail as text, so the one column that carries "what actually
+       changed" is readable without opening a console. before/after are pulled
+       out in front of it because a configuration change is the case §3.1.1
+       names by itself. */
+    const detailOf = (e) => {
+      const bits = [];
+      if (e.before !== undefined || e.after !== undefined) {
+        bits.push('was ' + JSON.stringify(e.before) + ' \u2192 now ' + JSON.stringify(e.after));
+      }
+      if (e.detail) {
+        for (const [k, v] of Object.entries(e.detail)) {
+          bits.push(k + ': ' + (typeof v === 'object' ? JSON.stringify(v) : String(v)));
+        }
+      }
+      return bits.join(' \u00b7 ');
+    };
+
+    body.innerHTML =
+      '<div class="au-counts">' +
+        '<div><b>' + auditRows.length + '</b>events shown</div>' +
+        '<div><b>' + high + '</b>high-risk</div>' +
+        '<div><b>' + failed + '</b>failed</div>' +
+        '<div><b>' + people + '</b>accounts</div>' +
+        (data.total > auditRows.length
+          ? '<div><b>' + data.total + '</b>matched \u2014 raise Show to see more</div>' : '') +
+      '</div>' +
+      (auditRows.length
+        ? '<div class="au-scroll"><table class="au-tbl">' +
+            '<colgroup><col class="c-when"><col class="c-event"><col class="c-cat">' +
+            '<col class="c-user"><col class="c-target"><col class="c-from"><col></colgroup>' +
+            '<thead><tr>' +
+            '<th>When (UTC)</th><th>Event</th><th>Category</th><th>Account</th>' +
+            '<th>Target</th><th>From</th><th>Detail</th></tr></thead><tbody>' +
+          auditRows.map((e) => {
+            const cls = e.outcome === 'failure' ? 'is-fail' : e.risk === 'high' ? 'is-high' : '';
+            const pill = e.outcome === 'failure'
+              ? '<span class="au-pill fail">failed</span>'
+              : '<span class="au-pill ' + esc(e.risk || 'normal') + '">' + esc(e.risk || 'normal') + '</span>';
+            return '<tr class="' + cls + '">' +
+              '<td class="au-when">' + esc(when(e.at)) + '</td>' +
+              '<td><b>' + esc(e.event) + '</b> ' + pill + '</td>' +
+              '<td class="cat">' + esc(e.category || '') + '</td>' +
+              '<td>' + esc(e.user || '') + '</td>' +
+              '<td>' + esc(e.target || '') + '</td>' +
+              '<td>' + esc(whereOf(e)) + '</td>' +
+              '<td class="detail">' + esc(detailOf(e)) + '</td>' +
+            '</tr>';
+          }).join('') + '</tbody></table></div>'
+        : '<div class="muted" style="padding:26px;text-align:center">Nothing matches those filters.</div>') +
+      '<div class="au-note">' +
+        'The screen reads the most recent events the server holds in memory. ' +
+        'Anything older is in the daily files on the data volume, and ' +
+        '<code>npm run audit:verify</code> checks those have not been tampered with. ' +
+        'Account lockouts, password resets and account changes are Microsoft Entra\u2019s ' +
+        'to log, not this app\u2019s.' +
+      '</div>';
+  }
+
+  /* A reviewer wants a file, not a screenshot. Built in the browser from what
+     is already on screen — the server's export endpoint is for a run's working
+     spreadsheet and has nothing to do with this. */
+  function exportAudit() {
+    if (!auditRows.length) return;
+    const cols = ['at', 'event', 'outcome', 'category', 'risk', 'user', 'target',
+      'ip', 'method', 'url', 'detail'];
+    const cell = (e, c) => {
+      if (c === 'ip' || c === 'method' || c === 'url') return (e.where || {})[c] || '';
+      if (c === 'detail') {
+        const d = { ...(e.detail || {}) };
+        if (e.before !== undefined) d.before = e.before;
+        if (e.after !== undefined) d.after = e.after;
+        return Object.keys(d).length ? JSON.stringify(d) : '';
+      }
+      return e[c] == null ? '' : String(e[c]);
+    };
+    const q = (v) => '"' + String(v).replace(/"/g, '""') + '"';
+    const csv = '\ufeff' + [cols.join(',')]
+      .concat(auditRows.map((e) => cols.map((c) => q(cell(e, c))).join(',')))
+      .join('\r\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'audit-log-' + new Date().toISOString().slice(0, 10) + '.csv';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
   function mountCheatSheetScreen() {
     if ($('#s-suppliers')) return;
 
@@ -5416,14 +5679,40 @@ function askMarkStale(){
       const rp0 = $('#reportPane');
       if (rp0) rp0.style.display = 'none';
       pane.style.display = '';
+      const rows0 = tokioSheetRows();
+      if (!TOKIO_TABS.some(([k]) => k === tokioFilter)) tokioFilter = 'all';
+
+      /* The same chips the other reports get, counting the same way: what is
+         left after the chip's own test, before the search box narrows it. */
       const tri0 = $('#inboxGrid .triage');
       if (tri0) {
-        tri0.innerHTML = '<div class="spacer"></div><span class="badge ' +
+        tri0.innerHTML = TOKIO_TABS.map(([k, label, fn]) =>
+          '<button class="tri' + (tokioFilter === k ? ' on' : '') + '" data-tf="' + k + '">' +
+          label + ' <span class="n">' + rows0.filter(fn).length + '</span></button>').join('') +
+          '<div class="spacer"></div><span class="badge ' +
           ({ done: 'b-ok', fail: 'b-err' }[tokioLook()] || 'b-mute') +
           '" style="margin-bottom:8px">' +
-          (tokio.result || tokio.run ? 'Tokio Marine \u00b7 monthly' : 'no Tokio run yet') +
+          (tokio.run && tokio.run.savedSession
+            ? 'session ' + esc(tokio.run.label) + ' saved'
+            : tokio.result ? 'Tokio Marine \u00b7 monthly' : 'no Tokio run yet') +
           '</span>';
+        tri0.querySelectorAll('.tri').forEach((b) => {
+          b.onclick = () => { tokioFilter = b.dataset.tf; render(); };
+        });
       }
+      /* The Status dropdown is the same control as the chips — it exists for
+         the narrow screens where the chip row wraps — so it carries the same
+         options rather than the statement-line ones, which mean nothing here. */
+      const st0 = $('#ibState');
+      if (st0) {
+        st0.innerHTML = TOKIO_TABS.map(([k, label]) =>
+          '<option value="' + k + '">' + (k === 'all' ? 'Any outcome' : label) + '</option>').join('');
+        st0.value = tokioFilter;
+        st0.onchange = () => { tokioFilter = st0.value; render(); };
+      }
+      const box0 = $('#ibSearch');
+      if (box0) box0.placeholder = 'Search policy, booking, branch or reference\u2026';
+      renderTokioReport();
       pane.innerHTML = '<table><tbody><tr><td class="muted" ' +
         'style="padding:22px;text-align:center">' +
         (tokio.result || tokio.run
@@ -6112,7 +6401,7 @@ function askMarkStale(){
      here: show one screen, light the matching sidebar item and rail button,
      retitle the top bar. Same class names, same behaviour, no demo state. */
   const TITLES = { overview: 'Run overview', sources: 'Sources & upload', inbox: 'Reconciliation report',
-    suppliers: 'Supplier cheat sheet' };
+    suppliers: 'Supplier cheat sheet', audit: 'Security audit log' };
 
   function go(screen) {
     document.querySelectorAll('.screen').forEach((s) => s.classList.toggle('on', s.id === 's-' + screen));
@@ -6123,6 +6412,10 @@ function askMarkStale(){
     document.querySelectorAll('.nav-item[data-go]').forEach((n) => n.classList.toggle('on', n.dataset.go === screen));
     const t = document.getElementById('topTitle');
     if (t && TITLES[screen]) t.textContent = TITLES[screen];
+    /* Read on arrival, not on a timer. The log is a thing you come to with a
+       question, and a page that polls it would record a read every few seconds
+       under whoever happened to leave the tab open. */
+    if (screen === 'audit') loadAudit();
     window.scrollTo({ top: 0 });
   }
 
@@ -6992,7 +7285,7 @@ function askMarkStale(){
     // s-overview joined these once its last invented panel was wired. The
     // banner is not decoration — it is a claim, and it stops being true the
     // moment every figure on a screen comes from a run.
-    const WIRED = ['s-sources', 's-inbox', 's-overview', 's-suppliers'];
+    const WIRED = ['s-sources', 's-inbox', 's-overview', 's-suppliers', 's-audit'];
     for (const sec of document.querySelectorAll('section.screen')) {
       if (WIRED.includes(sec.id)) continue;
       if (sec.querySelector('.sample-tag')) continue;
@@ -7232,6 +7525,15 @@ function askMarkStale(){
       '.tk-host .tk-pill.travel{background:#e7f5ec;color:#1b5e33}',
       '.tk-host .tk-pill.retail{background:#eeeef4;color:#5a5a72}',
       '.tk-host .tk-pill.exception{background:#fdecc8;color:#8a5a00}',
+      '.tk-host .tk-filters{display:flex;gap:6px;flex-wrap:wrap;align-items:center;',
+      '  margin-top:14px;padding-top:12px;border-top:1px solid var(--line-2,#ececf4)}',
+      '.tk-host .tk-chip{border:1px solid var(--line,#e3e3ee);background:#fff;border-radius:999px;',
+      '  padding:4px 11px;font:inherit;font-size:11.5px;cursor:pointer;color:var(--ink-2,#5a5a72)}',
+      '.tk-host .tk-chip:hover{background:#f6f6fb}',
+      '.tk-host .tk-chip.on{background:#1b1b46;border-color:#1b1b46;color:#fff;font-weight:600}',
+      '.tk-host .tk-chip .n{opacity:.7;margin-left:3px;font-variant-numeric:tabular-nums}',
+      '.tk-host .tk-search{padding:5px 11px;font:inherit;font-size:12px;',
+      '  border:1px solid var(--line,#e3e3ee);border-radius:999px;min-width:260px}',
       '.tk-host .tk-status{margin-top:14px;padding-top:12px;font-size:12.5px;',
       '  border-top:1px solid var(--line-2,#ececf4);color:var(--ink-2,#5a5a72)}',
       '.tk-host .tk-status a{margin-left:6px;white-space:nowrap}',
@@ -7340,12 +7642,11 @@ function askMarkStale(){
 
     // Export and the step-15 email are wired on the report card, with the
     // result they act on.
+    /* The literal the server insists on, typed here in full rather than
+       assembled so grepping for it finds every place it is spoken. Sent on the
+       one button now: the run's job is to leave the session saved. */
     const run = card.querySelector('#tokioRun');
-    if (run) run.onclick = () => tokioReconcile(null);
-    const sv = card.querySelector('#tokioSave');
-    // The literal the server insists on. Typed here in full rather than
-    // assembled, so grepping for it finds every place it is spoken.
-    if (sv) sv.onclick = () => tokioReconcile('SAVE SESSION');
+    if (run) run.onclick = () => tokioReconcile('SAVE SESSION');
     card.querySelectorAll('[data-tokio-pick]').forEach((b) => {
       b.onclick = () => pickTokioFile(b.getAttribute('data-tokio-pick'));
     });
@@ -7386,6 +7687,75 @@ function askMarkStale(){
     renderTokioReport();
   }
 
+  /* ── THE REPORT SCREEN'S OWN FILTERS, APPLIED TO TOKIO ──────────────────────
+     Asked for 28-Sep-2026: the filter row at the top of the Reconciliation
+     report does nothing for Tokio. It should — it is the same screen and the
+     same question ("show me the exceptions", "find this policy").
+
+     So the row drives the Tokio card too: the status chips become Tokio's own
+     outcomes, and the search box searches the columns a person actually has in
+     front of them. The run picker (#ibDate) is deliberately left alone — a
+     Tokio run is monthly and is not in runs.json, so offering "this run / that
+     run" there would be a control with one option that never changes.
+
+     The chips are counts of the CONSOLIDATED SHEET, not of the Tramada run:
+     Travel/Retail/Exception is what steps 7-8 decided, and it is the split
+     Finance works from. Ticked / Not ticked come from the run when there has
+     been one, because after a run that is the question. */
+  const TOKIO_TABS = [
+    ['all', 'All lines', () => true],
+    ['travel', 'Travel', (r) => r.outcome === 'Travel'],
+    ['retail', 'Retail — removed', (r) => r.outcome === 'Retail'],
+    ['exception', 'Exceptions', (r) => r.outcome === 'Exception'],
+    /* A row with no readable policy number is in NEITHER of these. It cannot
+       be matched against what the run ticked, and counting it as "not ticked"
+       would report a row nobody judged as a row that failed — on the one
+       screen whose being wrong is invisible, because every count on it looks
+       like a count (CLAUDE.md §6b). */
+    ['ticked', 'Ticked in Tramada', (r) => !!r.policy && tokioTickedKeys().has(String(r.policy))],
+    ['unticked', 'Not ticked', (r) => !!r.policy && r.outcome === 'Travel' &&
+      !tokioTickedKeys().has(String(r.policy))],
+  ];
+  let tokioFilter = 'all';
+
+  /* Which policies the run actually ticked, as a set, so the two chips above
+     are a lookup rather than a scan of `ticked` per row. Rebuilt per render —
+     the run changes underneath this. */
+  function tokioTickedKeys() {
+    const r = tokio.run;
+    return new Set(((r && r.ticked) || []).map((t) => String(t.policy || '')));
+  }
+
+  /* The rows of the consolidated sheet, flattened enough to filter and search.
+
+     `policy` is taken from the row the SERVER built, not hunted for among the
+     spreadsheet's own headings. tokio-core already decided which column is the
+     policy number — that is `policyKey`, and it knows that "21922098 - …" and
+     a bare number are the same policy. Re-deriving it here from a /policy/i
+     heading match would be a second opinion that can disagree with the one the
+     run actually ticked on. */
+  function tokioSheetRows() {
+    // The sheet after the run when there is one, so the filter and the search
+    // box see the run's remarks and Tramada column too (see `tokioRows`).
+    return tokioRows().map((r) => ({
+      row: r,
+      outcome: r.outcome,
+      policy: r.policy,
+      // Everything a person might type into the box, joined once.
+      haystack: [
+        ...Object.values(r.source || {}),
+        ...Object.values(r.appended || {}),
+      ].map((v) => (v == null ? '' : String(v))).join(' ').toLowerCase(),
+    }));
+  }
+
+  function tokioMatches(row) {
+    const fn = (TOKIO_TABS.find((t) => t[0] === tokioFilter) || TOKIO_TABS[0])[2];
+    if (!fn(row)) return false;
+    if (!search) return true;
+    return row.haystack.includes(search);
+  }
+
   /* Shown when there is a Tokio run or sheet to show AND the payment-type
      filter is either "all" or Tokio. Hidden otherwise — a person filtering
      the screen to IPSI is not asking to read Tokio underneath it. */
@@ -7396,7 +7766,7 @@ function askMarkStale(){
 
   /* Read-only bar. Export and the step-15 email are both reads of a run that
      already happened; neither touches Tramada. */
-  function tokioReportActions() {
+  function tokioReportActions(shownCount) {
     const res = tokio.result;
     if (!res || !res.rows || !res.rows.length) return '';
     return '<div class="tk-acts">' +
@@ -7405,8 +7775,43 @@ function askMarkStale(){
         ? '<button class="btn sm" id="tokioReportEmail"' + (tokio.emailing ? ' disabled' : '') + '>' +
             (tokio.emailing ? 'Preparing\u2026' : 'Email Travel Accounts') + '</button>'
         : '') +
+      /* THE EXPORT IS THE WHOLE SHEET, WHATEVER THE FILTER SAYS. BR17 hands
+         Travel Accounts the consolidated working file, not whichever slice of
+         it somebody was looking at — and "showing 3 of 10" sitting beside a
+         button labelled Export CSV is exactly how a person ends up sending
+         three rows and believing they sent ten. So the bar says which it is. */
       '<span style="font-size:11.5px;color:var(--ink-2,#5a5a72)">' + res.rows.length +
-        ' row(s) \u00b7 this is the sheet that goes to Travel Accounts</span>' +
+        ' row(s) \u00b7 ' +
+        (shownCount != null && shownCount !== res.rows.length
+          ? 'Export hands over all ' + res.rows.length + ', not the ' + shownCount + ' on screen'
+          : 'this is the sheet that goes to Travel Accounts') +
+        '</span>' +
+      '</div>';
+  }
+
+  /* ── THE CARD'S OWN FILTER BAR ───────────────────────────────────────────────
+     The row at the top of the screen only reaches Tokio when the payment-type
+     picker is set to Tokio Marine. On "All payment types" — which is how the
+     screen opens — those chips are the statement-line ones and the card below
+     them has no filter at all. And on a run that STOPPED, which is when a
+     person most wants to pick the exceptions out, the card can be the only
+     thing worth reading on the screen.
+
+     So the card carries its own. Same six outcomes, same search, bound to the
+     SAME `tokioFilter` and `search` — two controls for one state, never two
+     states, because a card saying "Exceptions" under a row saying "All lines"
+     is a screen nobody can trust. */
+  function tokioReportFilters() {
+    const rows = tokioSheetRows();
+    if (!rows.length) return '';
+    return '<div class="tk-filters">' +
+      TOKIO_TABS.map(([k, label, fn]) =>
+        '<button class="tk-chip' + (tokioFilter === k ? ' on' : '') + '" data-tkf="' + k + '">' +
+          esc(label) + ' <span class="n">' + rows.filter(fn).length + '</span></button>').join('') +
+      '<div style="flex:1"></div>' +
+      '<input class="tk-search" id="tokioSearch" ' +
+        'placeholder="Search policy, booking, branch or reference\u2026" ' +
+        'value="' + esc(search || '') + '">' +
       '</div>';
   }
 
@@ -7452,14 +7857,50 @@ function askMarkStale(){
         'monthly creditor reconciliation. Read-only here \u2014 the run is started from ' +
         '<a href="#" data-go="sources">Sources &amp; upload</a>.</p>' +
       counts +
+      tokioReportFilters() +
       tokioRunBlock() +
-      tokioChecklist() +
-      tokioSheetTable(tokioReportActions());
+      /* The filter row above the card narrows the sheet. `tokioSheetRows`
+         carries the server's original row alongside what it is searched on, so
+         the table is still built from those rows and nothing is re-derived. */
+      (() => {
+        const visible = tokioSheetRows().filter(tokioMatches).map((x) => x.row);
+        return tokioSheetTable(tokioReportActions(visible.length), visible);
+      })();
 
     const exp = card.querySelector('#tokioReportExport');
     if (exp) exp.onclick = tokioExportCsv;
     const em = card.querySelector('#tokioReportEmail');
     if (em) em.onclick = tokioEmail;
+
+    /* Through render(), not straight to renderTokioReport(), so the row at the
+       top of the screen redraws with the same selection. Two controls, one
+       state. */
+    card.querySelectorAll('[data-tkf]').forEach((b) => {
+      b.onclick = () => { tokioFilter = b.getAttribute('data-tkf'); render(); };
+    });
+    const box = card.querySelector('#tokioSearch');
+    if (box) {
+      let t = null;
+      box.oninput = () => {
+        clearTimeout(t);
+        t = setTimeout(() => {
+          search = box.value.trim().toLowerCase();
+          // Keep the screen's own box showing the same thing.
+          const top = $('#ibSearch');
+          if (top && top.value !== box.value) top.value = box.value;
+          render();
+          /* Typing rebuilt the card, so the box being typed into is a NEW
+             element. Without this the caret leaves after one character and the
+             field looks like it stopped accepting input — the same bug the
+             balance fields had, see renderSource's focusWas. */
+          const again = document.querySelector('#tokioReportCard #tokioSearch');
+          if (again && document.activeElement !== again) {
+            again.focus({ preventScroll: true });
+            try { again.setSelectionRange(again.value.length, again.value.length); } catch (e) { /* ok */ }
+          }
+        }, 250);
+      };
+    }
   }
 
   function pickTokioFile(kind) {
@@ -7509,15 +7950,21 @@ function askMarkStale(){
     return (res && res.rows) || [];
   }
 
-  function tokioSheetTable(extra) {
+  function tokioSheetTable(extra, only) {
     const rows = tokioRows();
     if (!rows.length) return '';
+    /* `only` is the filtered subset when the report screen's filter row is
+       narrowing it; the upload card passes nothing and shows the lot. The
+       COLUMNS still come from the whole sheet — read off the first VISIBLE
+       row instead, a filter that left only exceptions could change the table's
+       shape, which reads as the file having changed. */
+    const shown = only || rows;
 
     const srcCols = Object.keys(rows[0].source || {});
     const appCols = Object.keys(rows[0].appended || {});
     const head = ['#', 'Outcome'].concat(srcCols, appCols);
 
-    const body = rows.map((r) => {
+    const body = shown.map((r) => {
       const cls = r.outcome === 'Retail' ? 'is-retail'
         : r.outcome === 'Exception' ? 'is-exception' : '';
       const pill = '<span class="tk-pill ' + esc(String(r.outcome || '').toLowerCase()) + '">' +
@@ -7539,7 +7986,13 @@ function askMarkStale(){
     return '<div class="tk-sheet">' +
       '<div style="font-size:12px;font-weight:600;margin-bottom:7px">Consolidated working sheet ' +
         '<span style="font-weight:400;color:var(--ink-2,#5a5a72)">— Tokio\u2019s own columns, then the ' +
-        'calculated and lookup columns, then Remarks</span></div>' +
+        'calculated and lookup columns, then Remarks' +
+        (shown.length !== rows.length
+          ? ' \u00b7 showing ' + shown.length + ' of ' + rows.length
+          : '') +
+        '</span></div>' +
+      (shown.length ? ''
+        : '<div class="muted" style="padding:18px;text-align:center">Nothing matches that filter.</div>') +
       '<div class="tk-scroll"><table class="tk-tbl"><thead><tr>' +
         head.map((h) => '<th>' + esc(h) + '</th>').join('') +
       '</tr></thead><tbody>' + body + '</tbody></table></div>' +
@@ -7561,7 +8014,8 @@ function askMarkStale(){
       : r && r.savedSession ? 'Session <b>' + esc(r.label) + '</b> saved \u2014 ' +
           (r.ticked || []).length + ' ticked, ' + (r.mismatched || []).length +
           ' not ticked. Issue was NOT clicked.'
-      : r ? (r.ticked || []).length + ' ticked in Tramada \u2014 nothing saved yet.'
+      : r ? (r.ticked || []).length + ' ticked in Tramada, but the session was NOT saved \u2014 ' +
+          'read the step log on the report.'
       : 'Consolidated. Not run in Tramada yet.';
     return '<div class="tk-status">' + line +
       ' <a href="#" data-go="inbox">See the report \u2192</a></div>' +
@@ -7575,16 +8029,30 @@ function askMarkStale(){
   function tokioActions() {
     const res = tokio.result;
     if (!res || !res.rows || !res.rows.length) return '';
+    /* ONE BUTTON. Steps 9-14 are one job and it finishes with the session
+       saved — that is what the guide asks the agent to do.
+
+       It used to be two: tick and stop, then a second click to save. That was
+       my caution, not a business rule, and on a real run it read as a job
+       half done — the session label sitting on a button nobody was told to
+       press, and a Tramada window holding ticks that vanish if the tab is
+       closed. Asked for 28-Sep-2026: one click.
+
+       WHAT HAS NOT CHANGED IS THE ONE THAT MATTERS. Issue is still never
+       clicked — BR16 puts it in a person's hands and BR18 leaves them the
+       total — and the server still refuses to save without the exact literal
+       (tramada-tokio.SAVE_LITERAL), which the page now always sends because
+       saving is the point of the run rather than an extra step. */
     return '<div class="tk-acts">' +
-        /* Steps 9-14 without a terminal. Two buttons, not one: the first ticks
-           and stops, the second saves the session. Issue is never offered —
-           BR16 puts it in a human's hands and BR18 leaves them the total. */
         '<button class="btn sm indigo" id="tokioRun"' + (tokio.running ? ' disabled' : '') + '>' +
-          (tokio.running ? 'Running in Tramada\u2026' : 'Reconcile in Tramada') + '</button>' +
-        (tokio.run && !tokio.run.savedSession
-          ? '<button class="btn sm" id="tokioSave"' + (tokio.running ? ' disabled' : '') + '>' +
-              'Save session ' + esc(tokio.run.label) + '</button>'
-          : '') +
+          (tokio.running
+            ? 'Running in Tramada\u2026'
+            : 'Reconcile in Tramada &amp; save session' +
+              (res.labels && res.labels.sessionLabel ? ' ' + esc(res.labels.sessionLabel) : '')) +
+        '</button>' +
+        '<span style="font-size:11.5px;color:var(--ink-2,#5a5a72)">' +
+          'Ticks the matching lines and saves the session. Issue is never pressed \u2014 ' +
+          'that stays a person\u2019s click (BR16/BR18).</span>' +
       '</div>';
   }
 
@@ -7605,6 +8073,14 @@ function askMarkStale(){
        to read like a failure. */
     const nothingFound = r.empty === true || (!r.ticked.length && r.mismatched.length &&
       r.mismatched.every((m) => /not found in Tramada/i.test(m.remark || '')));
+
+    /* Narrowed by the search box only, and only on the report screen — the
+       upload card has no filter row, and `search` is empty there. */
+    const hit = (o) => !search ||
+      Object.values(o || {}).map((v) => String(v == null ? '' : v)).join(' ')
+        .toLowerCase().includes(search);
+    const tickedShown = (r.ticked || []).filter(hit);
+    const missShown = (r.mismatched || []).filter(hit);
 
     /* The run's own email — sent by the server the moment the run finished,
        the same as every other report's. Said here because the card is where
@@ -7651,11 +8127,15 @@ function askMarkStale(){
          the sheet expected can be read against each other. It is also where
          BR13 becomes visible — 416.21 against 416.213 is a match, and seeing
          the two numbers is what makes that legible rather than magic. */
-      (r.ticked && r.ticked.length
+      /* The search box narrows these two as well — "where is 21922235" is the
+         same question whether it ended up ticked or flagged. The CHIPS do not
+         apply here: they split the consolidated sheet by outcome, and a ticked
+         line is Travel by definition. */
+      (tickedShown.length
         ? '<div class="tk-scroll" style="margin-top:10px"><table class="tk-tbl"><thead><tr>' +
             '<th>Policy</th><th>Booking</th><th class="num">Tramada</th>' +
             '<th class="num">Sheet</th><th>Reference</th></tr></thead><tbody>' +
-            r.ticked.map((t) => {
+            tickedShown.map((t) => {
               const drift = (t.differenceCents == null || t.differenceCents === 0)
                 ? 'exact'
                 : '±' + (Math.abs(t.differenceCents) / 100).toFixed(2);
@@ -7668,119 +8148,16 @@ function askMarkStale(){
             }).join('') +
           '</tbody></table></div>'
         : '') +
-      (r.mismatched.length
+      (missShown.length
         ? '<div class="tk-scroll" style="margin-top:10px"><table class="tk-tbl"><thead><tr>' +
             '<th>Policy</th><th>Remark</th></tr></thead><tbody>' +
-            r.mismatched.map((m) =>
+            missShown.map((m) =>
               '<tr class="is-exception"><td>' + esc(m.policy || '') + '</td>' +
               '<td class="rk">' + esc(m.remark || '') + '</td></tr>').join('') +
           '</tbody></table></div>'
         : '') +
       tokioSteps(r) +
       '</div>';
-  }
-
-  /* THE GUIDE'S FIFTEEN STEPS, WITH WHAT ACTUALLY HAPPENED AGAINST EACH.
-
-     A run that stops at step 11 and a run that finishes both used to render
-     as "some steps, a table, maybe an error". On a demo that is unreadable:
-     nobody can tell whether the agent did its job badly or did nine steps
-     perfectly and hit a wall on the tenth. So the checklist is explicit, and
-     a step nobody reached says "not reached" rather than going quietly
-     missing.
-
-     Status is DERIVED from the run, never asserted: `done` only where there
-     is evidence in the result, so this cannot claim more than happened. */
-  const TOKIO_STEPS = [
-    { n: 1,  t: 'Passenger names removed from the B2B report', who: 'Finance' },
-    { n: 2,  t: 'Four files for the same reporting month' },
-    { n: 3,  t: 'RAA commission 30% / nett 70% appended' },
-    { n: 4,  t: 'Tramada Payment Report looked up by policy' },
-    { n: 5,  t: 'Tramada Costing Report looked up by policy' },
-    { n: 6,  t: 'RCC report looked up by policy' },
-    { n: 7,  t: 'Retail lines excluded' },
-    { n: 8,  t: 'Travel / exception split, with Remarks' },
-    { n: 9,  t: 'Tramada → Finance → Issue Payments' },
-    { n: 10, t: 'Search: Tokio Marine, Trust account, by reference' },
-    { n: 11, t: 'Payment Overview — EFT, payee, reference' },
-    { n: 12, t: 'Match on reference AND amount (±1%)' },
-    { n: 13, t: 'Tick the matching lines, every page' },
-    { n: 14, t: 'Save the session — Issue never clicked' },
-    { n: 15, t: 'Email the sheet to Travel Accounts' },
-  ];
-
-  function tokioChecklist() {
-    const res = tokio.result;
-    const r = tokio.run;
-    const steps = (r && r.steps) || [];
-    const said = (re) => steps.some((st) => re.test((st.step || '') + ' ' + (st.detail || '')));
-    const failed = steps.some((st) => /^Failed$/i.test(st.step || ''));
-
-    // Steps 1-8 are decided from the files alone — if the sheet rendered, they ran.
-    const parsed = !!(res && res.rows && res.rows.length);
-    const counts = (res && res.counts) || {};
-
-    const state = (n) => {
-      if (n <= 8) return parsed ? 'done' : 'todo';
-      if (!r && !tokio.runError) return 'todo';
-      if (n === 9)  return said(/Issue Payments/i) ? 'done' : (failed ? 'fail' : 'todo');
-      if (n === 10) return said(/searched/i) ? 'done' : (failed ? 'fail' : 'todo');
-      if (n === 11) return said(/payment header/i) ? 'done'
-        : (r && r.empty) ? 'skip' : (failed ? 'fail' : 'todo');
-      if (n === 12 || n === 13) {
-        if (r && r.empty) return 'skip';
-        if (said(/matched/i)) return 'done';
-        return failed ? 'fail' : 'todo';
-      }
-      if (n === 14) return (r && r.savedSession) ? 'done' : (r ? 'todo' : 'todo');
-      // The run's own email counts as step 15 only once there is a saved
-      // session for it to be about — step 15 says the session is ready.
-      if (n === 15) return (tokio.emailResult || (r && r.savedSession && r.email && r.email.sent)) ? 'done' : 'todo';
-      return 'todo';
-    };
-
-    const MARK = {
-      done: ['\u2713', '#1a7f37', 'done'],
-      todo: ['\u00b7', 'var(--ink-2,#5a5a72)', 'not reached'],
-      skip: ['\u2013', '#9a6700', 'nothing to do'],
-      fail: ['\u00d7', '#b42318', 'stopped here'],
-    };
-
-    const detailFor = (n) => {
-      if (n === 3 && parsed) return 'every row';
-      if (n === 7 && parsed) return (counts.retail || 0) + ' excluded';
-      if (n === 8 && parsed) return (counts.travel || 0) + ' Travel, ' + (counts.exceptions || 0) + ' exception(s)';
-      if (n === 10 && r && r.search) return esc(r.search.creditor || '');
-      if (n === 11 && r && r.header) return esc(r.header.reference || '');
-      if ((n === 12 || n === 13) && r) return (r.ticked || []).length + ' ticked';
-      if (n === 14 && r) return r.savedSession ? esc(r.label) : 'not saved yet';
-      if (n === 15 && tokio.emailResult) return tokio.emailResult.sent ? 'sent' : 'draft written';
-      if (n === 15 && r && r.savedSession && r.email && r.email.sent) return 'emailed';
-      return '';
-    };
-
-    const rows = TOKIO_STEPS.map((st) => {
-      const k = state(st.n);
-      const m = MARK[k];
-      return '<tr>' +
-        '<td style="width:26px;color:' + m[1] + ';font-weight:700;text-align:center">' + m[0] + '</td>' +
-        '<td style="width:26px;color:var(--ink-2,#5a5a72)">' + st.n + '</td>' +
-        '<td>' + esc(st.t) + (st.who ? ' <span style="color:var(--ink-2,#5a5a72)">(' + esc(st.who) + ')</span>' : '') + '</td>' +
-        '<td class="rk" style="color:' + m[1] + '">' + (detailFor(st.n) || m[2]) + '</td>' +
-      '</tr>';
-    }).join('');
-
-    const doneCount = TOKIO_STEPS.filter((st) => state(st.n) === 'done').length;
-
-    return '<div class="tk-sheet" style="margin-top:12px">' +
-      '<div style="font-size:12px;font-weight:600;margin-bottom:7px">' +
-        'The guide\u2019s 15 steps \u2014 ' + doneCount + ' of 15 done' +
-      '</div>' +
-      '<div class="tk-scroll tk-full"><table class="tk-tbl"><tbody>' + rows + '</tbody></table></div>' +
-      '<div class="muted" style="font-size:11px;margin-top:7px">' +
-        'Step 1 is Finance\u2019s, before the files arrive. Step 14 saves the session and ' +
-        'stops \u2014 Issue is always a person\u2019s click (BR16/BR18).' +
-      '</div></div>';
   }
 
   function tokioSteps(r) {
@@ -7972,6 +8349,7 @@ function askMarkStale(){
     // renderOverview first: the overview is wired now, and markSamples is only
     // allowed to be right about screens that still are not.
     mountCheatSheetScreen();
+    mountAuditScreen();
     mountNav(); mountSources(); renderOverview(); markSamples(); hideUnwired();
     mountTokio(); mountTokioReport();
     mountAccountNav();

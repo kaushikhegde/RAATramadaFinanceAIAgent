@@ -4577,6 +4577,37 @@ function statementPageAction({ hasPageForDate, mayCreate }) {
   return mayCreate ? "create" : "refuse";
 }
 
+/**
+ * WHICH AUDIT FILES A RETENTION POLICY WOULD DELETE.
+ *
+ * RAA Logging and Monitoring Standard v1.1 asks for a retention period; the
+ * extract this was built from does not say what it is. So the mechanism is
+ * here and the NUMBER comes from `AUDIT_RETENTION_DAYS`, and with no number
+ * NOTHING IS DELETED. That default is the safe direction to be wrong in: an
+ * audit log kept too long is an inconvenience, one deleted too early is the
+ * question nobody can answer afterwards.
+ *
+ * Pure, and here rather than in run-store, so "would this policy delete the
+ * file I need?" is a test and not an experiment on a live volume. Decides from
+ * the DAY IN THE FILENAME, never from the file's mtime — a restore, a backup
+ * or an rsync rewrites mtime and would silently make yesterday's log look like
+ * today's, or last year's.
+ *
+ * `days` is inclusive: 90 keeps today and the 89 days before it.
+ */
+function auditFilesToPrune(names, { days, today }) {
+  const keep = Number(days);
+  if (!Number.isFinite(keep) || keep <= 0) return [];   // no policy: delete nothing
+  const cutoff = new Date(`${today}T00:00:00Z`);
+  if (isNaN(cutoff.getTime())) return [];
+  cutoff.setUTCDate(cutoff.getUTCDate() - (keep - 1));
+  const oldest = cutoff.toISOString().slice(0, 10);
+  return (names || [])
+    .filter((f) => /^audit-\d{4}-\d{2}-\d{2}\.jsonl$/.test(f))
+    .filter((f) => f.slice(6, 16) < oldest)
+    .sort();
+}
+
 function runPhases(loaded) {
   const order = RUN_ORDER.filter((k) => (loaded || []).includes(k));
   const receipts = order.filter((k) => REPORTS[k].files);
@@ -5442,7 +5473,7 @@ module.exports = {
   matchTravelPayAgainstStatement, MATCHERS, matcherFor, matchesOn, SORT_BY,
   BOOKING_RECEIPT_COLUMNS, findFiledReceipt,
   TRAVELPAY_COLUMNS, parseTravelPayRows, serialDate, bookingFromReference,
-  bookingFromDelimitedReference, REPORTS, RUN_ORDER, runPhases, statementPageAction,
+  bookingFromDelimitedReference, REPORTS, RUN_ORDER, runPhases, statementPageAction, auditFilesToPrune,
   IPSI_COLUMNS, IPSI_REMARKS, IPSI_REFERENCE_REQUIRED, isPreAuth, parseIpsiRows, matchIpsiAgainstReceipts,
   matchIpsiAgainstPayments,
   explainIpsiMiss,
