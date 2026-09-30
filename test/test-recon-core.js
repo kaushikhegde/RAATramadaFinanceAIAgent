@@ -530,10 +530,34 @@ console.log("\nthe Mint daily settlement");
     rowOf("M00641007", "3684.84", "Australia New Zealand Central Reservations Office Pty Ltd"),
   ]);
   check("both rows read", parsed.rows.length, 2);
-  check("only the three columns the run needs, plus what they derive",
+  check("the three columns the run needs, what they derive, and the file's own cells",
     Object.keys(parsed.rows[0]).sort(),
-    ["amount", "amountCents", "bookingNo", "line", "rawAmount", "recipientReference",
+    ["amount", "amountCents", "bookingNo", "cells", "line", "rawAmount", "recipientReference",
       "senderReference", "toCompany", "transNo"]);
+  /* EVERY COLUMN OF THE FILE, under its own heading. Mint rows used to carry
+     only the fields above, so the spreadsheet emailed to Travel Accounts was
+     the run's own columns over blank rows — Remarks the only thing in it.
+     The trailing space on "To Company " is trimmed, as the heading is. */
+  check("the row keeps all sixteen of the file's columns",
+    Object.keys(parsed.rows[0].cells).length, 16);
+  check("under the file's headings, with the file's values",
+    [parsed.rows[0].cells["From Company"], parsed.rows[0].cells["To Company"],
+      parsed.rows[0].cells.Currency, parsed.rows[0].cells.Status],
+    ["RAA", "Viva Holidays Pty Ltd", "AUD", "Pending at Bank"]);
+  check("and the headings come back in the file's order",
+    parsed.columns, HEAD.map((h) => h.trim()));
+  /* What it used to do: the cells carried the workbook's float verbatim, so the
+     preview and the emailed sheet showed 10383.959999999999 for 10383.96. */
+  check("a workbook's float tail is shown as the figure Excel shows",
+    C.parseMintRows(HEAD, [rowOf("M3", "10383.959999999999", "X")]).rows[0].cells.Amount, "10383.96");
+  check("and a reference that only looks numeric is left exactly as written",
+    C.rowCells(["Ref"], ["0041"]).Ref, "0041");
+  /* And the workbook's date serials: Created Time used to read 46203.24224158565. */
+  check("a date-time serial under a date/time heading reads as a date and time",
+    C.rowCells(["Created Time", "Statement Date"], ["46203.24224158565", "46204"]),
+    { "Created Time": "2026-06-30 05:48:50", "Statement Date": "2026-07-01" });
+  check("but the same number under an Amount heading is money, not a date",
+    C.rowCells(["Amount"], ["46203"]).Amount, "46203");
   /* THE BOOKING NUMBER, added 02-09-2026 — a Mint row reconciled perfectly well
      and the results table's Booking column sat empty on every one of them,
      because nothing on a Mint row named a booking. The MINT payments guide says
@@ -575,11 +599,16 @@ console.log("\nthe Mint daily settlement");
   /* And a sheet with NO reference columns at all still parses — they are
      optional, so an older export keeps reconciling and simply cannot name the
      booking. Requiring them would have broken every file already on disk. */
+  const shuffled = C.parseMintRows(SHUFFLED, [["594", "M00640038", "Pending at Bank", "Viva Holidays Pty Ltd"]]).rows[0];
+  const { cells: shuffledCells, ...shuffledFields } = shuffled;
   check("a reordered sheet reads the same",
-    C.parseMintRows(SHUFFLED, [["594", "M00640038", "Pending at Bank", "Viva Holidays Pty Ltd"]]).rows[0],
+    shuffledFields,
     { line: 2, transNo: "M00640038", amount: "594.00", toCompany: "Viva Holidays Pty Ltd",
       senderReference: "", recipientReference: "", bookingNo: "",
       rawAmount: "594", amountCents: 59400 });
+  check("and its cells follow the headings, not the positions",
+    shuffledCells,
+    { Amount: "594", "Transaction Reference": "M00640038", Status: "Pending at Bank", "To Company": "Viva Holidays Pty Ltd" });
 
   // Nothing is silently dropped.
   const bad = C.parseMintRows(HEAD, [rowOf("", "594", "X"), rowOf("M1", "not money", "X")]);
