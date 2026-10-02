@@ -3890,7 +3890,13 @@ function askMarkStale(){
      for the run and never inferred from the "VISA" the file records. */
   const ipsiPay = { cardType: '', plan: null, error: '', busy: false };
 
+  // Hidden for now, not removed: nobody is raising the swipe receipts from this
+  // screen yet. Flip to true to bring the block back — everything below still
+  // works, and wireIpsiPay() already does nothing when its elements are absent.
+  const SHOW_IPSI_PAY = false;
+
   function ipsiPayBlock() {
+    if (!SHOW_IPSI_PAY) return '';
     const s = source.ipsi;
     if (!s || !s.rows || !s.rows.length) return '';
 
@@ -7488,8 +7494,12 @@ function askMarkStale(){
     css.textContent = [
       '.tk-host{grid-column:1/-1;background:#fff;border:1px solid var(--line,#e3e3ee);',
       '  border-radius:12px;padding:18px 20px;margin-top:4px}',
-      '.tk-host h3{margin:0 0 4px;font-size:15px;display:flex;align-items:center;gap:8px}',
-      '.tk-host .tk-sub{color:var(--ink-2,#5a5a72);font-size:12.5px;margin:0 0 14px}',
+      /* Sized like the source cards above it, which take the browser's own h3
+         (they were h4 once — see renderSource). A 15px heading and a 12.5px
+         dark subtitle made this card read as a different page sitting under
+         the grid. */
+      '.tk-host h3{margin:0 0 6px;display:flex;align-items:center;gap:8px}',
+      '.tk-host .tk-sub{color:var(--ink-3);font-size:11px;margin:0 0 14px}',
       '.tk-host .tk-slots{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}',
       '.tk-slot{border:1px solid var(--line-2,#ececf4);border-radius:9px;padding:11px 12px}',
       '.tk-slot b{display:block;font-size:12.5px;margin-bottom:3px}',
@@ -7586,8 +7596,10 @@ function askMarkStale(){
       return '<div class="tk-slot"><b>' + esc(f.title) + '</b>' +
         '<div class="tk-note">' + esc(f.note) + '</div>' +
         (got ? '<div class="tk-have">\u2713 ' + esc(got.name) + '</div>' : '') +
-        '<div class="tk-btn"><button class="btn sm" data-tokio-pick="' + f.kind + '">' +
-        (got ? 'Replace' : 'Choose file') + '</button></div></div>';
+        // The same buttons as the source cards: indigo to choose, ghost to replace.
+        '<div class="tk-btn"><button class="btn sm ' + (got ? 'ghost' : 'indigo') +
+        '" data-tokio-pick="' + f.kind + '">' +
+        (got ? 'Replace file' : 'Choose file') + '</button></div></div>';
     }).join('');
 
     const m = tokio.result && tokio.result.month;
