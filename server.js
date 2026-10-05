@@ -1015,6 +1015,26 @@ function handleReconEdit(session, msg) {
  * keep in agreement with the one the run actually uses. What comes back is what
  * the run will use.
  */
+/**
+ * No new file while a run is driving the browser.
+ *
+ * Uploading mid-run could not corrupt the run itself -- a run works on the rows
+ * in the frame that started it -- but it changed what the NEXT run would pick
+ * up, silently, while somebody's attention was on a reconciliation in progress.
+ * The file landed on a card, looked loaded, and joined whatever ran next.
+ *
+ * Refused at the server and not only greyed out on the page, because the page
+ * is one of two reconnecting clients and the one that did not start the run has
+ * no idea a run is going until its next frame arrives.
+ */
+function uploadsClosed(session, source, name) {
+  const by = runLock.heldBy();
+  if (!by) return null;
+  wsAudit(session, "upload.refused", { outcome: "failure", report: source,
+    originalName: name, reason: `a reconciliation started by ${by} is still running` });
+  return `${by} is running a reconciliation — files cannot be loaded until it finishes.`;
+}
+
 function handleReconParse(session, msg) {
   const name = String(msg.name || "the file");
   /* Every report is read here, by the parser the run itself uses — BPay
@@ -1034,6 +1054,9 @@ function handleReconParse(session, msg) {
   const pairs = reconCore.REPORTS[source].pairs;
   const part = pairs && pairs[msg.part] ? msg.part : (pairs ? Object.keys(pairs)[0] : "");
   const reply = (extra) => send(session, { type: "recon_parsed", source, part, name, ...extra });
+
+  const shut = uploadsClosed(session, source, name);
+  if (shut) { reply({ error: shut }); return; }
 
   // ~8 MB of base64 is ~6 MB of file. A daily settlement is tens of kilobytes.
   if (!msg.base64 || String(msg.base64).length > 8 * 1024 * 1024) {
@@ -1132,6 +1155,11 @@ function handleReconUpload(session, msg) {
   const name = String(msg.name || "report");
   if (!msg.base64 || String(msg.base64).length > 8 * 1024 * 1024) {
     send(session, { type: "recon_uploaded", source, name, error: "that file is empty or too large to store" });
+    return;
+  }
+  const shut = uploadsClosed(session, source, name);
+  if (shut) {
+    send(session, { type: "recon_uploaded", source, name, error: shut });
     return;
   }
   const file = keep(session, source, name, Buffer.from(String(msg.base64), "base64"));

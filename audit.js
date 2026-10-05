@@ -88,6 +88,7 @@ const EVENTS = {
 
   // "Usage information (transactions, profile updates, etc.)."
   "upload.received": { row: "Usage information", risk: "normal" },
+  "upload.refused": { row: "Usage information", risk: "normal" },
   "run.started": { row: "Usage information", risk: "high" },
   "run.finished": { row: "Usage information", risk: "normal" },
   "run.refused": { row: "Usage information", risk: "normal" },

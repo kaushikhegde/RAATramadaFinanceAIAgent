@@ -5294,6 +5294,15 @@ function askMarkStale(){
   function load(file, kind, part) {
     if (!file || !kind) return;
     part = part || '';
+    /* Not while a run is going. The server refuses this too -- that is the
+       real guard, since a second page has no idea a run started -- but doing
+       it here as well means the file is turned away on the card it was dropped
+       on, instead of appearing to load and then being rejected a round trip
+       later. */
+    if (running) {
+      reject(kind, file.name, 'a reconciliation is running — wait for it to finish', part);
+      return;
+    }
     // The slot this file is for, which is what `pending` is keyed on and what
     // the server echoes back — see the `part` note on openPicker.
     const slot = part ? kind + ':' + part : kind;
