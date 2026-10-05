@@ -437,6 +437,56 @@ function sessionLabel(when) {
   return `TOKIO_${MONTHS[d.getMonth()]} ${String(d.getFullYear()).slice(-2)}`;
 }
 
+/**
+ * The consolidated sheet AFTER the Tramada run — what Travel Accounts receive.
+ *
+ * Steps 1-8 write Remarks from the four files alone. Steps 12-13 then find out
+ * things the files could not know — "Policy number not found in Tramada", an
+ * amount outside BR13's 1% — and those came back as a separate `mismatched`
+ * list the card drew in its own table. The sheet that was exported and mailed
+ * never carried them, so a Travel line Tramada refused went out with a blank
+ * Remarks cell, looking reconciled.
+ *
+ * So the run's own verdict is written INTO the sheet: a "Tramada" column saying
+ * what happened to each Travel line, and the run's remark appended to whatever
+ * Remarks steps 1-8 already wrote (never replacing it — both are true).
+ * Retail and exception lines were never sent to Tramada, and their Tramada
+ * cell stays blank rather than claiming a result for a search that did not
+ * include them.
+ *
+ * Pure: `rows` are the parse endpoint's rows, `run` is runTokioReconciliation's
+ * result. Nothing in either is mutated.
+ */
+const TRAMADA_COLUMN = "Tramada";
+
+function sheetAfterRun(rows = [], run = {}) {
+  const key = (v) => policyKey(v);
+  const ticked = new Set((run.ticked || []).map((t) => key(t.policy)).filter(Boolean));
+  const refused = new Map();
+  for (const m of run.mismatched || []) {
+    const k = key(m.policy);
+    if (k && !refused.has(k)) refused.set(k, m.remark || "Not ticked");
+  }
+  return (rows || []).map((r) => {
+    const appended = { ...(r.appended || {}) };
+    const k = key(r.policy);
+    let verdict = "";
+    if (r.outcome === OUTCOME.TRAVEL && k) {
+      if (ticked.has(k)) verdict = run.savedSession ? "Ticked, session saved" : "Ticked, not saved";
+      else if (refused.has(k)) {
+        verdict = "Not ticked";
+        const said = String(appended.Remarks || "").trim();
+        const remark = refused.get(k);
+        appended.Remarks = !said ? remark : said.includes(remark) ? said : `${said}; ${remark}`;
+      }
+    }
+    // Remarks stays the LAST column (step 4: ours to the right, Remarks last),
+    // so the Tramada verdict goes in just before it.
+    const { Remarks, ...rest } = appended;
+    return { ...r, appended: { ...rest, [TRAMADA_COLUMN]: verdict, Remarks: Remarks == null ? "" : Remarks } };
+  });
+}
+
 module.exports = {
   cents,
   policyKey,
@@ -457,4 +507,6 @@ module.exports = {
   matchTramadaLine,
   paymentReference,
   sessionLabel,
+  TRAMADA_COLUMN,
+  sheetAfterRun,
 };

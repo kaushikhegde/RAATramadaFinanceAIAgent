@@ -156,23 +156,32 @@ async function graphAccount(env = process.env) {
 }
 
 /**
+ * Every file a built email carries. `attachments` when the builder made more
+ * than one — a combined run sends one spreadsheet per report — else the single
+ * `attachment` every builder has always set.
+ */
+function attachmentsOf(message) {
+  if (Array.isArray(message.attachments) && message.attachments.length) return message.attachments.filter(Boolean);
+  return message.attachment ? [message.attachment] : [];
+}
+
+/**
  * The Graph `sendMail` body for one built email. Pure, so the shape — which
  * Graph rejects with a bare 400 if any of it is wrong — is tested offline.
  */
 function graphMessage(message, to) {
-  const a = message.attachment;
   return {
     message: {
       subject: message.subject,
       body: { contentType: "HTML", content: message.html || `<pre>${message.text || ""}</pre>` },
       toRecipients: (to || []).map((address) => ({ emailAddress: { address } })),
-      attachments: a ? [{
+      attachments: attachmentsOf(message).map((a) => ({
         "@odata.type": "#microsoft.graph.fileAttachment",
         name: a.filename,
         // Graph wants the MIME type without parameters.
         contentType: String(a.contentType || "application/octet-stream").split(";")[0].trim(),
         contentBytes: Buffer.from(String(a.content || ""), "utf8").toString("base64"),
-      }] : [],
+      })),
     },
     saveToSentItems: true,
   };
@@ -223,17 +232,16 @@ async function sendGraph(message, c) {
  * because Resend's JSON API has no way to carry raw bytes either.
  */
 function resendMessage(message, to, from) {
-  const a = message.attachment;
   return {
     from,
     to: to || [],
     subject: message.subject,
     html: message.html || `<pre>${message.text || ""}</pre>`,
     text: message.text,
-    attachments: a ? [{
+    attachments: attachmentsOf(message).map((a) => ({
       filename: a.filename,
       content: Buffer.from(String(a.content || ""), "utf8").toString("base64"),
-    }] : [],
+    })),
   };
 }
 
@@ -266,8 +274,8 @@ async function sendResend(message, c) {
 /**
  * Send one built email. Never throws: the answer is `{ sent, why, ... }`.
  *
- * `message` is `recon-core.dvcEmail`'s output — subject, text, html and one
- * attachment.
+ * `message` is `recon-core.dvcEmail`'s output (or reconEmail's, or
+ * tokio-email's) — subject, text, html and one attachment or several.
  */
 async function send(message, { env = process.env } = {}) {
   const c = config(env);
@@ -279,4 +287,4 @@ async function send(message, { env = process.env } = {}) {
   }
 }
 
-module.exports = { config, send, graphSignIn, graphAccount, graphMessage, resendMessage, GRAPH_SCOPES };
+module.exports = { config, send, graphSignIn, graphAccount, graphMessage, resendMessage, attachmentsOf, GRAPH_SCOPES };

@@ -152,6 +152,79 @@ function parseReconCsv(text) {
  * what `csvGrid` and `xlsx-lite`'s `readSheet` both hand back, so one parser
  * serves both containers.
  */
+/**
+ * THE WHOLE FILE COMES THROUGH, not just the columns the run acts on.
+ *
+ * Finance's spreadsheet has columns this code has no opinion about — a
+ * customer name, an internal note, whatever their bank puts in it — and the
+ * file they get back is supposed to be THEIR file with the run's columns filled
+ * in, not a new one that happens to share some values. So every column is
+ * kept, in its original order and under its original heading.
+ *
+ * A blank heading is `null` (its cells are skipped), and a repeated one is
+ * suffixed: a spreadsheet with two columns called "Amount" would otherwise
+ * silently lose one.
+ *
+ * Shared by every statement-line parser. It used to live inside BPay's alone,
+ * so Mint, TravelPay and IPSI rows carried only the three or four fields the
+ * matcher reads — and the spreadsheet emailed to Travel Accounts came out as
+ * the run's own columns over blank rows, Remarks the only thing in it.
+ */
+function sheetColumns(headers) {
+  const columns = [];
+  const seen = new Set();
+  (headers || []).forEach((h) => {
+    const name = String(h == null ? "" : h).trim();
+    if (!name) { columns.push(null); return; }
+    let unique = name, n = 2;
+    while (seen.has(unique.toLowerCase())) unique = `${name} (${n++})`;
+    seen.add(unique.toLowerCase());
+    columns.push(unique);
+  });
+  return columns;
+}
+
+/**
+ * One sheet row → `{ heading: text }`, under `sheetColumns`' names.
+ *
+ * A workbook stores what the binary float holds, so RAA's `10383.96` comes out
+ * of the XML as `10383.959999999999` — and the preview and the emailed sheet,
+ * which show these cells verbatim, printed exactly that. A number with a long
+ * float tail is written back as the shortest decimal that is the same number
+ * (`String(Number(...))`), which is the figure Excel itself displays. Nothing
+ * else is touched: a reference like `0041` or `M00640038` is not that shape.
+ *
+ * Dates the same way. A Mint workbook's Created Time arrives as
+ * `46203.24224158565` — a day count and a fraction of one, because `xlsx-lite`
+ * does not convert dates — and that is what the preview showed under a heading
+ * saying "Created Time". Only a column whose heading says date or time, and
+ * only a value in the range of real dates (1954-2119), is converted: an Amount
+ * of 46203 is money, and a heading is the only thing that says which.
+ */
+function rowCells(columns, cells) {
+  const out = {};
+  (columns || []).forEach((name, j) => {
+    if (!name) return;
+    const text = cells && cells[j] != null ? String(cells[j]).trim() : "";
+    if (/date|time/i.test(name) && /^\d+(\.\d+)?$/.test(text) && +text > 20000 && +text < 80000) {
+      out[name] = serialDateTime(text);
+      return;
+    }
+    out[name] = /^-?\d+\.\d{10,}$/.test(text) ? String(Number(text)) : text;
+  });
+  return out;
+}
+
+/** An Excel serial → `YYYY-MM-DD`, with ` HH:MM:SS` when it carries a time of day. */
+function serialDateTime(v) {
+  const n = parseFloat(v);
+  const day = serialDate(String(Math.floor(n)));
+  const secs = Math.round((n - Math.floor(n)) * 86400);
+  if (!secs || secs >= 86400) return day;
+  const p = (x) => String(x).padStart(2, "0");
+  return `${day} ${p(Math.floor(secs / 3600))}:${p(Math.floor(secs / 60) % 60)}:${p(secs % 60)}`;
+}
+
 function parseReconRows(headers, sheetRows) {
   if (!headers || !headers.length) return { rows: [], problems: [{ line: 0, why: "the file is empty" }] };
 
@@ -172,35 +245,15 @@ function parseReconRows(headers, sheetRows) {
   // made text — and an empty cell is "" rather than "undefined".
   const at = (f, i) => (i < 0 || f[i] == null ? "" : String(f[i]).trim());
 
-  /* THE WHOLE FILE COMES THROUGH, not just the five columns the run acts on.
-   *
-   * Finance's spreadsheet has columns this code has no opinion about — a
-   * customer name, an internal note, whatever their bank puts in it — and the
-   * file they get back is supposed to be THEIR file with three columns filled
-   * in, not a new five-column one that happens to share some values. So every
-   * column is kept, in its original order and under its original heading, and
-   * the run reads its five out of the same row.
-   *
-   * A blank heading is skipped, and a repeated one is suffixed: a spreadsheet
-   * with two columns called "Amount" would otherwise silently lose one. */
-  const columns = [];
-  const seen = new Set();
-  (headers || []).forEach((h, i) => {
-    const name = String(h == null ? "" : h).trim();
-    if (!name) { columns.push(null); return; }
-    let unique = name, n = 2;
-    while (seen.has(unique.toLowerCase())) unique = `${name} (${n++})`;
-    seen.add(unique.toLowerCase());
-    columns.push(unique);
-  });
+  // Every column, not just the five the run acts on — see `sheetColumns`.
+  const columns = sheetColumns(headers);
   const kept = columns.filter(Boolean);
 
   const rows = [];
   const problems = [];
   for (let i = 0; i < (sheetRows || []).length; i++) {
     const f = sheetRows[i] || [];
-    const cells = {};
-    columns.forEach((name, j) => { if (name) cells[name] = at(f, j); });
+    const cells = rowCells(columns, f);
     const row = {
       // The line number a person would count to in the file: the header is 1.
       line: i + 2,
@@ -1248,11 +1301,14 @@ function parseMintRows(headers, gridRows) {
     return { rows: [], problems: [{ line: 1, why: `the sheet has no column for: ${want}` }] };
   }
 
+  const columns = sheetColumns(headers);
   const rows = [];
   const problems = [];
   (gridRows || []).forEach((cells, i) => {
     const row = {
       line: i + 2,                       // +1 for the header, +1 for 1-based
+      // Everything the file said, so the emailed sheet is theirs (`sheetColumns`).
+      cells: rowCells(columns, cells),
       transNo: String(cells[cols.transNo] == null ? "" : cells[cols.transNo]).trim(),
       amount: String(cells[cols.amount] == null ? "" : cells[cols.amount]).trim(),
       toCompany: String(cells[cols.toCompany] == null ? "" : cells[cols.toCompany]).trim(),
@@ -1290,7 +1346,7 @@ function parseMintRows(headers, gridRows) {
       problems.push({ line: row.line, why: why.join("; "), row });
     } else rows.push(row);
   });
-  return { rows, problems };
+  return { rows, problems, columns: columns.filter(Boolean) };
 }
 
 /**
@@ -1669,11 +1725,14 @@ function parseTravelPayRows(headers, gridRows) {
   }
 
   const at = (cells, key) => (cols[key] >= 0 && cells[cols[key]] != null ? String(cells[cols[key]]).trim() : "");
+  const columns = sheetColumns(headers);
   const rows = [];
   const problems = [];
   (gridRows || []).forEach((cells, i) => {
     const row = {
       line: i + 2,                       // +1 for the header, +1 for 1-based
+      // Everything the file said, so the emailed sheet is theirs (`sheetColumns`).
+      cells: rowCells(columns, cells),
       transNo: at(cells, "transNo"),
       amount: at(cells, "amount"),
       toCompany: at(cells, "toCompany"),
@@ -1743,7 +1802,7 @@ function parseTravelPayRows(headers, gridRows) {
       rows.push(row);
     }
   });
-  return { rows, problems };
+  return { rows, problems, columns: columns.filter(Boolean) };
 }
 
 /* ── the IPSI merchant settlement ────────────────────────────────────────── */
@@ -1967,6 +2026,7 @@ function parseIpsiRows(headers, gridRows) {
 
   const at = (cells, key) =>
     (cols[key] >= 0 && cells[cols[key]] != null ? String(cells[cols[key]]).trim() : "");
+  const columns = sheetColumns(headers);
   const rows = [];
   const problems = [];
   let statedCents = null;
@@ -1976,6 +2036,8 @@ function parseIpsiRows(headers, gridRows) {
   (gridRows || []).forEach((cells, i) => {
     const row = {
       line: i + 2,
+      // Everything the file said, so the emailed sheet is theirs (`sheetColumns`).
+      cells: rowCells(columns, cells),
       transNo: at(cells, "transNo"),
       reference: at(cells, "reference"),
       bookingNo: at(cells, "bookingNo"),
@@ -2046,6 +2108,7 @@ function parseIpsiRows(headers, gridRows) {
   return {
     rows,
     problems,
+    columns: columns.filter(Boolean),
     settlement: {
       // Every row, refunds included — they carry their own sign, which is why
       // the two together are what the bank actually settled.
@@ -4163,18 +4226,75 @@ function reconEmail(o = {}) {
     "</div>";
 
   const stamp = toIsoDate(statementDate) || "undated";
-  const grid = buildExportGrid(rows, columns, { inputColumns: inputColumnsOf(columns) });
+  const sheet = (name, part, cols) => ({
+    filename: `${name}-reconciliation-${stamp}.csv`,
+    contentType: "text/csv; charset=utf-8",
+    // A BOM for the same reason dvcReportCsv's attachment carries one.
+    content: "﻿" + reportSheetCsv(part, cols),
+  });
+
+  /* A COMBINED RUN IS ONE SHEET PER REPORT. The page sends no `columns` for it
+     — it has several files and no one set of headings — and one grid over a
+     Mint file and a TravelPay file would be two spreadsheets' columns side by
+     side, each half blank. So each report gets its own attachment, in its own
+     columns, read off its own rows' cells. */
+  const groups = source === "combined"
+    ? RUN_ORDER.map((k) => [k, (rows || []).filter((r) => r && r.src === k)]).filter(([, part]) => part.length)
+    : [];
+  const attachments = groups.length
+    ? groups.map(([k, part]) => sheet(k, part, []))
+    : [sheet(source, rows, columns)];
   return {
     subject: `AI Agent ${title} reconciliation — ${day || stamp}` + (dryRun ? " [DRY RUN]" : ""),
     text,
     html,
-    attachment: {
-      filename: `${source}-reconciliation-${stamp}.csv`,
-      contentType: "text/csv; charset=utf-8",
-      // A BOM for the same reason dvcReportCsv's attachment carries one.
-      content: "﻿" + gridToCsv(grid),
-    },
+    // `attachment` is the first, kept for callers that only know about one.
+    attachment: attachments[0],
+    attachments,
   };
+}
+
+/**
+ * The file's headings, read off the rows themselves: every key of every row's
+ * `cells`, in the order they first appear.
+ *
+ * The fallback for when no `columns` travelled with the run. A combined run
+ * never sends any, and before this the email's sheet was built over an empty
+ * heading list — the run's own seven columns and nothing of the file at all.
+ */
+function columnsFromCells(rows) {
+  const seen = new Set();
+  const out = [];
+  for (const r of rows || []) {
+    for (const k of Object.keys((r && r.cells) || {})) {
+      if (!seen.has(k)) { seen.add(k); out.push(k); }
+    }
+  }
+  return out;
+}
+
+/**
+ * The emailed spreadsheet: the file as it arrived, then the run's columns.
+ *
+ * The run's columns that came out BLANK ON EVERY ROW are left off — Consultant,
+ * Shop, Receipt No and Allocation are BPay's, and on a Mint or TravelPay sheet
+ * they are four empty columns that read as four things the agent failed to fill
+ * in (dvcReportCsv's reasoning, and RAA's). Remarks, Reconciled and Why always
+ * stay: a blank Remarks column on a clean run is the answer, not a gap.
+ */
+function reportSheetCsv(rows, columns) {
+  const given = (columns || []).filter(Boolean);
+  const base = given.length ? given : columnsFromCells(rows);
+  const grid = buildExportGrid(rows, base, { inputColumns: inputColumnsOf(base) });
+  const own = new Set(base);
+  const always = new Set(["remarks", "reconciled", "why"]);
+  const keep = grid.headings.map((h, i) => own.has(h) ||
+    always.has(normaliseHeading(h).replace(/^tramada/, "")) ||
+    grid.rows.some((r) => String(r[i] || "").trim() !== ""));
+  return gridToCsv({
+    headings: grid.headings.filter((_, i) => keep[i]),
+    rows: grid.rows.map((r) => r.filter((_, i) => keep[i])),
+  });
 }
 
 /**
@@ -5341,6 +5461,7 @@ module.exports = {
   uploadName, stampOf, runTotals, needsReaction, overviewFrom,
   splitCsvLine, parseReconCsv, parseReconRows,
   normaliseHeading, buildExportGrid, inputColumnsOf, moneyColumnsOf, gridToCsv, EXPORT_FIELDS,
+  sheetColumns, rowCells, columnsFromCells, reportSheetCsv,
   REMARKS, RETAIL_DEBTOR, BPAY_RECEIPT, branchCode, isPastDate, toIsoDate, decidePreReceipt, sortForFinance, pageForDate, pagesForDate,
   outstandingFrom, totalLeftToAllocate, chooseSegments, decideAllocation,
   matchAgainstStatement,

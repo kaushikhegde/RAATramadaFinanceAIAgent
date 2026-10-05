@@ -158,6 +158,37 @@ console.log("\nthe supplier cheat sheet");
   check("and a blank name never matches", C.supplierMatches("", "READY ROOMS", null).ok, false);
 }
 {
+  /* Case never matters on EITHER side of a mapping. The sheet is typed by hand
+     in Excel, MINT and TravelPay capitalise however their own systems do, and
+     Tramada shouts its creditor names — so the same mapping arrives as
+     "Circuit Travel Pty Ltd", "CIRCUIT TRAVEL PTY LTD" and "circuit travel pty
+     ltd". A row refused over capitalisation alone is a row a human has to
+     reconcile by hand for no reason. */
+  const ix = C.cheatSheetIndex(C.parseCheatSheet([
+    "Supplier Name in MINT / TravelPay,IN TRAMADA - TRY THESE",
+    "Circuit Travel Pty Ltd,\"Cosmos Tours, Globus\"",
+    "viva holidays ii limited t/a ready rooms,ready rooms",
+    "RCL CRUISES LTD,Royal Caribbean / Celebrity Cruises",
+  ].join("\n")).pairs);
+  const cases = [
+    ["Circuit Travel Pty Ltd", "Globus"],
+    ["CIRCUIT TRAVEL PTY LTD", "GLOBUS"],
+    ["circuit travel pty ltd", "cosmos tours"],
+    ["Circuit TRAVEL pty LTD", "CoSmOs ToUrS"],
+    ["Viva Holidays II Limited T/A Ready Rooms", "READY ROOMS"],
+    ["VIVA HOLIDAYS II LIMITED T/A READY ROOMS", "Ready Rooms"],
+    ["Rcl Cruises Ltd", "CELEBRITY CRUISES"],
+    ["rcl cruises ltd", "royal caribbean international"],   // the longer-name rule too
+  ];
+  for (const [file, tramada] of cases) {
+    const r = C.supplierMatches(file, tramada, ix);
+    ok(`"${file}" → "${tramada}" matches regardless of case`, r.ok, r.via);
+  }
+  // Case-blind is not name-blind: a different creditor in the same case still fails.
+  check("but a different creditor still fails, whatever the case",
+    C.supplierMatches("CIRCUIT TRAVEL PTY LTD", "AVALON WATERWAYS", ix).ok, false);
+}
+{
   /* A file with no heading loses its first line to the header, because the
      first line of a CSV is a heading. Rather than guess whether it looked like
      data, the parser says what it did — the alternative is silently dropping or

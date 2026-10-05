@@ -236,6 +236,94 @@ const good = (over = {}) => ({
     assert.ok(!/password\s*:\s*["'][^"']+["']/i.test(src), "a literal password is in source");
   });
 
+  /* ── the run notification, and the sheet it carries ─────────────────── */
+  const core = require("../tokio-core");
+  // The parse endpoint's row shape: Tokio's own columns under `source`, ours
+  // under `appended`, Remarks last.
+  const parsed = [
+    { line: 2, policy: "21990677", outcome: "Travel", source: { xPolicyNo: "21990677", xBranch: "Travel", xCustomer: "A PERSON" },
+      appended: { "RAA Total Nett": "70.00", Remarks: "" } },
+    { line: 3, policy: "21990678", outcome: "Travel", source: { xPolicyNo: "21990678", xBranch: "Travel", xCustomer: "B PERSON" },
+      appended: { "RAA Total Nett": "35.00", Remarks: "" } },
+    { line: 4, policy: "21990679", outcome: "Travel", source: { xPolicyNo: "21990679", xBranch: "Travel", xCustomer: "C PERSON" },
+      appended: { "RAA Total Nett": "12.00", Remarks: "Please check" } },
+    { line: 5, policy: "21990680", outcome: "Retail", source: { xPolicyNo: "21990680", xBranch: "Retail", xCustomer: "D PERSON" },
+      appended: { "RAA Total Nett": "9.00", Remarks: "" } },
+    { line: 6, policy: "21990681", outcome: "Exception", source: { xPolicyNo: "21990681", xBranch: "Travel", xCustomer: "E PERSON" },
+      appended: { "RAA Total Nett": "5.00", Remarks: "In RCC and in Payment" } },
+  ];
+  const run = {
+    reference: "TOKIO_AUG 26", label: "TOKIO_AUG 26", savedSession: true,
+    ticked: [{ policy: "21990677", ticked: true }],
+    mismatched: [
+      { policy: "21990678", ticked: false, remark: "Policy number not found in Tramada" },
+      { policy: "21990679", ticked: false, remark: "Amount does not match (±1%)" },
+    ],
+  };
+  const sheet = core.sheetAfterRun(parsed, run);
+
+  /* What it used to do: the run's remarks lived only in the card's own "not
+     ticked" table. The exported and mailed sheet carried the parse's Remarks,
+     so a Travel line Tramada refused went out with a blank cell, looking
+     reconciled. */
+  await check("a refused Travel line carries the run's remark into Remarks", () => {
+    assert.strictEqual(sheet[1].appended.Remarks, "Policy number not found in Tramada");
+    assert.strictEqual(sheet[1].appended.Tramada, "Not ticked");
+  });
+  await check("appended to what steps 1-8 wrote, never replacing it", () => {
+    assert.strictEqual(sheet[2].appended.Remarks, "Please check; Amount does not match (±1%)");
+  });
+  await check("a ticked line says so, and whether the session was saved", () => {
+    assert.strictEqual(sheet[0].appended.Tramada, "Ticked, session saved");
+    assert.strictEqual(core.sheetAfterRun(parsed, { ...run, savedSession: false })[0].appended.Tramada,
+      "Ticked, not saved");
+  });
+  await check("Retail and exception lines claim no Tramada result — they were never searched", () => {
+    assert.strictEqual(sheet[3].appended.Tramada, "");
+    assert.strictEqual(sheet[4].appended.Tramada, "");
+    assert.strictEqual(sheet[4].appended.Remarks, "In RCC and in Payment");
+  });
+  await check("Remarks stays the last column (step 4)", () => {
+    const cols = Object.keys(sheet[0].appended);
+    assert.deepStrictEqual(cols.slice(-2), ["Tramada", "Remarks"]);
+  });
+  await check("the parse's rows are not mutated", () => {
+    assert.strictEqual(parsed[1].appended.Remarks, "");
+    assert.ok(!("Tramada" in parsed[0].appended));
+  });
+
+  const note = mail.tokioRunEmail({ sheet, run, month: "August 2026", reference: run.reference });
+  const csv = note.attachment.content.replace(/^\uFEFF/, "");
+  await check("the attachment is the whole sheet: Tokio's columns, ours, then Remarks", () => {
+    assert.strictEqual(csv.split("\n")[0], "Outcome,xPolicyNo,xBranch,RAA Total Nett,Tramada,Remarks");
+    assert.strictEqual(csv.trim().split("\n").length, 1 + parsed.length);
+  });
+  await check("every line is in it, the refused one with its reason", () => {
+    assert.ok(csv.includes("Travel,21990678,Travel,35.00,Not ticked,Policy number not found in Tramada"), csv);
+    assert.ok(csv.includes("Retail,21990680,Retail,9.00,,"), csv);
+  });
+  await check("a passenger-name column that got through is left off, not mailed", () => {
+    assert.ok(!csv.includes("xCustomer") && !csv.includes("A PERSON"), csv);
+  });
+  await check("a saved session is said as one, with Issue NOT clicked", () => {
+    assert.ok(/session saved, ready for review/.test(note.subject), note.subject);
+    assert.ok(/Issue has NOT been clicked/.test(note.text), note.text);
+    assert.ok(/Travel lines not ticked: 2/.test(note.text) && /Exceptions for a person: 1/.test(note.text) &&
+      /Retail lines excluded: 1/.test(note.text), note.text);
+  });
+  await check("a run that stopped before saving never says a session was saved", () => {
+    const m = mail.tokioRunEmail({ sheet, run: { ...run, savedSession: false }, month: "August 2026", dryRun: true });
+    assert.ok(/ticked, not saved/.test(m.subject) && /\[DRY RUN\]/.test(m.subject), m.subject);
+    assert.ok(!/session saved/i.test(m.subject) && /No payment session was saved/.test(m.text), m.text);
+  });
+  await check("nothing outstanding in Tramada is its own sentence, not a failure", () => {
+    const m = mail.tokioRunEmail({ sheet, run: { ...run, savedSession: false, empty: true, ticked: [] }, month: "August 2026" });
+    assert.ok(/nothing outstanding/.test(m.subject) && /Nothing was ticked/.test(m.text), m.text);
+  });
+  await check("the notification is not step 15's subject — that one asserts a saved session", () => {
+    assert.notStrictEqual(note.subject, mail.SUBJECT);
+  });
+
   console.log(`\n${failures.length ? "NOT OK" : "ok"} — ${n} assertions passed, ${failures.length} failed\n`);
   process.exit(failures.length ? 1 : 0);
 })();

@@ -342,6 +342,118 @@ async function sendReconciliationEmail(options = {}) {
   return { transport: "smtp", to: msg.to, subject: msg.subject, sent: true, ...res };
 }
 
+/* ── the run notification, sent the way every other report's is ────────── */
+
+/** CSV, quoted the way a spreadsheet expects — the page's Export uses the same rules. */
+function csvCell(v) {
+  const t = v == null ? "" : String(v);
+  return /[",\n]/.test(t) || /^[\s+=@-]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+}
+
+/**
+ * The consolidated sheet as CSV: Outcome, then Tokio's own columns in their
+ * own order, then ours (step 4) — the same layout as the page's Export button.
+ *
+ * Passenger-name columns are LEFT OFF rather than refused. Step 1 has Finance
+ * delete them before upload; if one got through anyway, this is a message a
+ * machine sends with nobody reviewing it first, and dropping the column is the
+ * only answer that neither mails the names nor loses the notification.
+ */
+function tokioSheetCsv(rows = []) {
+  const first = rows[0] || {};
+  const drop = new Set(PASSENGER_NAME_COLUMNS);
+  const src = Object.keys(first.source || {}).filter((c) => !drop.has(c));
+  const app = Object.keys(first.appended || {});
+  const lines = [["Outcome"].concat(src, app).map(csvCell).join(",")];
+  for (const r of rows) {
+    lines.push([r.outcome]
+      .concat(src.map((c) => (r.source || {})[c]))
+      .concat(app.map((c) => (r.appended || {})[c]))
+      .map(csvCell).join(","));
+  }
+  return lines.join("\n") + "\n";
+}
+
+/**
+ * The email every Tokio run sends when it finishes, the same way BPay, Mint,
+ * TravelPay, IPSI and DVC already do (recon-core `reconEmail` / `dvcEmail`,
+ * delivered by mailer.js). Before this a Tokio run finished silently: the only
+ * mail was step 15's draft, and that is offered only once a session is saved.
+ *
+ * This is NOT step 15's message and does not use its subject. That subject
+ * says "Session saved, ready for review", and a run that ticked and stopped,
+ * or found nothing outstanding, has saved nothing — so the subject here names
+ * what actually happened, and step 15's draft stays the deliberate hand-off.
+ *
+ * `sheet` is tokio-core `sheetAfterRun`'s output: the whole consolidated sheet
+ * with the Tramada run's verdict and remarks written into it.
+ */
+function tokioRunEmail({ sheet = [], run = {}, month = "", reference = "", dryRun = false } = {}) {
+  const ticked = (run.ticked || []).length;
+  const notTicked = (run.mismatched || []).length;
+  const count = (o) => sheet.filter((r) => r.outcome === o).length;
+  const retail = count("Retail");
+  const exceptions = count("Exception");
+  const label = run.label || "";
+  const when = month || label.replace(/^TOKIO_/, "") || "this month";
+
+  let status;
+  let headline;
+  if (run.savedSession) {
+    status = "session saved, ready for review";
+    headline = `The Tokio Marine reconciliation for ${when} has run. Payment session ${label} is saved in ` +
+      `Tramada with ${ticked} line(s) ticked, and is ready for review. Issue has NOT been clicked — nothing ` +
+      "has been paid.";
+  } else if (run.empty) {
+    status = "nothing outstanding in Tramada";
+    headline = `The Tokio Marine reconciliation for ${when} ran, but Tramada has no outstanding Tokio Marine ` +
+      "segments for the period. Nothing was ticked and no session was saved.";
+  } else {
+    status = "ticked, not saved";
+    headline = `The Tokio Marine reconciliation for ${when} ticked ${ticked} line(s) in Tramada and stopped ` +
+      `before saving. No payment session was saved${dryRun ? " (dry run)" : ""}.`;
+  }
+
+  const lines = [
+    headline,
+    "",
+    `Reporting month: ${when}`,
+    `Payment reference: ${reference || run.reference || "(none)"}`,
+    `Ticked in Tramada: ${ticked}`,
+    `Travel lines not ticked: ${notTicked}`,
+    `Exceptions for a person: ${exceptions}`,
+    `Retail lines excluded: ${retail}`,
+  ];
+  if (notTicked || exceptions) {
+    lines.push("", "The attached sheet carries every line, with the reason for each one not ticked in " +
+      "its Remarks column and what Tramada did with it in the Tramada column.");
+  }
+  lines.push("", "The agent does not press Issue. Resolving exceptions, rounding, the transaction total " +
+    "and Issue stay with Travel Accounts (BR16/BR18).");
+
+  const text = lines.join("\n") + "\n";
+  const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const html = "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:14px\">" +
+    `<p><b>${esc(headline)}</b></p>` +
+    `<pre style="font-family:Consolas,monospace;font-size:13px">${esc(lines.slice(2).join("\n"))}</pre>` +
+    "</div>";
+
+  const stamp = String(when).replace(/\s+/g, "-");
+  return {
+    subject: `AI Agent Tokio Marine reconciliation — ${when}` + (dryRun ? " [DRY RUN]" : "") + ` — ${status}`,
+    text,
+    html,
+    status,
+    attachment: {
+      filename: `tokio-consolidated-${stamp}.csv`,
+      contentType: "text/csv; charset=utf-8",
+      // A BOM, as every other report's attachment: Excel on Windows otherwise
+      // opens a UTF-8 CSV as mojibake.
+      content: "\uFEFF" + tokioSheetCsv(sheet),
+    },
+  };
+}
+
 module.exports = {
   SEND_LITERAL,
   TRAVEL_ACCOUNTS,
@@ -354,4 +466,6 @@ module.exports = {
   sendViaSmtp,
   sendReconciliationEmail,
   contentTypeFor,
+  tokioSheetCsv,
+  tokioRunEmail,
 };

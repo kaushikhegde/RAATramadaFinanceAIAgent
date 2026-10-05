@@ -31,7 +31,6 @@
     "probe:dvc": "node tools/probe-dvc-payment.js",
     "fixtures:bpay": "node tools/make-fixtures.js bpay",
     "fixtures:travelpay": "node tools/make-fixtures.js travelpay",
-    "fixtures:dvc": "node tools/make-dvc-fixtures.js",
     "fixtures:dvc:tramada": "node tools/make-dvc-bookings.js",
     "fixtures:mint": "node tools/make-fixtures.js mint",
     "fixtures": "node tools/make-fixtures.js all",

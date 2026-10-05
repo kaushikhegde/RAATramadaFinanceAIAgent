@@ -521,6 +521,25 @@ app.post("/api/tokio/reconcile", express.json({ limit: "24mb" }), async (req, re
         onStep: (s) => steps.push(s),
       },
     });
+    /* The sheet with the run's verdict written into it (tokio-core
+       `sheetAfterRun`), and the email every other report already sends when
+       it finishes. A Tokio run used to end silently — the only mail was
+       step 15's draft, offered once a session is saved. Never throws, same as
+       `sendReconEmail`: a mail server that is down is a reason to lose the
+       email, not to report a run that ticked real lines as failed. */
+    const sheet = tokioCore.sheetAfterRun(rows, out);
+    let email;
+    try {
+      email = await mailer.send(tokioEmail.tokioRunEmail({
+        sheet,
+        run: out,
+        month: body.monthLabel || body.month || "",
+        reference: out.reference,
+        dryRun: body.confirm !== tramadaTokio.SAVE_LITERAL,
+      }));
+    } catch (err) {
+      email = { sent: false, why: reconCore.tidyError(err.message) };
+    }
     /* §3.1.3 "High-risk user actions". Only a SAVE is one: a run that ticked
        and stopped has written nothing that outlives the page. BR16 is on the
        line because "Issue was not pressed" is the claim this whole flow is
@@ -539,9 +558,12 @@ app.post("/api/tokio/reconcile", express.json({ limit: "24mb" }), async (req, re
       reference: out.reference,
       label: out.label,
       savedSession: out.savedSession,
+      empty: !!out.empty,
       ticked: out.ticked,
       mismatched: out.mismatched,
       steps: out.steps,
+      sheet,
+      email: { sent: !!email.sent, to: email.to || [], why: email.why || "" },
       confirmLiteral: tramadaTokio.SAVE_LITERAL,
     });
   } catch (err) {
