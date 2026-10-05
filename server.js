@@ -1288,6 +1288,39 @@ function dailyLockMessage(source, dryRun) {
   return `${reconCore.REPORTS[source].title} already finished a live run today — it runs once a day and unlocks tomorrow.`;
 }
 
+/**
+ * The once-a-day rule, with the way through it.
+ *
+ * A lock with no override is not safe, it is just rigid: a run can report
+ * success and still have left the day half done, and the only remedy would be
+ * editing the database. So the refusal carries `lockedToday`, the page offers
+ * "run it again anyway", and the second attempt comes back with
+ * `overrideDailyLock`.
+ *
+ * The override is AUDITED AS HIGH RISK and under its own event. The rule
+ * exists because the work is already filed in Tramada, so going round it is
+ * precisely what a reviewer is looking for — and it must not hide among
+ * ordinary refusals.
+ *
+ * Returns null to let the run proceed, or { message } to refuse.
+ */
+function dailyLockRefusal(session, source, msg) {
+  const message = dailyLockMessage(source, msg.dryRun);
+  if (!message) return null;
+  if (!msg.overrideDailyLock) {
+    wsAudit(session, "run.refused", { outcome: "failure", report: source,
+      target: reconCore.REPORTS[source].title, reason: "already ran today" });
+    return { message };
+  }
+  const was = reconCore.lockedReportToday(source, store.listRuns());
+  wsAudit(session, "run.lock.overridden", {
+    report: source,
+    target: reconCore.REPORTS[source].title,
+    detail: { earlierRun: was && was.runId, earlierFinishedAt: was && was.finishedAt },
+  });
+  return null;
+}
+
 async function handleReconRun(session, msg) {
   if (msg.source === "both") return handleCombinedRun(session, msg);
 
@@ -1317,9 +1350,9 @@ async function handleReconRun(session, msg) {
     send(session, { type: "recon_done", error: "nothing in that CSV could be run" });
     return;
   }
-  const lockMsg = dailyLockMessage("bpay", msg.dryRun);
-  if (lockMsg) {
-    send(session, { type: "recon_done", error: lockMsg });
+  const lockedBpay = dailyLockRefusal(session, "bpay", msg);
+  if (lockedBpay) {
+    send(session, { type: "recon_done", error: lockedBpay.message, lockedToday: true, source: "bpay" });
     return;
   }
   if (runLock.heldBy()) {
@@ -1473,10 +1506,10 @@ async function handleCombinedRun(session, msg) {
      expecting both to run should not learn later that only one of them did. */
   const locked = Object.keys(byReport)
     .filter((k) => byReport[k].length)
-    .map((k) => dailyLockMessage(k, msg.dryRun))
+    .map((k) => dailyLockRefusal(session, k, msg))
     .filter(Boolean);
   if (locked.length) {
-    send(session, { type: "recon_done", error: locked.join(" ") });
+    send(session, { type: "recon_done", error: locked.map((l) => l.message).join(" "), lockedToday: true });
     return;
   }
   if (runLock.heldBy()) {
@@ -1547,9 +1580,9 @@ async function handleIpsiRun(session, msg) {
     send(session, { type: "recon_done", error: "nothing in that IPSI file could be checked" });
     return;
   }
-  const lockMsg = dailyLockMessage("ipsi", msg.dryRun);
-  if (lockMsg) {
-    send(session, { type: "recon_done", error: lockMsg });
+  const lockedIpsi = dailyLockRefusal(session, "ipsi", msg);
+  if (lockedIpsi) {
+    send(session, { type: "recon_done", error: lockedIpsi.message, lockedToday: true, source: "ipsi" });
     return;
   }
   if (runLock.heldBy()) {
@@ -1672,9 +1705,9 @@ async function handleDvcRun(session, msg) {
         "or every line reads as a booking that is not in Tramada" });
     return;
   }
-  const lockMsg = dailyLockMessage("dvc", msg.dryRun);
-  if (lockMsg) {
-    send(session, { type: "recon_done", error: lockMsg });
+  const lockedDvc = dailyLockRefusal(session, "dvc", msg);
+  if (lockedDvc) {
+    send(session, { type: "recon_done", error: lockedDvc.message, lockedToday: true, source: "dvc" });
     return;
   }
 
@@ -2268,9 +2301,9 @@ async function handleMintRun(session, msg) {
     send(session, { type: "recon_done", error: `nothing in that ${report.title} file could be checked` });
     return;
   }
-  const lockMsg = dailyLockMessage(source, msg.dryRun);
-  if (lockMsg) {
-    send(session, { type: "recon_done", error: lockMsg });
+  const lockedOne = dailyLockRefusal(session, source, msg);
+  if (lockedOne) {
+    send(session, { type: "recon_done", error: lockedOne.message, lockedToday: true, source });
     return;
   }
   if (runLock.heldBy()) {

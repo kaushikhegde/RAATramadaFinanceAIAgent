@@ -3323,6 +3323,17 @@ header.top { display: none !important }
   }
 
   function mountNav() {
+    /* The override lives here rather than on the alert bar, because the bar's
+       innerHTML is rewritten on every run and a listener bound to the old
+       node would be gone the next time it is needed. */
+    document.addEventListener('click', (e) => {
+      const o = e.target.closest('[data-act="override-lock"]');
+      if (!o) return;
+      e.preventDefault();
+      alertBar('err', 'Running it again anyway\u2026');
+      start({ overrideDailyLock: true });
+    });
+
     document.addEventListener('click', (e) => {
       const t = e.target.closest('[data-go]');
       if (!t) return;
@@ -3349,7 +3360,10 @@ header.top { display: none !important }
   }
 
   /* ── the run ── */
-  function start() {
+  /* `opts.overrideDailyLock` is the "run it again anyway" path after the
+     once-a-day rule has refused. It is never sticky: it rides on this one
+     frame only, so the next ordinary run is refused again. */
+  function start(opts) {
     const kind = active;
     /* Refusals go to the ALERT BAR, which is always on the page, and to the
        card's own hint when there is a card to put it on. The old version only
@@ -3498,6 +3512,10 @@ header.top { display: none !important }
         : (($('#' + (kind === 'travelpay' ? 'rcTotalTravelpay' : 'rcTotal')) || {}).value || ''),
       columns: only ? (only.columns || []) : [],
       format: only ? (only.format || 'csv') : 'csv',
+      /* Sent only when it is true. An `overrideDailyLock: false` on every
+         ordinary run is a field somebody will eventually read as "the override
+         was considered and declined", which is not what a missing tick means. */
+      ...(opts && opts.overrideDailyLock ? { overrideDailyLock: true } : {}),
     };
     ws.send(JSON.stringify(kind === 'both'
       ? {
@@ -3715,7 +3733,15 @@ header.top { display: none !important }
 
          The link is a real navigation to the report screen rather than an
          anchor, because these screens are sections of one page. */
-      if (stopped) {
+      if (stopped && m.lockedToday) {
+        /* The once-a-day rule, not a failure. Nothing was attempted, so there
+           is no report to send anybody to — offering "See the report" here
+           sent people looking for a run that does not exist. */
+        alertBar('err', '<b>' + esc(firstSentence(stopped)) + '</b> ' +
+          'If the earlier run did not finish the job, you can ' +
+          '<a href="#" data-act="override-lock">run it again anyway</a> — ' +
+          'that is recorded in the security audit log.');
+      } else if (stopped) {
         alertBar('err', '<b>Reconciliation could not be completed.</b> ' + esc(firstSentence(stopped)) +
           ' <a href="#" data-go="inbox">See the report</a> for what did and did not go through.');
       } else {

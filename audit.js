@@ -91,6 +91,12 @@ const EVENTS = {
   "run.started": { row: "Usage information", risk: "high" },
   "run.finished": { row: "Usage information", risk: "normal" },
   "run.refused": { row: "Usage information", risk: "normal" },
+  /* Somebody deliberately re-ran a report the once-a-day rule had already
+     locked. HIGH risk on purpose and a separate event from run.refused: the
+     rule exists because the work is already filed in Tramada, so going round
+     it is the thing a reviewer most wants to find, and it must not be
+     reachable by filtering for "refused". */
+  "run.lock.overridden": { row: "Usage information", risk: "high" },
   "export.downloaded": { row: "Usage information", risk: "normal" },
   "row.edited": { row: "Usage information", risk: "normal" },
   "row.resolved": { row: "Usage information", risk: "normal" },
