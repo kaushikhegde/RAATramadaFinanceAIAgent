@@ -1678,6 +1678,20 @@ async function handleDvcRun(session, msg) {
     return;
   }
 
+  /* ONE RUN AT A TIME, because there is ONE browser driving Tramada.
+     This handler was the only one that never took the lock: a DVC file
+     uploaded while a BPay or IPSI run was in flight started a second flow
+     against the same Chrome, and two flows typing into one page is not a
+     race that ends in a clean error -- it ends in a receipt filed against
+     whatever page the other run had just navigated to. It also meant a DVC
+     run in progress did not stop anything else from starting on top of IT. */
+  if (runLock.heldBy()) {
+    send(session, { type: "recon_progress",
+      message: `${runLock.heldBy()} is running a reconciliation — this one was not started.`, ok: false });
+    return;
+  }
+  runLock.take(session);
+
   /* Step 1 / BR02 — one business day. The client's own spreadsheet stacks a
      month of daily reports in one tab, because that is what dropping each day's
      CSV into it produces; reconciling all of it would match August's cards
@@ -1809,6 +1823,11 @@ async function handleDvcRun(session, msg) {
     const why = reconCore.tidyError(err.message);
     closeRun(run, null, why);
     send(session, { type: "recon_done", error: why, runId: run && run.id });
+  } finally {
+    // In a finally, not at the end of the try: a lock held by a run that threw
+    // is a lock nobody can release, and the next person is told a run is in
+    // progress until the server restarts.
+    runLock.release();
   }
 }
 
