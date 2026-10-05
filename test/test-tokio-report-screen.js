@@ -188,12 +188,53 @@ async function main() {
        read as a job half done and left a Tramada window holding ticks that
        vanish if the tab is closed. Asked for 28-Sep-2026. */
     const up = doc.getElementById("tokioCard");
-    const buttons = [...up.querySelectorAll(".tk-acts button")];
+    /* Every button on the card except the four file pickers — NOT scoped to
+       .tk-acts, which is where the button used to live. Scoped to one
+       container, moving the button somewhere else on the card would have made
+       this check pass by finding nothing. */
+    const buttons = [...up.querySelectorAll("button")].filter((b) => !b.hasAttribute("data-tokio-pick"));
     assert.strictEqual(buttons.length, 1,
       "expected one action button, found: " + buttons.map((b) => b.textContent.trim()).join(" | "));
     assert.ok(!up.querySelector("#tokioSave"), "the separate Save Session button is back");
     assert.ok(/save session/i.test(buttons[0].textContent),
       "the button does not say it saves: " + buttons[0].textContent);
+  });
+
+  check("the run button sits in the card's TITLE ROW, at the right end", () => {
+    /* Asked for 05-Oct-2026. It was at the bottom of the card, below four file
+       slots — on a tall card the thing you came to press was off the bottom of
+       the screen. */
+    const up = doc.getElementById("tokioCard");
+    const head = up.querySelector(".tk-head");
+    assert.ok(head, "the card has no title row");
+    assert.ok(head.querySelector("h3"), "the title is not in the title row");
+    const btn = head.querySelector("#tokioRun");
+    assert.ok(btn, "the run button is not in the title row");
+    // At the END of the row: the title comes first, the button last.
+    const kids = [...head.children];
+    assert.ok(kids.indexOf(head.querySelector("h3")) < kids.indexOf(btn.closest(".tk-head-act")),
+      "the button is before the title rather than at the end of the row");
+  });
+
+  check("the BR16 sentence stayed on the card, not in the title row", () => {
+    /* Two lines of explanation on a title row crowd out the thing they
+       explain — but they must not be lost, because they are what says Issue is
+       never pressed. */
+    const up = doc.getElementById("tokioCard");
+    assert.ok(!/BR16/.test(up.querySelector(".tk-head").textContent),
+      "the BR16 note was moved into the title row");
+    assert.ok(/BR16\/BR18/.test(up.textContent), "the BR16 note is gone from the card entirely");
+  });
+
+  check("no run button at all until the four files have been read", () => {
+    /* A button in the header that cannot do anything is worse than no button:
+       the header is the first thing read on the card. */
+    const wire = fs.readFileSync(path.join(ROOT, "design", "recon-wire.html"), "utf8");
+    const at = wire.indexOf("function tokioRunButton()");
+    assert.ok(at > -1, "no tokioRunButton()");
+    const body = wire.slice(at, at + 420);
+    assert.ok(/if \(!res \|\| !res\.rows \|\| !res\.rows\.length\) return '';/.test(body),
+      "the button renders before there is anything to reconcile");
   });
 
   check("...and it sends the literal the server insists on", () => {
