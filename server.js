@@ -1275,6 +1275,19 @@ const callbacks = (session, run) => ({
   },
 });
 
+/**
+ * RAA's once-a-day rule, 05-Oct-2026: BPay, Mint, IPSI, TravelPay and DVC each
+ * refuse a second LIVE run once one has already finished the work today —
+ * `reconCore.lockedReportToday` decides what "finished" means per report.
+ * A dry run never counts (CLAUDE.md §3: a preview is not a filing) and is
+ * never even asked about. Tokio has its own card and never calls this.
+ */
+function dailyLockMessage(source, dryRun) {
+  if (dryRun) return null;
+  if (!reconCore.lockedReportToday(source, store.listRuns())) return null;
+  return `${reconCore.REPORTS[source].title} already finished a live run today — it runs once a day and unlocks tomorrow.`;
+}
+
 async function handleReconRun(session, msg) {
   if (msg.source === "both") return handleCombinedRun(session, msg);
 
@@ -1302,6 +1315,11 @@ async function handleReconRun(session, msg) {
   }
   if (!rows.length) {
     send(session, { type: "recon_done", error: "nothing in that CSV could be run" });
+    return;
+  }
+  const lockMsg = dailyLockMessage("bpay", msg.dryRun);
+  if (lockMsg) {
+    send(session, { type: "recon_done", error: lockMsg });
     return;
   }
   if (runLock.heldBy()) {
@@ -1450,6 +1468,17 @@ async function handleCombinedRun(session, msg) {
         "another report — it reconciles two spreadsheets and has no statement page to share. Run it on its own." });
     return;
   }
+  /* Refuse the WHOLE combined run if any bundled type already ran live today,
+     rather than quietly dropping its rows — a person who uploaded BPay+Mint
+     expecting both to run should not learn later that only one of them did. */
+  const locked = Object.keys(byReport)
+    .filter((k) => byReport[k].length)
+    .map((k) => dailyLockMessage(k, msg.dryRun))
+    .filter(Boolean);
+  if (locked.length) {
+    send(session, { type: "recon_done", error: locked.join(" ") });
+    return;
+  }
   if (runLock.heldBy()) {
     send(session, { type: "recon_progress", message: `${runLock.heldBy()} is running a reconciliation — this one was not started.`, ok: false });
     return;
@@ -1516,6 +1545,11 @@ async function handleIpsiRun(session, msg) {
   const uploaded = Array.isArray(msg.rows) ? msg.rows : [];
   if (!uploaded.length) {
     send(session, { type: "recon_done", error: "nothing in that IPSI file could be checked" });
+    return;
+  }
+  const lockMsg = dailyLockMessage("ipsi", msg.dryRun);
+  if (lockMsg) {
+    send(session, { type: "recon_done", error: lockMsg });
     return;
   }
   if (runLock.heldBy()) {
@@ -1636,6 +1670,11 @@ async function handleDvcRun(session, msg) {
     send(session, { type: "recon_done",
       error: "the Tramada Agency CC Reimbursement export is missing — a DVC run needs both files, " +
         "or every line reads as a booking that is not in Tramada" });
+    return;
+  }
+  const lockMsg = dailyLockMessage("dvc", msg.dryRun);
+  if (lockMsg) {
+    send(session, { type: "recon_done", error: lockMsg });
     return;
   }
 
@@ -2208,6 +2247,11 @@ async function handleMintRun(session, msg) {
   const rows = Array.isArray(msg.rows) ? msg.rows : [];
   if (!rows.length) {
     send(session, { type: "recon_done", error: `nothing in that ${report.title} file could be checked` });
+    return;
+  }
+  const lockMsg = dailyLockMessage(source, msg.dryRun);
+  if (lockMsg) {
+    send(session, { type: "recon_done", error: lockMsg });
     return;
   }
   if (runLock.heldBy()) {
