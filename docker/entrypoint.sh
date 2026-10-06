@@ -84,6 +84,29 @@ FLUXBOX
 fi
 start fluxbox fluxbox
 
+# ── Trust the corporate TLS-inspection root, in Chromium's own store ─────────
+# Chromium ignores /etc/ssl/certs; it reads NSS at $HOME/.pki/nssdb, which is on
+# the volume, so this cannot be baked into the image (see the Dockerfile). Every
+# start, before Chromium: an existing volume from before this line has a profile
+# but no root, and that is exactly the volume that showed ERR_CERT_AUTHORITY_INVALID.
+# A failure here is logged, not fatal — on a network without the inspection
+# proxy the root is not needed at all.
+CA_CERT=/usr/local/share/ca-certificates/SA_ROOT.crt
+NSSDB="$HOME/.pki/nssdb"
+if [ -f "$CA_CERT" ]; then
+  mkdir -p "$NSSDB"
+  if [ ! -f "$NSSDB/cert9.db" ]; then
+    certutil -d "sql:$NSSDB" -N --empty-password || log "could not create $NSSDB"
+  fi
+  if certutil -d "sql:$NSSDB" -L -n SA_ROOT >/dev/null 2>&1; then
+    log "SA_ROOT already trusted by Chromium"
+  elif certutil -d "sql:$NSSDB" -A -t "C,," -n SA_ROOT -i "$CA_CERT"; then
+    log "SA_ROOT added to Chromium's trust store"
+  else
+    log "could not add SA_ROOT — Tramada will show ERR_CERT_AUTHORITY_INVALID"
+  fi
+fi
+
 # ── Chromium ─────────────────────────────────────────────────────────────────
 # --no-sandbox: the Chrome sandbox needs kernel privileges a default container
 #   does not have. The alternative is --cap-add=SYS_ADMIN, which hands the
@@ -97,6 +120,15 @@ start fluxbox fluxbox
 #   across the top of the page somebody is signing into.
 # The login page is opened on purpose, so the window a person is looking at is
 # already the one they need to sign into.
+#
+# The Singleton* files are Chromium's profile lock, and they name the HOSTNAME
+# that holds it. Every recreated container has a new hostname, so the lock left
+# on the volume by the last one reads as "in use by another Chromium process on
+# another computer": Chromium refuses the profile, never opens the debugging
+# port, and every run fails ECONNREFUSED on :9222. Nothing else in this
+# container can be holding the profile at this point, so the lock is stale by
+# construction.
+rm -f "$CHROME_PROFILE"/SingletonLock "$CHROME_PROFILE"/SingletonSocket "$CHROME_PROFILE"/SingletonCookie
 TRAMADA_URL="${TRAMADA_URL:-https://asp.tramada.com.au/ttms/raatravelsandbox}"
 start Chromium chromium \
   --remote-debugging-port="$CDP_PORT" \

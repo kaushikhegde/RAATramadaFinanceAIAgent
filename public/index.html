@@ -443,20 +443,6 @@ pre.code .k{color:#89c6cc} pre.code .s{color:#ffe600} pre.code .c{color:#7b7b9a}
 .modal-f b{color:var(--ink);font-variant-numeric:tabular-nums}
 .rowno{color:var(--ink-3);font-family:var(--mono);font-size:10px;text-align:right;width:42px;background:#fcfcfe}
 tr.hidden{display:none}
-/* The source-card preview. Every column of the upload, so it scrolls sideways
-   as well as down inside the box, and a cell never wraps into a tall row. */
-/* 80% of the window each way, fixed rather than sized to the file, so a short
-   upload opens in the same box as a long one and the rows scroll inside it.
-   The 1400px cap it had left a wide screen mostly unused. On a narrow screen
-   80% is too cramped to read a table in, so it takes the whole width there. */
-.pv-modal{width:80vw;height:80vh;max-height:none}
-@media(max-width:900px){.pv-modal{width:100%;height:88vh}}
-.pv-tbl{border-collapse:collapse;font-size:12px;min-width:100%}
-.pv-tbl th{background:#f6f6fb;text-align:left;padding:7px 10px;font-weight:600;white-space:nowrap;
-  border-bottom:1px solid var(--line)}
-.pv-tbl td{padding:6px 10px;border-bottom:1px solid var(--line-2);white-space:nowrap}
-.pv-tbl .num{text-align:right;font-variant-numeric:tabular-nums}
-.pv-tbl tr.pv-held td{background:#fffaf0}
 
 .note{display:flex;gap:9px;background:var(--blue-lt);border-radius:8px;padding:10px 12px;font-size:12px;color:#0b3f70;margin-bottom:13px;align-items:flex-start}
 .note b{color:#062c50}
@@ -714,6 +700,24 @@ header.top { display: none !important }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .side nav form { margin: 0 }
+
+/* The source-card preview. Every column of the upload, so it scrolls sideways
+   as well as down inside the box, and a cell never wraps into a tall row.
+   These were once typed into public/index.html's copy of the MOCKUP's styles,
+   which the build regenerates — so the Docker image, which runs the build,
+   shipped the preview as an inline table with no popup. They live here now. */
+/* 80% of the window each way, fixed rather than sized to the file, so a short
+   upload opens in the same box as a long one and the rows scroll inside it.
+   The 1400px cap it had left a wide screen mostly unused. On a narrow screen
+   80% is too cramped to read a table in, so it takes the whole width there. */
+.pv-modal{width:80vw;height:80vh;max-height:none}
+@media(max-width:900px){.pv-modal{width:100%;height:88vh}}
+.pv-tbl{border-collapse:collapse;font-size:12px;min-width:100%}
+.pv-tbl th{background:#f6f6fb;text-align:left;padding:7px 10px;font-weight:600;white-space:nowrap;
+  border-bottom:1px solid var(--line)}
+.pv-tbl td{padding:6px 10px;border-bottom:1px solid var(--line-2);white-space:nowrap}
+.pv-tbl .num{text-align:right;font-variant-numeric:tabular-nums}
+.pv-tbl tr.pv-held td{background:#fffaf0}
 
 </style>
 </head>

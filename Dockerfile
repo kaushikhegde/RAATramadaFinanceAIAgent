@@ -56,9 +56,25 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
       fonts-liberation \
       fonts-dejavu-core \
       ca-certificates \
+      libnss3-tools \
       curl \
       procps \
  && rm -rf /var/lib/apt/lists/*
+
+# The corporate TLS-inspection root (certs/README.md). This was in the image
+# once and went missing in a rewrite; what came back was Chromium refusing
+# Tramada with ERR_CERT_AUTHORITY_INVALID and no way past it, because Tramada
+# is HSTS. Three consumers, three stores:
+#   OpenSSL / curl   update-ca-certificates
+#   node / npm ci    NODE_EXTRA_CA_CERTS — set BEFORE npm ci, which otherwise
+#                    "succeeds" with an empty node_modules
+#   Chromium         NSS, via certutil — and NOT here: Chromium reads
+#                    $HOME/.pki/nssdb, HOME is the /data volume, and anything
+#                    the build put there is hidden once it mounts. The
+#                    entrypoint adds it at start. libnss3-tools above is for that.
+COPY certs/SA_ROOT.crt /usr/local/share/ca-certificates/SA_ROOT.crt
+RUN update-ca-certificates
+ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/SA_ROOT.crt
 
 # Debian's novnc ships vnc.html but not always an index.html, so `/` 404s and
 # the first thing anyone sees is a file listing. Point one at the other.

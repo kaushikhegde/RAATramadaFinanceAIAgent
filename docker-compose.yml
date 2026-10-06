@@ -3,7 +3,7 @@
 # Nothing needed on the host but Docker — no Chrome, no database to install.
 #
 #   docker compose up --build          # or: npm run docker:up
-#   → app           http://127.0.0.1:3000
+#   → app           http://127.0.0.1:3000   (or PORT from .env)
 #   → login screen  http://127.0.0.1:6080/vnc.html   (SIGN INTO TRAMADA HERE)
 services:
   recon:
@@ -24,7 +24,11 @@ services:
     # password-less VNC screen live behind these ports; the loopback bind is
     # what keeps them shut. Tunnel over SSH to reach them, never republish.
     ports:
-      - "127.0.0.1:3000:3000"   # app
+      # The HOST side follows PORT from the .env beside this file, the same one
+      # `npm start` reads — 3000 is often taken (a Grafana service sits on it on
+      # at least one dev box, and the bind failure takes the whole stack down).
+      # The container side stays 3000; nothing outside the container sees it.
+      - "127.0.0.1:${PORT:-3000}:3000"   # app
       - "127.0.0.1:6080:6080"   # noVNC login screen
       # 9222 is deliberately absent. Anything that can reach the debugging port
       # drives a browser signed into Tramada; the app reaches it inside the
@@ -78,6 +82,15 @@ services:
       # Per-person Tramada credentials. Unset, a run still waits for a human.
       AZURE_KEYVAULT_URL: ${AZURE_KEYVAULT_URL:-}
 
+    # Wait for the bundled Postgres to accept connections before the app boots —
+    # the server treats an unreachable store as fatal (it exits), so starting it
+    # ahead of the DB would just fail. This block went missing in a merge once and
+    # what came back was "could not open the run store: getaddrinfo EAI_AGAIN db".
+    # When you point DATABASE_URL at an external DB you can stop running the db
+    # service (see the comment on it below).
+    depends_on:
+      db:
+        condition: service_healthy
     volumes:
       # A named volume, NOT a host bind mount: this project sits under
       # ~/Documents, which macOS blocks Docker Desktop from mounting (TCC →

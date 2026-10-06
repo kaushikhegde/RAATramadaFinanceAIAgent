@@ -45,6 +45,24 @@ header.top { display: none !important }
 }
 .side nav form { margin: 0 }
 
+/* The source-card preview. Every column of the upload, so it scrolls sideways
+   as well as down inside the box, and a cell never wraps into a tall row.
+   These were once typed into public/index.html's copy of the MOCKUP's styles,
+   which the build regenerates — so the Docker image, which runs the build,
+   shipped the preview as an inline table with no popup. They live here now. */
+/* 80% of the window each way, fixed rather than sized to the file, so a short
+   upload opens in the same box as a long one and the rows scroll inside it.
+   The 1400px cap it had left a wide screen mostly unused. On a narrow screen
+   80% is too cramped to read a table in, so it takes the whole width there. */
+.pv-modal{width:80vw;height:80vh;max-height:none}
+@media(max-width:900px){.pv-modal{width:100%;height:88vh}}
+.pv-tbl{border-collapse:collapse;font-size:12px;min-width:100%}
+.pv-tbl th{background:#f6f6fb;text-align:left;padding:7px 10px;font-weight:600;white-space:nowrap;
+  border-bottom:1px solid var(--line)}
+.pv-tbl td{padding:6px 10px;border-bottom:1px solid var(--line-2);white-space:nowrap}
+.pv-tbl .num{text-align:right;font-variant-numeric:tabular-nums}
+.pv-tbl tr.pv-held td{background:#fffaf0}
+
 <!--@SCRIPT-->
 <!-- ══════════════════════════════════════════════════════════════════════
      LIVE WIRING
@@ -167,7 +185,7 @@ header.top { display: none !important }
      drifts from core's. Do not reorder one without the other. */
   const RUN_ORDER = ['bpay', 'mint', 'ipsi', 'travelpay', 'dvc'];
 
-  const source = { bpay: null, mint: null, travelpay: null, ipsi: null, dvc: null };  // each: { file, rows, previewOpen }
+  const source = { bpay: null, mint: null, travelpay: null, ipsi: null, dvc: null };  // each: { file, rows, skippedRows, columns, format }
 
   /* THE SECOND FILE OF A TWO-FILE CARD, held OUTSIDE `source`.
      `source[kind]` means "this report is loaded and can be run", and every
@@ -714,7 +732,7 @@ header.top { display: none !important }
      number for a different rule). Lives inside the IPSI card's own markup
      instead —
      which is rebuilt on every render, so the typed value is held here in JS
-     and re-drawn into the input each time, the same way `previewOpen` survives
+     and re-drawn into the input each time, the same way `source[kind]` survives
      a card being torn down and rebuilt. */
   let ipsiNuvei = '';
 
@@ -820,6 +838,7 @@ header.top { display: none !important }
       '<div class="actions" style="margin-top:6px">' +
       '<button class="btn sm ' + (p ? 'ghost' : 'indigo') + '" data-choose-part="' + kind + ':' + def.key + '">' +
       (p ? 'Replace file' : 'Choose file') + '</button>' +
+      (p ? '<button class="btn sm ghost" data-preview-part="' + kind + ':' + def.key + '">Preview</button>' : '') +
       (p ? '<button class="btn sm ghost" data-clear-part="' + kind + ':' + def.key + '">Remove</button>' : '') +
       '</div></div>';
   }
@@ -879,7 +898,13 @@ header.top { display: none !important }
      for the run and never inferred from the "VISA" the file records. */
   const ipsiPay = { cardType: '', plan: null, error: '', busy: false };
 
+  // Hidden for now, not removed: nobody is raising the swipe receipts from this
+  // screen yet. Flip to true to bring the block back — everything below still
+  // works, and wireIpsiPay() already does nothing when its elements are absent.
+  const SHOW_IPSI_PAY = false;
+
   function ipsiPayBlock() {
+    if (!SHOW_IPSI_PAY) return '';
     const s = source.ipsi;
     if (!s || !s.rows || !s.rows.length) return '';
 
@@ -1014,7 +1039,7 @@ header.top { display: none !important }
             size: (run.file && run.file.bytes) || 0 },
           rows: (run.rows || []).map((r) => ({ ...r })),
           skippedRows: [],
-          previewOpen: false,
+
           columns: run.columns || [],
           format: run.format || 'csv',
         };
@@ -1582,8 +1607,7 @@ header.top { display: none !important }
       // defeats the point of a preview being the check before a run.
       // Amber until it is reconciled. See cardDone.
       const finished = cardDone(kind);
-      return '<div class="dz ' + (finished ? 'done' : 'ready') + '" data-kind="' + kind + '"' +
-        (s.previewOpen ? ' style="grid-column:1/-1"' : '') + '>' +
+      return '<div class="dz ' + (finished ? 'done' : 'ready') + '" data-kind="' + kind + '">' +
         '<div class="di">' + (isActive && running ? '◐' : finished ? '✓' : '⇪') + '</div><div style="flex:1">' +
         head + state + '</h3>' +
         '<p>' + def.blurb + '</p>' +
@@ -1600,13 +1624,11 @@ header.top { display: none !important }
            rows right here, and "View rows" jumped to the report page, which
            after General 14 has nothing on it until a run has happened. Two
            buttons, one of which now leads somewhere empty. */
-        '<button class="btn sm ghost" data-preview="' + kind + '">' +
-        (s.previewOpen ? 'Hide preview' : 'Preview') + '</button>' +
+        '<button class="btn sm ghost" data-preview="' + kind + '">Preview</button>' +
         '<button class="btn sm ghost" data-choose="' + kind + '">Replace file</button>' +
         '<button class="btn sm ghost" data-clear="' + kind + '">Remove</button>' +
         '</div>' +
         pairSlot(kind) +
-        (s.previewOpen ? previewTable(kind) : '') +
         (kind === 'ipsi' ? ipsiPendingBlock() + ipsiPayBlock() : '') +
         '</div></div>';
     }).join('');
@@ -1675,10 +1697,11 @@ header.top { display: none !important }
       b.onclick = () => openPicker(b.dataset.choose);
     });
     grid.querySelectorAll('[data-preview]').forEach((b) => {
-      b.onclick = () => {
-        const s = source[b.dataset.preview];
-        if (s) { s.previewOpen = !s.previewOpen; renderSource(); }
-      };
+      b.onclick = () => openSourcePreview(b.dataset.preview, '', b);
+    });
+    grid.querySelectorAll('[data-preview-part]').forEach((b) => {
+      const [kind, part] = b.dataset.previewPart.split(':');
+      b.onclick = () => openSourcePreview(kind, part, b);
     });
     grid.querySelectorAll('[data-clear]').forEach((b) => {
       b.onclick = () => {
@@ -1930,39 +1953,127 @@ header.top { display: none !important }
     picker.click();
   }
 
-  /* The readyNote promises "the preview below is the only check before it
-     does" — before this there was no preview to be the check. */
-  function previewTable(kind) {
-    const rs = (source[kind] && source[kind].rows) || [];
-    /* DVC's own preview. The shared checks-only one is Payment reference /
-       Merchant / Amount, and a DVC line has none of the first two — it would
-       have drawn a table of blanks over a file that is entirely readable.
-       Booking and segment type are what the match is made on (BR03), so they
-       are what the check before a run has to show. */
-    if (kind === 'dvc') {
-      return '<div class="tbl-wrap" style="margin-top:12px"><table><thead><tr>' +
-        '<th>Booking</th><th>Segment</th><th>Merchant</th><th class="num">Amount</th>' +
-        '</tr></thead><tbody>' +
-        rs.map((r) => '<tr><td class="mono">' +
-          (r.bookingNo ? esc(r.bookingNo) : '<span class="muted">—</span>') + '</td>' +
-          '<td>' + esc(r.segmentType || '') + '</td>' +
-          '<td>' + esc(r.merchant || '') + '</td>' +
-          '<td class="num">' + esc(r.amount) + '</td></tr>').join('') +
-        '</tbody></table></div>';
+  /* ── THE PREVIEW, AS A POPUP ──
+     It used to open inline, stretching the card across the whole grid and
+     pushing every other card down the page, and it showed three to five
+     columns the run reads — "Transaction reference / To company / Amount" —
+     out of a Mint file with sixteen. The preview is the check a person makes
+     before a run, and a check that hides most of the file is not one.
+
+     So: a popup over the page, every column the upload has under its own
+     heading and in its own order (each row's `cells`, kept by the parser for
+     exactly this and for the emailed sheet), every row including the ones the
+     parser held back, scrolling both ways inside the box. Esc, the ✕, Close
+     or a click outside shuts it. Read-only — nothing here touches Tramada. */
+  function previewColumns(file, rows) {
+    const given = (file.columns || []).filter(Boolean);
+    if (given.length) return given;
+    const seen = new Set(), out = [];
+    rows.forEach((r) => Object.keys(r.cells || {}).forEach((k) => {
+      if (!seen.has(k)) { seen.add(k); out.push(k); }
+    }));
+    return out;
+  }
+
+  function openSourcePreview(kind, part, opener) {
+    const def = SOURCES[kind] || {};
+    const file = part ? pairFile[kind] : source[kind];
+    if (!file) return;
+    const title = part ? ((def.pair || {}).title || 'Paired file') : (def.title || kind);
+
+    // Held-back rows are part of the file too — shown, and said to be held back.
+    const held = (file.skippedRows || []).map((r) => ({ r: r, held: true }));
+    let all = (file.rows || []).map((r) => ({ r: r, held: false })).concat(held);
+    // The file's own order where the parser recorded it; BPay's in-browser
+    // CSV parser does not, and its held-back rows then follow the rest.
+    if (all.every((x) => Number.isFinite(x.r.line))) all.sort((a, b) => a.r.line - b.r.line);
+
+    let cols = previewColumns(file, all.map((x) => x.r));
+    /* A row with no `cells` is one parsed before they were kept (a run
+       reopened from before this change). Its own fields are then the best
+       there is — shown under their field names rather than as nothing. */
+    const noCells = !cols.length;
+    if (noCells) {
+      const skip = new Set(['cells', 'line', 'n', 'src', 'amountCents', 'rawAmount']);
+      const seen = new Set();
+      all.forEach((x) => Object.keys(x.r).forEach((k) => {
+        const v = x.r[k];
+        if (!skip.has(k) && !seen.has(k) && (typeof v === 'string' || typeof v === 'number')) { seen.add(k); cols.push(k); }
+      }));
     }
-    const head = checksOnly(kind)
-      ? '<th>' + (kind === 'travelpay' ? 'Payment reference' : 'Transaction reference') +
-        '</th><th>' + (kind === 'travelpay' ? 'Merchant' : 'To company') +
-        '</th><th class="num">Amount</th>'
-      : '<th>Date</th><th>Reference</th><th>Rec/Pay type</th><th class="num">Amount</th><th>Booking</th>';
-    const body = rs.map((r) => checksOnly(kind)
-      ? '<tr><td class="mono">' + esc(r.transNo) + '</td><td>' + esc(r.toCompany) + '</td>' +
-        '<td class="num">' + esc(r.amount) + '</td></tr>'
-      : '<tr><td>' + esc(r.date) + '</td><td class="mono">' + esc(r.reference) + '</td>' +
-        '<td>' + esc(r.recPayType) + '</td><td class="num">' + esc(r.amount) + '</td>' +
-        '<td class="mono">' + esc(r.bookingNo) + '</td></tr>').join('');
-    return '<div class="tbl-wrap" style="margin-top:12px"><table><thead><tr>' + head +
-      '</tr></thead><tbody>' + body + '</tbody></table></div>';
+    const valueOf = (r, c) => {
+      const v = noCells ? r[c] : (r.cells || {})[c];
+      return v == null ? '' : String(v);
+    };
+    const anyHeld = held.length > 0;
+    const money = (c) => /amount|total|debit|credit|balance|due/i.test(c);
+
+    const head = '<th class="rowno">#</th>' +
+      cols.map((c) => '<th' + (money(c) ? ' class="num"' : '') + '>' + esc(c) + '</th>').join('') +
+      (anyHeld ? '<th>Upload note</th>' : '');
+    const body = all.map((x, i) => {
+      const vals = cols.map((c) => valueOf(x.r, c));
+      const hay = vals.join(' ').toLowerCase();
+      return '<tr data-hay="' + esc(hay) + '"' + (x.held ? ' class="pv-held"' : '') + '>' +
+        '<td class="rowno">' + (Number.isFinite(x.r.line) ? x.r.line : i + 1) + '</td>' +
+        vals.map((v, j) => '<td' + (money(cols[j]) ? ' class="num"' : '') + '>' + esc(v) + '</td>').join('') +
+        (anyHeld ? '<td>' + (x.held
+          ? '<span class="badge b-warn">held back</span> ' + esc(x.r.remark || '')
+          : '') + '</td>' : '') +
+        '</tr>';
+    }).join('');
+
+    const bg = document.createElement('div');
+    bg.className = 'modal-bg';
+    bg.innerHTML =
+      '<div class="modal pv-modal" role="dialog" aria-modal="true" aria-label="' + esc(title) + ' preview">' +
+        '<div class="modal-h"><div>' +
+          '<h3>' + esc(title) + '</h3>' +
+          '<span class="fn">' + esc(file.file ? file.file.name : '') + ' · ' + all.length + ' row' +
+            (all.length === 1 ? '' : 's') + ' · ' + cols.length + ' column' + (cols.length === 1 ? '' : 's') +
+            (anyHeld ? ' · ' + held.length + ' held back' : '') + '</span>' +
+        '</div><div class="spacer"></div>' +
+        '<button class="xbtn" data-close aria-label="Close preview">✕</button></div>' +
+        '<div class="modal-tools"><input data-pv-search placeholder="Search any column…" aria-label="Search the preview">' +
+          '<div class="spacer"></div><span class="muted" style="font-size:11.5px" data-pv-count>' +
+          'Showing ' + all.length + ' of ' + all.length + ' rows</span></div>' +
+        '<div class="modal-b"><table class="pv-tbl"><thead><tr>' + head + '</tr></thead>' +
+          '<tbody>' + (body || '<tr><td class="rempty" colspan="' + (cols.length + 1) + '">Nothing in this file.</td></tr>') +
+          '</tbody></table></div>' +
+        '<div class="modal-f"><span>Rows <b>' + all.length + '</b></span><span>Columns <b>' + cols.length + '</b></span>' +
+          '<div class="spacer"></div><span class="muted" style="font-size:11px">Read-only — nothing is written to Tramada from here</span>' +
+          '<button class="btn" data-close>Close</button></div>' +
+      '</div>';
+    document.body.appendChild(bg);
+    // The page behind stays put while the popup scrolls.
+    const overflowWas = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    const close = () => {
+      bg.remove();
+      document.body.style.overflow = overflowWas;
+      document.removeEventListener('keydown', onKey);
+      if (opener && document.body.contains(opener)) opener.focus();
+    };
+    function onKey(e) { if (e.key === 'Escape') close(); }
+    document.addEventListener('keydown', onKey);
+    bg.querySelectorAll('[data-close]').forEach((b) => { b.onclick = close; });
+    bg.addEventListener('click', (e) => { if (e.target === bg) close(); });
+
+    const search = bg.querySelector('[data-pv-search]');
+    const count = bg.querySelector('[data-pv-count]');
+    const trs = Array.from(bg.querySelectorAll('tbody tr[data-hay]'));
+    search.addEventListener('input', () => {
+      const q = search.value.trim().toLowerCase();
+      let shown = 0;
+      trs.forEach((tr) => {
+        const hit = !q || tr.dataset.hay.includes(q);
+        tr.classList.toggle('hidden', !hit);
+        if (hit) shown++;
+      });
+      count.textContent = 'Showing ' + shown + ' of ' + all.length + ' rows';
+    });
+    search.focus();
   }
 
   /* IPSI NO LONGER BLOCKS A COMBINED RUN. Asked for 24-Sep-2026: if every
@@ -2212,7 +2323,7 @@ header.top { display: none !important }
   function accept(kind, file, parsed, skipped, skippedRows, columns, format) {
     source[kind] = {
       file: { name: file.name, size: file.size }, rows: parsed,
-      skippedRows: skippedRows || [], previewOpen: false,
+      skippedRows: skippedRows || [],
       // The file's own headings, and the container it arrived in. The export
       // hands back the same shape in the same format.
       columns: (columns || []).filter(Boolean),
@@ -2593,7 +2704,7 @@ header.top { display: none !important }
           '<button class="tri' + (tokioFilter === k ? ' on' : '') + '" data-tf="' + k + '">' +
           label + ' <span class="n">' + rows0.filter(fn).length + '</span></button>').join('') +
           '<div class="spacer"></div><span class="badge ' +
-          (tokio.run && tokio.run.savedSession ? 'b-ok' : 'b-mute') +
+          ({ done: 'b-ok', fail: 'b-err' }[tokioLook()] || 'b-mute') +
           '" style="margin-bottom:8px">' +
           (tokio.run && tokio.run.savedSession
             ? 'session ' + esc(tokio.run.label) + ' saved'
@@ -4391,8 +4502,12 @@ header.top { display: none !important }
     css.textContent = [
       '.tk-host{grid-column:1/-1;background:#fff;border:1px solid var(--line,#e3e3ee);',
       '  border-radius:12px;padding:18px 20px;margin-top:4px}',
-      '.tk-host h3{margin:0 0 4px;font-size:15px;display:flex;align-items:center;gap:8px}',
-      '.tk-host .tk-sub{color:var(--ink-2,#5a5a72);font-size:12.5px;margin:0 0 14px}',
+      /* Sized like the source cards above it, which take the browser's own h3
+         (they were h4 once — see renderSource). A 15px heading and a 12.5px
+         dark subtitle made this card read as a different page sitting under
+         the grid. */
+      '.tk-host h3{margin:0 0 6px;display:flex;align-items:center;gap:8px}',
+      '.tk-host .tk-sub{color:var(--ink-3);font-size:11px;margin:0 0 14px}',
       '.tk-host .tk-slots{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}',
       '.tk-slot{border:1px solid var(--line-2,#ececf4);border-radius:9px;padding:11px 12px}',
       '.tk-slot b{display:block;font-size:12.5px;margin-bottom:3px}',
@@ -4441,6 +4556,17 @@ header.top { display: none !important }
       '  border-top:1px solid var(--line-2,#ececf4);color:var(--ink-2,#5a5a72)}',
       '.tk-host .tk-status a{margin-left:6px;white-space:nowrap}',
       '.tk-host .tk-acts{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}',
+      /* GREEN WHEN THE RUN FINISHED, like every other source card (.dz.done):
+         the same border, wash and ✓. Tokio used to finish with nothing on the
+         card changing colour, so a run that worked looked like one that had
+         not been started. Red when it stopped, as .dz.err. */
+      '.tk-host.tk-done{border-color:#bfe3d2;background:#f6fcf9}',
+      '.tk-host.tk-fail{border-color:#f0c3cd;background:#fdf6f8}',
+      '.tk-host .tk-mark{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:7px;',
+      '  font-size:12px;background:var(--ok-bg);color:var(--ok)}',
+      '.tk-host.tk-fail .tk-mark{background:var(--err-bg);color:var(--err)}',
+      '.tk-host.tk-done .tk-status{color:var(--ok);font-weight:600}',
+      '.tk-host .tk-ok{color:var(--ok);font-size:12px;font-weight:600;margin-bottom:6px}',
     ].join('\n');
     document.head.appendChild(css);
 
@@ -4454,6 +4580,20 @@ header.top { display: none !important }
     renderTokio();
   }
 
+  /* 'done' once a run came back, 'fail' once one stopped, '' otherwise. A run
+     that ticked and stopped before saving is a run that WORKED — the stop is
+     the design (BR16) — so it is green too, the same as a dry run on any other
+     card; the badge says whether the session was saved. */
+  function tokioLook() {
+    if (tokio.running || !tokio.result) return '';
+    if (tokio.runError) return 'fail';
+    return tokio.run ? 'done' : '';
+  }
+  function tokioMark(look) {
+    return look === 'done' ? '<span class="tk-mark">\u2713</span>'
+      : look === 'fail' ? '<span class="tk-mark">\u00d7</span>' : '';
+  }
+
   function renderTokio() {
     const card = document.getElementById('tokioCard');
     if (!card) return;
@@ -4464,8 +4604,10 @@ header.top { display: none !important }
       return '<div class="tk-slot"><b>' + esc(f.title) + '</b>' +
         '<div class="tk-note">' + esc(f.note) + '</div>' +
         (got ? '<div class="tk-have">\u2713 ' + esc(got.name) + '</div>' : '') +
-        '<div class="tk-btn"><button class="btn sm" data-tokio-pick="' + f.kind + '">' +
-        (got ? 'Replace' : 'Choose file') + '</button></div></div>';
+        // The same buttons as the source cards: indigo to choose, ghost to replace.
+        '<div class="tk-btn"><button class="btn sm ' + (got ? 'ghost' : 'indigo') +
+        '" data-tokio-pick="' + f.kind + '">' +
+        (got ? 'Replace file' : 'Choose file') + '</button></div></div>';
     }).join('');
 
     const m = tokio.result && tokio.result.month;
@@ -4496,16 +4638,20 @@ header.top { display: none !important }
        ("ready", "consolidated") for the same four states, so two cards side
        by side on one screen described the same situation differently. */
     const r0 = tokio.run;
+    const look = tokioLook();
     const badge = have < 4 ? ['b-mute', have + ' of 4 uploaded']
       : tokio.busy ? ['b-mute', 'reading\u2026']
       : tokio.running ? ['b-ai', 'running\u2026']
       : !tokio.result ? ['b-mute', 'loaded']
+      : look === 'fail' ? ['b-err', 'stopped']
       : r0 && r0.savedSession ? ['b-ok', 'processed']
-      : r0 ? ['b-warn', 'not saved yet']
+      : r0 && r0.empty ? ['b-ok', 'processed \u2014 nothing outstanding']
+      : r0 ? ['b-ok', 'processed \u2014 not saved']
       : ['b-warn', 'not run yet'];
 
+    card.className = 'tk-host' + (look ? ' tk-' + look : '');
     card.innerHTML =
-      '<h3>Tokio Marine <span class="badge ' + badge[0] + '">' + badge[1] + '</span></h3>' +
+      '<h3>' + tokioMark(look) + 'Tokio Marine <span class="badge ' + badge[0] + '">' + badge[1] + '</span></h3>' +
       '<p class="tk-sub">Monthly. All four files must be for the same reporting month. ' +
         'No transaction total is entered \u2014 the figure to balance to is not known until ' +
         'Retail is excluded and the exceptions are resolved.</p>' +
@@ -4609,9 +4755,9 @@ header.top { display: none !important }
      heading match would be a second opinion that can disagree with the one the
      run actually ticked on. */
   function tokioSheetRows() {
-    const res = tokio.result;
-    if (!res || !res.rows) return [];
-    return res.rows.map((r) => ({
+    // The sheet after the run when there is one, so the filter and the search
+    // box see the run's remarks and Tramada column too (see `tokioRows`).
+    return tokioRows().map((r) => ({
       row: r,
       outcome: r.outcome,
       policy: r.policy,
@@ -4703,11 +4849,14 @@ header.top { display: none !important }
     /* The badge says what STATE the run is in, derived, never asserted — the
        same rule the checklist works by. "session saved" is the only one that
        claims anything happened in Tramada. */
-    const badgeKind = r && r.savedSession ? 'b-ok' : tokio.runError ? 'b-err' : 'b-mute';
+    const look = tokioLook();
+    const badgeKind = look === 'fail' ? 'b-err' : look === 'done' ? 'b-ok' : 'b-mute';
     const badgeText = tokio.runError ? 'stopped'
       : r && r.savedSession ? 'session saved'
+      : r && r.empty ? 'nothing outstanding'
       : r ? 'ticked, not saved'
       : 'consolidated \u2014 not run in Tramada yet';
+    card.className = 'tk-host' + (look ? ' tk-' + look : '');
 
     const counts = !c ? '' :
       '<div class="tk-counts">' +
@@ -4718,7 +4867,7 @@ header.top { display: none !important }
       '</div>';
 
     card.innerHTML =
-      '<h3>Tokio Marine <span class="badge ' + badgeKind + '">' + badgeText + '</span></h3>' +
+      '<h3>' + tokioMark(look) + 'Tokio Marine <span class="badge ' + badgeKind + '">' + badgeText + '</span></h3>' +
       '<p class="tk-sub">' +
         (m ? esc(m.label || m.key) + ' \u00b7 ' : '') +
         (res && res.labels
@@ -4809,18 +4958,30 @@ header.top { display: none !important }
      report screen shows the same sheet with a read-only bar: the run is
      started from Sources & upload, and two Reconcile buttons on two screens
      is two ways to write to Tramada. */
-  function tokioSheetTable(extra, only) {
+  /* THE SHEET AFTER THE RUN, once there is one. The server writes the Tramada
+     run's verdict and remarks into it (tokio-core `sheetAfterRun`); before
+     that the table, the Export and step 15's attachment all read the parse's
+     rows, so a Travel line Tramada refused went out with a blank Remarks cell
+     — its reason only in the separate "not ticked" table on this card. */
+  function tokioRows() {
+    const r = tokio.run;
+    if (r && Array.isArray(r.sheet) && r.sheet.length) return r.sheet;
     const res = tokio.result;
-    if (!res || !res.rows || !res.rows.length) return '';
+    return (res && res.rows) || [];
+  }
+
+  function tokioSheetTable(extra, only) {
+    const rows = tokioRows();
+    if (!rows.length) return '';
     /* `only` is the filtered subset when the report screen's filter row is
        narrowing it; the upload card passes nothing and shows the lot. The
        COLUMNS still come from the whole sheet — read off the first VISIBLE
        row instead, a filter that left only exceptions could change the table's
        shape, which reads as the file having changed. */
-    const shown = only || res.rows;
+    const shown = only || rows;
 
-    const srcCols = Object.keys(res.rows[0].source || {});
-    const appCols = Object.keys(res.rows[0].appended || {});
+    const srcCols = Object.keys(rows[0].source || {});
+    const appCols = Object.keys(rows[0].appended || {});
     const head = ['#', 'Outcome'].concat(srcCols, appCols);
 
     const body = shown.map((r) => {
@@ -4846,8 +5007,8 @@ header.top { display: none !important }
       '<div style="font-size:12px;font-weight:600;margin-bottom:7px">Consolidated working sheet ' +
         '<span style="font-weight:400;color:var(--ink-2,#5a5a72)">— Tokio\u2019s own columns, then the ' +
         'calculated and lookup columns, then Remarks' +
-        (shown.length !== res.rows.length
-          ? ' \u00b7 showing ' + shown.length + ' of ' + res.rows.length
+        (shown.length !== rows.length
+          ? ' \u00b7 showing ' + shown.length + ' of ' + rows.length
           : '') +
         '</span></div>' +
       (shown.length ? ''
@@ -4941,7 +5102,15 @@ header.top { display: none !important }
     const tickedShown = (r.ticked || []).filter(hit);
     const missShown = (r.mismatched || []).filter(hit);
 
-    const emailBlock =
+    /* The run's own email — sent by the server the moment the run finished,
+       the same as every other report's. Said here because the card is where
+       a person looks to see whether anyone was told. */
+    const mail = r.email;
+    const runMail = !mail ? ''
+      : mail.sent
+        ? '<div class="tk-ok">\u2713 Emailed the reconciliation to ' + esc((mail.to || []).join(', ')) + '.</div>'
+        : '<div class="tk-warn">The reconciliation email was not sent \u2014 ' + esc(mail.why || 'no reason given') + '.</div>';
+    const emailBlock = runMail +
       (tokio.emailError ? '<div class="tk-err">Step 15 — ' + esc(tokio.emailError) + '</div>' : '') +
       (tokio.emailResult
         ? '<div class="tk-warn">' +
@@ -5035,7 +5204,11 @@ header.top { display: none !important }
     tokio.runError = '';
     renderTokio();
     try {
-      const body = { rows: res.rows, month: res.month && res.month.key };
+      const body = {
+        rows: res.rows, month: res.month && res.month.key,
+        // For the run's email, which names the month the way a person does.
+        monthLabel: (res.month && (res.month.label || res.month.key)) || '',
+      };
       if (confirm) body.confirm = confirm;
       const reply = await fetch('/api/tokio/reconcile', {
         method: 'POST',
@@ -5096,8 +5269,10 @@ header.top { display: none !important }
           counts: {
             ticked: (r.ticked || []).length,
             mismatched: (r.mismatched || []).length,
-            exceptions: outcomeCount('exception'),
-            retail: outcomeCount('retail'),
+            // tokio-core's OUTCOME values are capitalised. These were
+            // compared lowercase, so the draft always said 0 and 0.
+            exceptions: outcomeCount('Exception'),
+            retail: outcomeCount('Retail'),
           },
           attachment: { filename: built.filename, contentBase64: btoa(bin) },
         }),
@@ -5120,16 +5295,17 @@ header.top { display: none !important }
      stop. So the bytes are built once. */
   function tokioCsv() {
     const res = tokio.result;
-    if (!res || !res.rows || !res.rows.length) return null;
+    const rows = tokioRows();
+    if (!rows.length) return null;
 
-    const srcCols = Object.keys(res.rows[0].source || {});
-    const appCols = Object.keys(res.rows[0].appended || {});
+    const srcCols = Object.keys(rows[0].source || {});
+    const appCols = Object.keys(rows[0].appended || {});
     const cell = (v) => {
       const t = v == null ? '' : String(v);
       return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
     };
     const lines = [['Outcome'].concat(srcCols, appCols).map(cell).join(',')];
-    for (const r of res.rows) {
+    for (const r of rows) {
       lines.push([r.outcome]
         .concat(srcCols.map((c) => r.source[c]))
         .concat(appCols.map((c) => r.appended[c]))
@@ -5171,6 +5347,14 @@ header.top { display: none !important }
       if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
       tokio.result = data;
       tokio.month = data.month.key;
+      /* A NEW SHEET IS NOT THE SHEET THAT WAS RECONCILED. The run, its green
+         card and its merged sheet belong to the files it ran on; leaving them
+         beside a fresh upload would show last month's verdict over this
+         month's rows. */
+      tokio.run = null;
+      tokio.runError = '';
+      tokio.emailResult = null;
+      tokio.emailError = '';
     } catch (err) {
       tokio.result = null;
       tokio.error = err.message;
