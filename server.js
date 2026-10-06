@@ -1015,6 +1015,26 @@ function handleReconEdit(session, msg) {
  * keep in agreement with the one the run actually uses. What comes back is what
  * the run will use.
  */
+/**
+ * No new file while a run is driving the browser.
+ *
+ * Uploading mid-run could not corrupt the run itself -- a run works on the rows
+ * in the frame that started it -- but it changed what the NEXT run would pick
+ * up, silently, while somebody's attention was on a reconciliation in progress.
+ * The file landed on a card, looked loaded, and joined whatever ran next.
+ *
+ * Refused at the server and not only greyed out on the page, because the page
+ * is one of two reconnecting clients and the one that did not start the run has
+ * no idea a run is going until its next frame arrives.
+ */
+function uploadsClosed(session, source, name) {
+  const by = runLock.heldBy();
+  if (!by) return null;
+  wsAudit(session, "upload.refused", { outcome: "failure", report: source,
+    originalName: name, reason: `a reconciliation started by ${by} is still running` });
+  return `${by} is running a reconciliation — files cannot be loaded until it finishes.`;
+}
+
 function handleReconParse(session, msg) {
   const name = String(msg.name || "the file");
   /* Every report is read here, by the parser the run itself uses — BPay
@@ -1034,6 +1054,9 @@ function handleReconParse(session, msg) {
   const pairs = reconCore.REPORTS[source].pairs;
   const part = pairs && pairs[msg.part] ? msg.part : (pairs ? Object.keys(pairs)[0] : "");
   const reply = (extra) => send(session, { type: "recon_parsed", source, part, name, ...extra });
+
+  const shut = uploadsClosed(session, source, name);
+  if (shut) { reply({ error: shut }); return; }
 
   // ~8 MB of base64 is ~6 MB of file. A daily settlement is tens of kilobytes.
   if (!msg.base64 || String(msg.base64).length > 8 * 1024 * 1024) {
@@ -1132,6 +1155,11 @@ function handleReconUpload(session, msg) {
   const name = String(msg.name || "report");
   if (!msg.base64 || String(msg.base64).length > 8 * 1024 * 1024) {
     send(session, { type: "recon_uploaded", source, name, error: "that file is empty or too large to store" });
+    return;
+  }
+  const shut = uploadsClosed(session, source, name);
+  if (shut) {
+    send(session, { type: "recon_uploaded", source, name, error: shut });
     return;
   }
   const file = keep(session, source, name, Buffer.from(String(msg.base64), "base64"));
@@ -1275,6 +1303,52 @@ const callbacks = (session, run) => ({
   },
 });
 
+/**
+ * RAA's once-a-day rule, 05-Oct-2026: BPay, Mint, IPSI, TravelPay and DVC each
+ * refuse a second LIVE run once one has already finished the work today —
+ * `reconCore.lockedReportToday` decides what "finished" means per report.
+ * A dry run never counts (CLAUDE.md §3: a preview is not a filing) and is
+ * never even asked about. Tokio has its own card and never calls this.
+ */
+function dailyLockMessage(source, dryRun) {
+  if (dryRun) return null;
+  if (!reconCore.lockedReportToday(source, store.listRuns())) return null;
+  return `${reconCore.REPORTS[source].title} already finished a live run today — it runs once a day and unlocks tomorrow.`;
+}
+
+/**
+ * The once-a-day rule, with the way through it.
+ *
+ * A lock with no override is not safe, it is just rigid: a run can report
+ * success and still have left the day half done, and the only remedy would be
+ * editing the database. So the refusal carries `lockedToday`, the page offers
+ * "run it again anyway", and the second attempt comes back with
+ * `overrideDailyLock`.
+ *
+ * The override is AUDITED AS HIGH RISK and under its own event. The rule
+ * exists because the work is already filed in Tramada, so going round it is
+ * precisely what a reviewer is looking for — and it must not hide among
+ * ordinary refusals.
+ *
+ * Returns null to let the run proceed, or { message } to refuse.
+ */
+function dailyLockRefusal(session, source, msg) {
+  const message = dailyLockMessage(source, msg.dryRun);
+  if (!message) return null;
+  if (!msg.overrideDailyLock) {
+    wsAudit(session, "run.refused", { outcome: "failure", report: source,
+      target: reconCore.REPORTS[source].title, reason: "already ran today" });
+    return { message };
+  }
+  const was = reconCore.lockedReportToday(source, store.listRuns());
+  wsAudit(session, "run.lock.overridden", {
+    report: source,
+    target: reconCore.REPORTS[source].title,
+    detail: { earlierRun: was && was.runId, earlierFinishedAt: was && was.finishedAt },
+  });
+  return null;
+}
+
 async function handleReconRun(session, msg) {
   if (msg.source === "both") return handleCombinedRun(session, msg);
 
@@ -1302,6 +1376,11 @@ async function handleReconRun(session, msg) {
   }
   if (!rows.length) {
     send(session, { type: "recon_done", error: "nothing in that CSV could be run" });
+    return;
+  }
+  const lockedBpay = dailyLockRefusal(session, "bpay", msg);
+  if (lockedBpay) {
+    send(session, { type: "recon_done", error: lockedBpay.message, lockedToday: true, source: "bpay" });
     return;
   }
   if (runLock.heldBy()) {
@@ -1450,6 +1529,17 @@ async function handleCombinedRun(session, msg) {
         "another report — it reconciles two spreadsheets and has no statement page to share. Run it on its own." });
     return;
   }
+  /* Refuse the WHOLE combined run if any bundled type already ran live today,
+     rather than quietly dropping its rows — a person who uploaded BPay+Mint
+     expecting both to run should not learn later that only one of them did. */
+  const locked = Object.keys(byReport)
+    .filter((k) => byReport[k].length)
+    .map((k) => dailyLockRefusal(session, k, msg))
+    .filter(Boolean);
+  if (locked.length) {
+    send(session, { type: "recon_done", error: locked.map((l) => l.message).join(" "), lockedToday: true });
+    return;
+  }
   if (runLock.heldBy()) {
     send(session, { type: "recon_progress", message: `${runLock.heldBy()} is running a reconciliation — this one was not started.`, ok: false });
     return;
@@ -1516,6 +1606,11 @@ async function handleIpsiRun(session, msg) {
   const uploaded = Array.isArray(msg.rows) ? msg.rows : [];
   if (!uploaded.length) {
     send(session, { type: "recon_done", error: "nothing in that IPSI file could be checked" });
+    return;
+  }
+  const lockedIpsi = dailyLockRefusal(session, "ipsi", msg);
+  if (lockedIpsi) {
+    send(session, { type: "recon_done", error: lockedIpsi.message, lockedToday: true, source: "ipsi" });
     return;
   }
   if (runLock.heldBy()) {
@@ -1638,6 +1733,25 @@ async function handleDvcRun(session, msg) {
         "or every line reads as a booking that is not in Tramada" });
     return;
   }
+  const lockedDvc = dailyLockRefusal(session, "dvc", msg);
+  if (lockedDvc) {
+    send(session, { type: "recon_done", error: lockedDvc.message, lockedToday: true, source: "dvc" });
+    return;
+  }
+
+  /* ONE RUN AT A TIME, because there is ONE browser driving Tramada.
+     This handler was the only one that never took the lock: a DVC file
+     uploaded while a BPay or IPSI run was in flight started a second flow
+     against the same Chrome, and two flows typing into one page is not a
+     race that ends in a clean error -- it ends in a receipt filed against
+     whatever page the other run had just navigated to. It also meant a DVC
+     run in progress did not stop anything else from starting on top of IT. */
+  if (runLock.heldBy()) {
+    send(session, { type: "recon_progress",
+      message: `${runLock.heldBy()} is running a reconciliation — this one was not started.`, ok: false });
+    return;
+  }
+  runLock.take(session);
 
   /* Step 1 / BR02 — one business day. The client's own spreadsheet stacks a
      month of daily reports in one tab, because that is what dropping each day's
@@ -1770,6 +1884,11 @@ async function handleDvcRun(session, msg) {
     const why = reconCore.tidyError(err.message);
     closeRun(run, null, why);
     send(session, { type: "recon_done", error: why, runId: run && run.id });
+  } finally {
+    // In a finally, not at the end of the try: a lock held by a run that threw
+    // is a lock nobody can release, and the next person is told a run is in
+    // progress until the server restarts.
+    runLock.release();
   }
 }
 
@@ -2210,6 +2329,11 @@ async function handleMintRun(session, msg) {
     send(session, { type: "recon_done", error: `nothing in that ${report.title} file could be checked` });
     return;
   }
+  const lockedOne = dailyLockRefusal(session, source, msg);
+  if (lockedOne) {
+    send(session, { type: "recon_done", error: lockedOne.message, lockedToday: true, source });
+    return;
+  }
   if (runLock.heldBy()) {
     send(session, { type: "recon_progress", message: `${runLock.heldBy()} is running a reconciliation — waiting for it to finish.`, ok: false });
     return;
@@ -2324,9 +2448,23 @@ async function handleMintRun(session, msg) {
      both look identical from the outside — an app that opens straight onto the
      reconciliation screen. One of them is a deliberate local run; the other is a
      shared server whose front door never got installed. */
-  const authProblem = azureAuth.configProblem();
+  const authProblem = azureAuth.configProblem(PORT);
   if (authProblem) console.log(`  ⚠ ${authProblem}`);
   else if (!azureAuth.enabled()) console.log("  ⚠ No Entra sign-in configured — anyone who can reach this port can use the app.");
+  /* The one address to use, taken from AZURE_REDIRECT_URI itself rather than
+     guessed. localhost and 127.0.0.1 are different cookie origins, so a banner
+     that names the other spelling than the redirect URI is how an afternoon
+     goes: sign-in succeeds, lands, and drops you back with no error anywhere. */
+  if (azureAuth.enabled()) {
+    try {
+      const origin = new URL(azureAuth.REDIRECT_URI).origin;
+      console.log(`  \u2713 Entra sign-in is on. OPEN ${origin} \u2014 the other spelling of`);
+      console.log(`    this machine is a different cookie origin (we redirect, but start here).`);
+    } catch (_) {
+      console.log(`  \u26a0 AZURE_REDIRECT_URI is not a URL: ${azureAuth.REDIRECT_URI}`);
+    }
+  }
+
   if (azureAuth.enabled() && !creds.configured()) {
     console.log("  ⚠ Signed-in users have no Tramada credentials in a vault — each run still waits for a human to sign into Tramada.");
   }

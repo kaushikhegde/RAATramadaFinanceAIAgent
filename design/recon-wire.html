@@ -2409,6 +2409,15 @@ header.top { display: none !important }
   function load(file, kind, part) {
     if (!file || !kind) return;
     part = part || '';
+    /* Not while a run is going. The server refuses this too -- that is the
+       real guard, since a second page has no idea a run started -- but doing
+       it here as well means the file is turned away on the card it was dropped
+       on, instead of appearing to load and then being rejected a round trip
+       later. */
+    if (running) {
+      reject(kind, file.name, 'a reconciliation is running — wait for it to finish', part);
+      return;
+    }
     // The slot this file is for, which is what `pending` is keyed on and what
     // the server echoes back — see the `part` note on openPicker.
     const slot = part ? kind + ':' + part : kind;
@@ -3434,6 +3443,17 @@ header.top { display: none !important }
   }
 
   function mountNav() {
+    /* The override lives here rather than on the alert bar, because the bar's
+       innerHTML is rewritten on every run and a listener bound to the old
+       node would be gone the next time it is needed. */
+    document.addEventListener('click', (e) => {
+      const o = e.target.closest('[data-act="override-lock"]');
+      if (!o) return;
+      e.preventDefault();
+      alertBar('err', 'Running it again anyway\u2026');
+      start({ overrideDailyLock: true });
+    });
+
     document.addEventListener('click', (e) => {
       const t = e.target.closest('[data-go]');
       if (!t) return;
@@ -3460,7 +3480,10 @@ header.top { display: none !important }
   }
 
   /* ── the run ── */
-  function start() {
+  /* `opts.overrideDailyLock` is the "run it again anyway" path after the
+     once-a-day rule has refused. It is never sticky: it rides on this one
+     frame only, so the next ordinary run is refused again. */
+  function start(opts) {
     const kind = active;
     /* Refusals go to the ALERT BAR, which is always on the page, and to the
        card's own hint when there is a card to put it on. The old version only
@@ -3609,6 +3632,10 @@ header.top { display: none !important }
         : (($('#' + (kind === 'travelpay' ? 'rcTotalTravelpay' : 'rcTotal')) || {}).value || ''),
       columns: only ? (only.columns || []) : [],
       format: only ? (only.format || 'csv') : 'csv',
+      /* Sent only when it is true. An `overrideDailyLock: false` on every
+         ordinary run is a field somebody will eventually read as "the override
+         was considered and declined", which is not what a missing tick means. */
+      ...(opts && opts.overrideDailyLock ? { overrideDailyLock: true } : {}),
     };
     ws.send(JSON.stringify(kind === 'both'
       ? {
@@ -3826,7 +3853,15 @@ header.top { display: none !important }
 
          The link is a real navigation to the report screen rather than an
          anchor, because these screens are sections of one page. */
-      if (stopped) {
+      if (stopped && m.lockedToday) {
+        /* The once-a-day rule, not a failure. Nothing was attempted, so there
+           is no report to send anybody to — offering "See the report" here
+           sent people looking for a run that does not exist. */
+        alertBar('err', '<b>' + esc(firstSentence(stopped)) + '</b> ' +
+          'If the earlier run did not finish the job, you can ' +
+          '<a href="#" data-act="override-lock">run it again anyway</a> — ' +
+          'that is recorded in the security audit log.');
+      } else if (stopped) {
         alertBar('err', '<b>Reconciliation could not be completed.</b> ' + esc(firstSentence(stopped)) +
           ' <a href="#" data-go="inbox">See the report</a> for what did and did not go through.');
       } else {
@@ -4505,7 +4540,14 @@ header.top { display: none !important }
       /* Sized like the source cards above it, which take the browser's own h3
          (they were h4 once — see renderSource). A 15px heading and a 12.5px
          dark subtitle made this card read as a different page sitting under
-         the grid. */
+         the grid.
+         The title, the badge and the run button on one line. The button sits at
+         the END of the row (margin-left:auto) rather than being floated, so it
+         cannot overlap a long title -- and the row wraps rather than pushing
+         the button off the card on a narrow window. */
+      '.tk-host .tk-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 6px}',
+      '.tk-host .tk-head h3{margin:0}',
+      '.tk-host .tk-head .tk-head-act{margin-left:auto}',
       '.tk-host h3{margin:0 0 6px;display:flex;align-items:center;gap:8px}',
       '.tk-host .tk-sub{color:var(--ink-3);font-size:11px;margin:0 0 14px}',
       '.tk-host .tk-slots{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}',
@@ -4651,7 +4693,10 @@ header.top { display: none !important }
 
     card.className = 'tk-host' + (look ? ' tk-' + look : '');
     card.innerHTML =
-      '<h3>' + tokioMark(look) + 'Tokio Marine <span class="badge ' + badge[0] + '">' + badge[1] + '</span></h3>' +
+      '<div class="tk-head">' +
+        '<h3>' + tokioMark(look) + 'Tokio Marine <span class="badge ' + badge[0] + '">' + badge[1] + '</span></h3>' +
+        '<div class="tk-head-act">' + tokioRunButton() + '</div>' +
+      '</div>' +
       '<p class="tk-sub">Monthly. All four files must be for the same reporting month. ' +
         'No transaction total is entered \u2014 the figure to balance to is not known until ' +
         'Retail is excluded and the exceptions are resolved.</p>' +
@@ -5063,17 +5108,31 @@ header.top { display: none !important }
        total — and the server still refuses to save without the exact literal
        (tramada-tokio.SAVE_LITERAL), which the page now always sends because
        saving is the point of the run rather than an extra step. */
+    /* Only the note here. The button itself went up to the header row
+       (tokioRunButton), asked for 05-Oct-2026 — but the BR16 sentence stayed
+       down here with the rest of the card: it is two lines of explanation, and
+       on the title row it crowded out the thing it was explaining. */
     return '<div class="tk-acts">' +
-        '<button class="btn sm indigo" id="tokioRun"' + (tokio.running ? ' disabled' : '') + '>' +
-          (tokio.running
-            ? 'Running in Tramada\u2026'
-            : 'Reconcile in Tramada &amp; save session' +
-              (res.labels && res.labels.sessionLabel ? ' ' + esc(res.labels.sessionLabel) : '')) +
-        '</button>' +
         '<span style="font-size:11.5px;color:var(--ink-2,#5a5a72)">' +
           'Ticks the matching lines and saves the session. Issue is never pressed \u2014 ' +
           'that stays a person\u2019s click (BR16/BR18).</span>' +
       '</div>';
+  }
+
+  /* The run button, rendered into the card's TITLE ROW rather than at the
+     bottom of the card. Same id and the same one click as before, so the
+     wiring in renderTokio and everything BR16 guards are untouched — only
+     where it sits has moved. Empty until the four files have been read, which
+     is what keeps a button that cannot do anything off the header. */
+  function tokioRunButton() {
+    const res = tokio.result;
+    if (!res || !res.rows || !res.rows.length) return '';
+    return '<button class="btn sm indigo" id="tokioRun"' + (tokio.running ? ' disabled' : '') + '>' +
+        (tokio.running
+          ? 'Running in Tramada\u2026'
+          : 'Reconcile in Tramada &amp; save session' +
+            (res.labels && res.labels.sessionLabel ? ' ' + esc(res.labels.sessionLabel) : '')) +
+      '</button>';
   }
 
   /* WHAT THE TRAMADA RUN DID.

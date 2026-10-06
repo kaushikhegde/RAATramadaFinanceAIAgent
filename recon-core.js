@@ -4731,6 +4731,51 @@ function stampOf(iso) {
 }
 
 /**
+ * Whether REPORT already had a live run today that finished the work — RAA's
+ * rule, 05-Oct-2026: BPay, Mint, IPSI, TravelPay and DVC run once a day each;
+ * a second live run for the same type is refused until the next calendar day.
+ * Tokio has its own card and never calls this.
+ *
+ * A dry run is a preview, never a filing (CLAUDE.md §3), so it never uses up
+ * the day — only `dryRun: false` is ever checked.
+ *
+ * "Finished the work" is not one question, because the reports are not
+ * symmetric:
+ *
+ *   - bpay / mint / travelpay FINISH IN ONE SITTING — `run-store.js`'s own
+ *     reason `listUnresolved` is IPSI-only is that these three have no
+ *     "still waiting on Tramada" state at all. So any completed, live run
+ *     (`status: "done"`, no error) is the day's one shot, failures and all.
+ *   - ipsi can complete without being DONE: a settlement can take several
+ *     attempts, same day or across several, before it is finished (the
+ *     reconciliation guide's "Other features"). `run.resolved` is the exact
+ *     flag `markResolved`/`markSettlementResolved` already set for "nothing
+ *     left to do here" — reused rather than re-decided.
+ *   - dvc's reconciliation half can come back clean while the Tramada
+ *     reimbursement never committed (RAA's drawing, 23-09-2026: spreadsheet
+ *     errors go to a person by email and nothing is filed in Tramada).
+ *     `sessionCommitted` already sets `committed.complete` only once that
+ *     payment session went all the way through — reused here too.
+ *
+ * A combined ("both") run locks every report type it actually carried rows
+ * for, read off `run.rows[].src` — the same field `summariseCombined` already
+ * splits on — rather than off `run.source`, which is just `"both"`.
+ */
+function lockedReportToday(reportKey, runs, now = new Date()) {
+  const today = toIsoDate(now) || new Date().toISOString().slice(0, 10);
+  const carries = (r) =>
+    r.source === reportKey || (r.source === "both" && (r.rows || []).some((row) => row.src === reportKey));
+  const finished = (r) => {
+    if (reportKey === "ipsi") return r.resolved === true;
+    if (reportKey === "dvc") return !!(r.committed && r.committed.complete);
+    return r.status === "done" && !r.error;
+  };
+  const hit = (runs || []).find((r) =>
+    !r.dryRun && carries(r) && finished(r) && toIsoDate(r.finishedAt || r.startedAt) === today);
+  return hit ? { runId: hit.id, finishedAt: hit.finishedAt || hit.startedAt } : null;
+}
+
+/**
  * What a run moved, in money.
  *
  * Reconciled and unreconciled are counted SEPARATELY rather than one being
@@ -5458,7 +5503,7 @@ function checkTickedTotal(statementRows, ticked, entered) {
 module.exports = {
   cents, money, refKey, receiptKey,
   summariseCombined, sourceBreakdown,
-  uploadName, stampOf, runTotals, needsReaction, overviewFrom,
+  uploadName, stampOf, lockedReportToday, runTotals, needsReaction, overviewFrom,
   splitCsvLine, parseReconCsv, parseReconRows,
   normaliseHeading, buildExportGrid, inputColumnsOf, moneyColumnsOf, gridToCsv, EXPORT_FIELDS,
   sheetColumns, rowCells, columnsFromCells, reportSheetCsv,

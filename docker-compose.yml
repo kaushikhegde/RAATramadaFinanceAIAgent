@@ -3,8 +3,15 @@
 # Nothing needed on the host but Docker — no Chrome, no database to install.
 #
 #   docker compose up --build          # or: npm run docker:up
-#   → app           http://127.0.0.1:3000   (or PORT from .env)
+#   → app           http://localhost:3000
 #   → login screen  http://127.0.0.1:6080/vnc.html   (SIGN INTO TRAMADA HERE)
+#
+# BROWSE localhost, NOT 127.0.0.1. The ports below bind to 127.0.0.1 so
+# nothing outside this machine can reach them, but the two spellings are
+# DIFFERENT COOKIE ORIGINS to a browser. AZURE_REDIRECT_URI names one of
+# them, and a session cookie set on the other is invisible to your tab --
+# so sign-in succeeds, lands, and silently drops you back with nothing.
+# /auth/login redirects between the two spellings now, so either works.
 services:
   recon:
     build: .
@@ -24,12 +31,8 @@ services:
     # password-less VNC screen live behind these ports; the loopback bind is
     # what keeps them shut. Tunnel over SSH to reach them, never republish.
     ports:
-      # The HOST side follows PORT from the .env beside this file, the same one
-      # `npm start` reads — 3000 is often taken (a Grafana service sits on it on
-      # at least one dev box, and the bind failure takes the whole stack down).
-      # The container side stays 3000; nothing outside the container sees it.
-      - "127.0.0.1:${PORT:-3000}:3000"   # app
-      - "127.0.0.1:6080:6080"   # noVNC login screen
+      - "127.0.0.1:${APP_PORT:-3000}:${APP_PORT:-3000}"   # app
+      - "127.0.0.1:${NOVNC_PORT:-6080}:${NOVNC_PORT:-6080}"   # noVNC login screen
       # 9222 is deliberately absent. Anything that can reach the debugging port
       # drives a browser signed into Tramada; the app reaches it inside the
       # container on 127.0.0.1 without it being published to anything.
@@ -39,11 +42,17 @@ services:
       CDP_MODE: external
       CDP_HOST: 127.0.0.1
       CDP_PORT: "9222"
-      PORT: "3000"
+      # ONE source for the port. Hardcoding it here while AZURE_REDIRECT_URI is
+      # forwarded from .env means editing PORT in .env moves only where
+      # Microsoft sends you back, never where the app listens -- sign-in then
+      # ends on a port nothing serves while the app runs fine on another.
+      # Change the port with APP_PORT; the publish above follows it, and
+      # server.js warns at boot if AZURE_REDIRECT_URI names a different one.
+      PORT: "${APP_PORT:-3000}"
       # Tells the server a login screen exists, so the app can put it on screen
       # itself when a run needs one. Must match the published 6080 above: the
       # page builds the URL from its own hostname and this port.
-      NOVNC_PORT: "6080"
+      NOVNC_PORT: "${NOVNC_PORT:-6080}"
       # The uploaded report bytes AND the Chrome profile live under here, so the
       # Tramada session and the report archive both survive `docker compose down`.
       # The runs themselves live in Postgres now (see DATABASE_URL below).
