@@ -8,7 +8,7 @@
  *   1. The email → secret-name rule, exercised properly. A mismatch here does
  *      not surface as a naming error — it surfaces as "no credentials found for
  *      tim@raa.com", which sends people to the vault to look at a secret that
- *      is sitting there correctly named. docs/azure-setup.md §7 prints the same
+ *      is sitting there correctly named. docs/azure-setup.md §8 prints the same
  *      table for whoever fills the vault; these cases are that table.
  *
  *   2. Source checks on server.js, for the three wiring mistakes that are

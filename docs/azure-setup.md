@@ -321,6 +321,57 @@ In this order, because each step rules out the one before it:
 
 ---
 
+## AWS Secrets Manager instead of Key Vault
+
+Same secrets, same names; `tramada-creds.js` reads one vault or the other. Set
+`AWS_SECRETS_REGION` and leave `AZURE_KEYVAULT_URL` empty — with both set the
+app refuses to guess. Entra (steps 1–5) is unchanged and **still needed**: the
+vault is keyed on the email in the Entra token, and with no sign-in there is no
+email to look up, so a human signs into Tramada as before. Steps 6–9 become:
+
+1. **Secrets Manager → Store a new secret → Other type of secret**, then switch
+   the editor to **Plaintext** and paste only the value. The console defaults
+   to key/value pairs, which stores `{"key":"value"}`; the app refuses that by
+   name rather than typing the JSON into Tramada.
+2. **Encryption key:** `aws/secretsmanager` is fine. A customer-managed KMS key
+   works too — the app's identity then also needs `kms:Decrypt` on that key.
+3. **Name** it from the table in step 8, behind `AWS_SECRETS_PREFIX` if you set
+   one: `raa-travel/tramada-tim-raa-com-username` and `…-password`.
+4. Give the app's AWS identity read access and nothing else:
+
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       { "Effect": "Allow", "Action": "secretsmanager:GetSecretValue",
+         "Resource": "arn:aws:secretsmanager:<region>:<account>:secret:raa-travel/*" },
+       { "Effect": "Allow", "Action": "kms:Decrypt",
+         "Resource": "arn:aws:kms:<region>:<account>:key/<key-id>" }
+     ]
+   }
+   ```
+
+   Drop the second statement if the secrets use the default `aws/secretsmanager`
+   key.
+5. Credentials: inside AWS, a task or instance role and nothing in `.env`.
+   Outside it, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` for an IAM user
+   that has only the policy above.
+
+```bash
+AWS_SECRETS_REGION=ap-southeast-2
+AWS_SECRETS_PREFIX=raa-travel/
+```
+
+The startup banner names the vault it is reading. RAATramadaPaymentAIAgent
+reads the same names, so one secret per person serves both apps — point both at
+the same region and prefix.
+
+> When a Tramada password changes, **Retrieve secret value → Edit** — do not
+> delete and recreate (a deleted secret sits in a recovery window and its name
+> cannot be reused until that ends).
+
+---
+
 ## What this costs
 
 | | |
@@ -348,6 +399,9 @@ what a demo tenant should use.
 | `AADSTS50105: not assigned to a role` | Step 5 is on and this user is not in **Users and groups**. |
 | Key Vault `Forbidden` / `403` | Step 9 missing, on the wrong vault, or not propagated yet. Wait two minutes first. |
 | `No Tramada credentials in the vault for …` | The secret name does not match. The error prints the exact name it looked for — compare it with what is in the vault. |
+| `AccessDeniedException` / `secretsmanager:GetSecretValue` | The AWS identity lacks the policy above, or it names a different prefix or region. |
+| `... is stored as key/value JSON` | The secret was saved with the console's default. Edit it and switch to **Plaintext**. |
+| `Both AZURE_KEYVAULT_URL and AWS_SECRETS_REGION are set` | Pick one vault and empty the other line in `.env`. |
 | Portal rejects the secret name | `@` and `.` are not allowed. See step 8. |
 | App opens with no login at all | Sign-in is off. Check the startup banner: a partly-filled `.env` disables it. |
 

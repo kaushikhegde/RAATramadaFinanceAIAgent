@@ -2466,7 +2466,9 @@ async function handleMintRun(session, msg) {
   }
 
   if (azureAuth.enabled() && !creds.configured()) {
-    console.log("  ⚠ Signed-in users have no Tramada credentials in a vault — each run still waits for a human to sign into Tramada.");
+    console.log("  ⚠ Signed-in users have no Tramada credentials in a vault (AZURE_KEYVAULT_URL or AWS_SECRETS_REGION) — each run still waits for a human to sign into Tramada.");
+  } else if (creds.configured()) {
+    console.log(`  ✓ Tramada credentials from ${creds.describe()}`);
   }
 
   server.listen(PORT, () => {

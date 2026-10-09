@@ -90,6 +90,14 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:-}
       # Per-person Tramada credentials. Unset, a run still waits for a human.
       AZURE_KEYVAULT_URL: ${AZURE_KEYVAULT_URL:-}
+      # ...or AWS Secrets Manager — one or the other, never both; the secret
+      # names are the same in each. Access keys are for running outside AWS;
+      # inside it, leave them empty and give the task/instance a role instead.
+      AWS_SECRETS_REGION: ${AWS_SECRETS_REGION:-}
+      AWS_SECRETS_PREFIX: ${AWS_SECRETS_PREFIX:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
 
     # Wait for the bundled Postgres to accept connections before the app boots —
     # the server treats an unreachable store as fatal (it exits), so starting it

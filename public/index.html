@@ -699,7 +699,8 @@ header.top { display: none !important }
   padding: 2px 12px 8px; font-size: 11px; color: var(--ink-3);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.side nav form { margin: 0 }
+.side-foot { padding: 0 9px 10px; border-top: 1px solid rgba(255,255,255,.1) }
+.side-foot form { margin: 0 }
 
 /* The source-card preview. Every column of the upload, so it scrolls sideways
    as well as down inside the box, and a cell never wraps into a tall row.
@@ -6337,7 +6338,14 @@ function askMarkStale(){
     btn.innerHTML = '<span class="ico">\u21AA</span> Sign out';
     form.appendChild(btn);
 
-    nav.appendChild(lbl); nav.appendChild(who); nav.appendChild(form);
+    /* Its own block after <nav>, not inside it. nav is flex:1, so anything
+       after it is pinned to the bottom of the sidebar — appended into nav, the
+       sign-out landed wherever the list happened to end, and the Browser block
+       mounting later (recon_hello) pushed it about between page loads. */
+    const foot = document.createElement('div');
+    foot.className = 'side-foot';
+    foot.appendChild(lbl); foot.appendChild(who); foot.appendChild(form);
+    nav.after(foot);
   }
 
   function vncPanelEsc(e) { if (e.key === 'Escape') closeVncPanel(); }
