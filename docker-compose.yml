@@ -18,9 +18,9 @@ services:
     image: raa-recon:latest
     container_name: raa-recon
 
-    # PID 1 reaps zombies. Chromium forks a lot of children and a container
-    # without this collects them until it runs out of process slots.
-    init: true
+    # No `init: true`: the image runs tini as PID 1 itself (see Dockerfile), so
+    # Chromium's zombies are reaped the same way under OpenShift, which has no
+    # equivalent setting. Both at once only earns a "tini is not PID 1" warning.
 
     # Chrome uses far more than the default 64 MB of /dev/shm on a statement page
     # of a few thousand rows, and what it does when it runs out is crash a
@@ -88,6 +88,10 @@ services:
       # from, so being sent back to a different one is a silent sign-in loop.
       AZURE_REDIRECT_URI: ${AZURE_REDIRECT_URI:-}
       SESSION_SECRET: ${SESSION_SECRET:-}
+      # Off locally: nothing sits in front of the app, and trusting
+      # X-Forwarded-* here would let any client write its own IP into the
+      # audit log. Set to 1 behind exactly one proxy (the OpenShift router).
+      TRUST_PROXY: ${TRUST_PROXY:-}
       # Per-person Tramada credentials. Unset, a run still waits for a human.
       AZURE_KEYVAULT_URL: ${AZURE_KEYVAULT_URL:-}
       # ...or AWS Secrets Manager — one or the other, never both; the secret

@@ -43,6 +43,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 #                   1 xmessage, and a runnable rootCommand left 1. Installing
 #                   feh left 0. It is the smallest thing fbsetbg accepts.
 # fonts-*           a container with no fonts renders Tramada as empty boxes
+# tini              PID 1. Reaps the zombies Chromium leaves behind and forwards
+#                   SIGTERM to the entrypoint. Compose's `init: true` did this,
+#                   but it is a compose feature; Kubernetes/OpenShift (ROSA)
+#                   have no equivalent, so the image brings its own.
 RUN apt-get update && apt-get install --no-install-recommends -y \
       chromium \
       xvfb \
@@ -59,6 +63,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
       libnss3-tools \
       curl \
       procps \
+      tini \
  && rm -rf /var/lib/apt/lists/*
 
 # The corporate TLS-inspection root (certs/README.md). This was in the image
@@ -129,4 +134,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]

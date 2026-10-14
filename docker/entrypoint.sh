@@ -47,6 +47,16 @@ trap shutdown SIGTERM SIGINT
 
 mkdir -p "$CHROME_PROFILE" /data/uploads
 
+# The X lock is the Singleton* problem below in a different file, and it has to
+# go before Xvfb touches it. Xvfb refuses a display whose lock exists ("Server
+# is already active for display 99"), Chromium then dies with "cannot open
+# display" and takes the container with it. The lock lives in the container's
+# /tmp, which SURVIVES `docker start` and `compose restart` -- the writable
+# layer is reused, not recreated -- so the first `up` works and the second dies.
+# Nothing has started Xvfb yet in this container, so any lock here is stale.
+X_NUM="${DISPLAY#:}"; X_NUM="${X_NUM%%.*}"
+rm -f "/tmp/.X${X_NUM}-lock" "/tmp/.X11-unix/X${X_NUM}"
+
 log "display  $DISPLAY at $SCREEN"
 start Xvfb Xvfb "$DISPLAY" -screen 0 "$SCREEN" -nolisten tcp
 
@@ -118,6 +128,11 @@ fi
 # --test-type: hides the yellow "you are using an unsupported command-line flag"
 #   bar. It is about --no-sandbox, which is above and deliberate, and it sits
 #   across the top of the page somebody is signing into.
+# --remote-debugging-address=127.0.0.1: compose not publishing 9222 is the first
+#   line of defence; this is the second, and the one that still holds for a
+#   plain `docker run -p`, a pod sharing this network namespace, or anything
+#   else that can reach the container's own address. Whatever reaches that port
+#   drives a browser signed into Tramada. The app connects on CDP_HOST=127.0.0.1.
 # The login page is opened on purpose, so the window a person is looking at is
 # already the one they need to sign into.
 #
@@ -132,6 +147,7 @@ rm -f "$CHROME_PROFILE"/SingletonLock "$CHROME_PROFILE"/SingletonSocket "$CHROME
 TRAMADA_URL="${TRAMADA_URL:-https://asp.tramada.com.au/ttms/raatravelsandbox}"
 start Chromium chromium \
   --remote-debugging-port="$CDP_PORT" \
+  --remote-debugging-address=127.0.0.1 \
   --user-data-dir="$CHROME_PROFILE" \
   --no-sandbox \
   --disable-gpu \

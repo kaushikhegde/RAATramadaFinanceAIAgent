@@ -75,6 +75,18 @@ const PUBLIC = path.join(__dirname, "public");
 const NOVNC_PORT = parseInt(process.env.NOVNC_PORT || "", 10) || null;
 
 const app = express();
+/* Behind the OpenShift router TLS ends at the router, so without this Express
+   sees plain http, and express-session refuses to set the `secure` cookie an
+   https AZURE_REDIRECT_URI asks for: sign-in succeeds and bounces straight back
+   to the login page. It is also what makes `req.ip` in the audit middleware
+   below the client's address rather than the router's. Off unless TRUST_PROXY
+   is set, because with no proxy in front, trusting X-Forwarded-For lets a
+   client write its own IP into the audit log. A number is a hop count (1 = the
+   router); anything else is handed to Express as-is (e.g. a subnet list). */
+if (azureAuth.TRUST_PROXY) {
+  const tp = azureAuth.TRUST_PROXY;
+  app.set("trust proxy", tp === "true" ? 1 : /^\d+$/.test(tp) ? Number(tp) : tp);
+}
 /* Sign-in goes on BEFORE the static handler, and that order is the whole
    protection: express.static serves index.html to anyone who asks for it by
    name, so mounting it first would leave the entire app reachable without a

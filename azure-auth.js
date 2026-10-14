@@ -32,6 +32,10 @@ const CLIENT_ID = process.env.AZURE_CLIENT_ID || "";
 const CLIENT_SECRET = process.env.AZURE_CLIENT_SECRET || "";
 const REDIRECT_URI = process.env.AZURE_REDIRECT_URI || "http://localhost:3000/auth/callback";
 const SESSION_SECRET = process.env.SESSION_SECRET || "";
+/* Set when a reverse proxy (the OpenShift router) terminates TLS in front of
+   the app. server.js hands it to Express; configProblem uses it to know the
+   public port in AZURE_REDIRECT_URI is the proxy's, not ours. */
+const TRUST_PROXY = (process.env.TRUST_PROXY || "").trim();
 
 /* All four, not any: a half-filled .env is the state this is most likely to be
    in, and starting up "logged in as nobody" with three of the four present is
@@ -48,7 +52,9 @@ function configProblem(listeningPort) {
 
      Checked before the "is it even configured" branch below: a mismatched port
      is wrong whether or not the rest is filled in. */
-  if (enabled() && listeningPort) {
+  /* Behind a proxy the two ports are SUPPOSED to differ: Microsoft sends people
+     to the router on 443, and the router forwards to PORT. */
+  if (enabled() && listeningPort && !TRUST_PROXY) {
     let want;
     try { want = new URL(REDIRECT_URI); } catch (_) { want = null; }
     const named = want && (want.port || (want.protocol === "https:" ? "443" : "80"));
@@ -337,4 +343,4 @@ function escapeHtml(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-module.exports = { enabled, configProblem, install, requireAuth, userFromSession, userForUpgrade, canonicalRedirect, REDIRECT_URI };
+module.exports = { enabled, configProblem, install, requireAuth, userFromSession, userForUpgrade, canonicalRedirect, REDIRECT_URI, TRUST_PROXY };

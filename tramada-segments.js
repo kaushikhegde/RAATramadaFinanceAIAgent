@@ -38,6 +38,10 @@ const CDP_MODE = process.env.CDP_MODE || "external";
 const BROWSER_CHANNEL = process.env.BROWSER_CHANNEL || "chrome";
 const HEADLESS = process.env.HEADLESS === "true";
 
+// Under RECON_STORE_DIR in the container (the volume — /app is read-only under
+// OpenShift's random UID); the working directory when run locally, as before.
+const ERROR_SHOT = require("path").join(process.env.RECON_STORE_DIR || process.cwd(), "last-error.png");
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function toTramadaDate(input) {
@@ -601,14 +605,14 @@ async function saveSegmentForm(page) {
 
 // After a segment save, confirm it actually persisted (either success shape).
 // Only an unsaved form is a failure — surfaced with the on-page validation
-// text and a screenshot in last-error.png.
+// text and a screenshot at ERROR_SHOT (last-error.png).
 async function assertSaved(page, kind) {
   if (await segmentFormSaved(page)) return;
   const errors = await readSaveErrors(page);
   let shot = "";
   try {
-    await page.screenshot({ path: "last-error.png", fullPage: true });
-    shot = " [screenshot: last-error.png]";
+    await page.screenshot({ path: ERROR_SHOT, fullPage: true });
+    shot = ` [screenshot: ${ERROR_SHOT}]`;
   } catch { /* screenshot is best-effort */ }
   throw new Error(
     `${kind} did not save${errors.length ? ": " + errors.join("; ") : " (form rejected, no error text found)"}${shot}`

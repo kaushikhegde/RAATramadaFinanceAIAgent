@@ -27,6 +27,10 @@ const { chromium } = require("playwright");
 const core = require("./recon-core");
 const { ensureLoggedIn } = require("./tramada-auth");
 
+// Under RECON_STORE_DIR in the container (the volume — /app is read-only under
+// OpenShift's random UID); the working directory when run locally, as before.
+const ERROR_SHOT = require("path").join(process.env.RECON_STORE_DIR || process.cwd(), "last-error.png");
+
 const TRAMADA_BASE_URL =
   process.env.TRAMADA_URL || "https://asp.tramada.com.au/ttms/raatravelsandbox";
 const CDP_PORT = parseInt(process.env.CDP_PORT || "9222", 10);
@@ -1640,9 +1644,9 @@ async function runTramadaReceipt({
     // STRICT: success means a real receipt number (R.000...) in the list —
     // anything else is a failure, never a silent "Receipt issued."
     if (!issued || !/^R\./i.test(issued.receiptNo || "")) {
-      try { await page.screenshot({ path: "last-error.png", fullPage: true }); } catch { /* best-effort */ }
+      try { await page.screenshot({ path: ERROR_SHOT, fullPage: true }); } catch { /* best-effort */ }
       throw new Error(
-        "Receipt was NOT created — the receipts list shows no new receipt. [screenshot: last-error.png]"
+        `Receipt was NOT created — the receipts list shows no new receipt. [screenshot: ${ERROR_SHOT}]`
       );
     }
 

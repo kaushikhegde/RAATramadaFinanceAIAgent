@@ -16,9 +16,10 @@ const check = (name, fn) => {
   catch (e) { failures++; console.log("  FAIL " + name + "\n        " + e.message); }
 };
 
-function problemFor(redirect, listening) {
+function problemFor(redirect, listening, opts = {}) {
   for (const k of ["AZURE_TENANT_ID","AZURE_CLIENT_ID","AZURE_CLIENT_SECRET","AZURE_REDIRECT_URI"])
     delete process.env[k];
+  if (opts.trustProxy) process.env.TRUST_PROXY = opts.trustProxy; else delete process.env.TRUST_PROXY;
   Object.assign(process.env, {
     AZURE_TENANT_ID: "t", AZURE_CLIENT_ID: "c", AZURE_CLIENT_SECRET: "s",
     AZURE_REDIRECT_URI: redirect,
@@ -50,6 +51,20 @@ check("https with no port means 443, not 'no opinion'", () => {
   }
   if (problemFor("https://agent.raa.com.au/auth/callback", 443)) {
     throw new Error("443 should agree with a bare https URI");
+  }
+});
+
+check("behind a proxy (TRUST_PROXY) the public and listening ports may differ", () => {
+  /* The OpenShift router takes https on 443 and forwards to the pod's PORT, so
+     the mismatch that is a bug locally is the whole point of a proxy there. */
+  if (problemFor("https://recon.apps.rosa.example.com/auth/callback", 3000, { trustProxy: "1" })) {
+    throw new Error("warned about the router's 443 vs the pod's 3000");
+  }
+});
+
+check("and without TRUST_PROXY that same pair is still reported", () => {
+  if (!problemFor("https://recon.apps.rosa.example.com/auth/callback", 3000)) {
+    throw new Error("the proxy exemption leaked into a config with no proxy");
   }
 });
 
@@ -92,5 +107,5 @@ check("the server passes its real port to the check", () => {
   if (!/configProblem\(PORT\)/.test(server)) throw new Error("configProblem() is called with nothing to compare");
 });
 
-console.log("\n  " + (failures ? failures + " FAILED" : "11 checks passed") + "\n");
+console.log("\n  " + (failures ? failures + " FAILED" : "13 checks passed") + "\n");
 process.exit(failures ? 1 : 0);
