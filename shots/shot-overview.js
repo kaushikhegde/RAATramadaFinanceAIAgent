@@ -118,7 +118,7 @@ const shotPath = (n) => require("path").join(SHOT_OUT, n);
   await page.goto(`http://127.0.0.1:${process.env.PORT}/`, { waitUntil: "networkidle" });
   await page.click('[data-go="overview"]').catch(() => {});
   await page.waitForFunction(
-    () => !/29 July 2026/.test(document.querySelector("#s-overview .lead h2").textContent),
+    () => !/29 July 2026/.test(document.querySelector("#s-overview .lead h1").textContent),
     null, { timeout: 10000 });
   await page.waitForTimeout(300);
 
@@ -149,7 +149,7 @@ const shotPath = (n) => require("path").join(SHOT_OUT, n);
       activity: [...host.querySelectorAll(".g-main .tl li")].map((li) =>
         li.textContent.replace(/\s+/g, " ").trim()),
       ring: txt(".ring b"),
-      h2: txt(".lead h2"),
+      h2: txt(".lead h1"),
       p: txt(".lead p"),
       stats: [...host.querySelectorAll(".hero-stats .hs")].map((n) => n.textContent.replace(/\s+/g, " ").trim()),
       bal: [...host.querySelectorAll(".bal > div")].map((n) => n.textContent.replace(/\s+/g, " ").trim()),
@@ -179,7 +179,11 @@ const shotPath = (n) => require("path").join(SHOT_OUT, n);
   // wiring fills this screen in; it does not get to redraw it.
   const st = seen.structure;
   ok("the hero ring is still the mockup's", st.hero);
-  ok("four hero stats", st.heroStats === 4, String(st.heroStats));
+  /* THE HERO STATS ARE GONE, by request — the four figures on the right of the
+     banner (Auto-completed, Need reaction, With consultants, Awaiting
+     approval). Asserted absent, like the balance strip below, so the next
+     mockup cannot bring them back unnoticed. */
+  ok("the hero stats are gone", st.heroStats === 0, String(st.heroStats));
   /* THE BALANCE STRIP IS GONE, by request. Five figures over a note reading
      "the agent re-checks the variance after every write-back" — which it does
      not do — and, since the closing balance is now copied from the opening
@@ -199,7 +203,8 @@ const shotPath = (n) => require("path").join(SHOT_OUT, n);
   ok("no Agent brain card on any screen",
     (await page.evaluate(() => document.querySelectorAll('.brain').length)) === 0);
   ok("and so is its note", !st.note);
-  ok("all four stream cards survive", st.streams === 4, String(st.streams));
+  // Five, one per upload card on Sources & upload — see the block further down.
+  ok("all five stream cards are there", st.streams === 5, String(st.streams));
   ok("the reaction table is still a table with rows", st.reactionTable > 0, String(st.reactionTable));
   ok("a row still has the mockup's eight cells", st.reactionCells === 8, String(st.reactionCells));
   ok("the activity timeline is still a list", st.timeline > 0, String(st.timeline));
@@ -211,7 +216,7 @@ const shotPath = (n) => require("path").join(SHOT_OUT, n);
   ok("the ring is the real percentage", seen.ring === "83%", seen.ring);
   ok("no balance figures anywhere on the screen", seen.bal.length === 0, seen.bal.join(" ~ "));
   ok("the BPay stream shows real counts",
-    seen.streams[1].big.replace(/\s/g, "") === "5/6", seen.streams[1].big);
+    seen.streams[0].big.replace(/\s/g, "") === "5/6", seen.streams[0].big);
   // This system has only BPay and Mint. The design's other two cards read
   // 0 / 0 rather than keeping its example figures — invented money next to
   // four real panels is the thing this whole screen is trying not to be.
@@ -258,13 +263,22 @@ const shotPath = (n) => require("path").join(SHOT_OUT, n);
       title: (c.querySelector("h4") || {}).textContent || "",
       sub: (c.querySelector(".src") || {}).textContent || "",
       big: (c.querySelector(".big") || {}).textContent || "",
+      tag: c.tagName, go: c.getAttribute("data-go") || "",
     })));
-  ok("four stream cards", cards.length === 4, String(cards.length));
-  ok("the third is IPSI", cards[2] && cards[2].title === "IPSI", cards[2] && cards[2].title);
-  ok("the fourth is TravelPay", cards[3] && cards[3].title === "TravelPay", cards[3] && cards[3].title);
-  ok("named the same as the upload cards",
-    /IPSI merchant settlement/.test(cards[2].sub) && /TravelPay merchant settlement/.test(cards[3].sub),
-    cards[2].sub + " ~ " + cards[3].sub);
+  /* FIVE, AND NONE IS A LINK. Passenger refunds was dropped and TravelPay and
+     DVC added, so the cards are exactly the five reports on Sources & upload.
+     They are statistics only: plain <div>s with no data-go — the mockup's were
+     <button data-go="inbox">. */
+  ok("five stream cards", cards.length === 5, String(cards.length));
+  ok("the fifth is DVC", cards[4] && cards[4].title === "DVC", cards[4] && cards[4].title);
+  ok("none of them is clickable",
+    cards.every((c) => c.tag === "DIV" && !c.go),
+    cards.map((c) => c.tag + (c.go ? "→" + c.go : "")).join(","));
+  /* The Sources & upload order and names, and no description line under them. */
+  ok("in the Sources order: BPAY, Mint, TravelPay, IPSI, DVC",
+    cards.map((c) => c.title).join(",") === "BPAY,Mint,TravelPay,IPSI,DVC",
+    cards.map((c) => c.title).join(","));
+  ok("no description under the titles", cards.every((c) => !c.sub), cards.map((c) => c.sub).join(" ~ "));
   ok("and no mockup names survive anywhere on the screen",
     !(await page.evaluate(() => /Merchant settlements|Passenger refunds/.test(
       (document.querySelector("#s-overview") || {}).textContent || ""))),
@@ -304,16 +318,17 @@ const shotPath = (n) => require("path").join(SHOT_OUT, n);
   await page.waitForTimeout(700);
   const past = await page.evaluate(() => ({
     rows: document.querySelectorAll("#triagePane tbody tr").length,
-    badge: ((document.querySelector("#inboxGrid .triage .badge") || {}).textContent || "").trim(),
+    picked: document.querySelector("#ibDate").value,
   }));
   ok("choosing a past run shows its rows", past.rows > 0, JSON.stringify(past));
-  ok("and the screen says it is a past run", /past run/i.test(past.badge), past.badge);
+  // The "past run" pill went with the chip row (05-Nov-2026); the run picker
+  // itself is now what says which run is on screen.
+  ok("and the run picker says it is a past run", past.picked !== "", JSON.stringify(past));
 
   await page.selectOption("#ibDate", "");
   await page.waitForTimeout(400);
-  const back = await page.evaluate(() =>
-    ((document.querySelector("#inboxGrid .triage .badge") || {}).textContent || "").trim());
-  ok("and going back says so too", !/past run/i.test(back), back);
+  const back = await page.evaluate(() => document.querySelector("#ibDate").value);
+  ok("and going back says so too", back === "", back);
 
   await page.evaluate(() => {
     const go = document.querySelector('[data-nav="overview"], [data-go="overview"]');
@@ -335,12 +350,12 @@ const shotPath = (n) => require("path").join(SHOT_OUT, n);
   await fresh.goto(`http://127.0.0.1:${process.env.PORT}/`, { waitUntil: "networkidle" });
   await fresh.click('[data-go="overview"]').catch(() => {});
   await fresh.waitForFunction(
-    () => /No runs yet/.test(document.querySelector("#s-overview .lead h2").textContent),
+    () => /No runs yet/.test(document.querySelector("#s-overview .lead h1").textContent),
     null, { timeout: 10000 }).catch(() => {});
   const blank = await fresh.evaluate(() => {
     const host = document.querySelector("#s-overview");
     return {
-      h2: host.querySelector(".lead h2").textContent.trim(),
+      h2: host.querySelector(".lead h1").textContent.trim(),
       ring: host.querySelector(".ring b").textContent.trim(),
       stats: [...host.querySelectorAll(".hero-stats .hs b")].map((b) => b.textContent.trim()),
       bal: [...host.querySelectorAll(".bal > div b")].map((b) => b.textContent.trim()),
@@ -357,12 +372,18 @@ const shotPath = (n) => require("path").join(SHOT_OUT, n);
   console.log("    " + blank.h2 + " · ring " + blank.ring + (blank.note ? " · " + blank.note : ""));
   ok("a fresh install says it has no runs", blank.h2 === "No runs yet", blank.h2);
   ok("the ring is zero, not the mockup's 84%", blank.ring === "0%", blank.ring);
-  ok("no invented hero stats", blank.stats.every((s) => s === "0"), blank.stats.join(","));
+  ok("no hero stats to invent figures in", blank.stats.length === 0, blank.stats.join(","));
   ok("no balance strip to invent balances in", blank.bal.length === 0, blank.bal.join(" ~ "));
   ok("every stream reads 0 / 0", blank.streams.every((s) => s === "0/0"), blank.streams.join(" ~ "));
+  /* It used to: the cards were reshaped by script once the overview data had
+     loaded, so a fresh install — or one whose /api/overview failed — showed the
+     mockup's four, Passenger refunds included. They are in the markup now. */
+  ok("a fresh install already shows the five, not the mockup's four",
+    !(await fresh.evaluate(() => /Passenger refunds|Merchant settlements/.test(
+      document.querySelector("#s-overview .g-4").textContent))));
   ok("nothing invented in the reaction table", !/118299|MT BARKER/.test(blank.body), blank.body.slice(0, 120));
   ok("nothing invented in the timeline", !/Princess Cruises|Jill S/.test(blank.tl), blank.tl.slice(0, 120));
-  ok("and the rest of the markup is still all there", blank.structure === "4/0/4", blank.structure);
+  ok("and the rest of the markup is still all there", blank.structure === "0/0/5", blank.structure);
   await fresh.screenshot({ path: shotPath("overview-empty.png"), fullPage: false });
   await fresh.close();
 

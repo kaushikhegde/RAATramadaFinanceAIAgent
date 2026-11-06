@@ -200,30 +200,19 @@ async function main() {
       "the button does not say it saves: " + buttons[0].textContent);
   });
 
-  check("the run button sits in the card's TITLE ROW, at the right end", () => {
-    /* Asked for 05-Oct-2026. It was at the bottom of the card, below four file
-       slots — on a tall card the thing you came to press was off the bottom of
-       the screen. */
+  check("the run button sits beside its BR16 sentence, not in the header", () => {
+    /* It went up to a title row on 05-Oct-2026 and came back down in the UI
+       refresh: the header is a full-size h2 with the badge pushed right, and a
+       long "Reconcile in Tramada & save session …" beside it crowded both. */
     const up = doc.getElementById("tokioCard");
-    const head = up.querySelector(".tk-head");
-    assert.ok(head, "the card has no title row");
-    assert.ok(head.querySelector("h3"), "the title is not in the title row");
-    const btn = head.querySelector("#tokioRun");
-    assert.ok(btn, "the run button is not in the title row");
-    // At the END of the row: the title comes first, the button last.
-    const kids = [...head.children];
-    assert.ok(kids.indexOf(head.querySelector("h3")) < kids.indexOf(btn.closest(".tk-head-act")),
-      "the button is before the title rather than at the end of the row");
-  });
-
-  check("the BR16 sentence stayed on the card, not in the title row", () => {
-    /* Two lines of explanation on a title row crowd out the thing they
-       explain — but they must not be lost, because they are what says Issue is
-       never pressed. */
-    const up = doc.getElementById("tokioCard");
-    assert.ok(!/BR16/.test(up.querySelector(".tk-head").textContent),
-      "the BR16 note was moved into the title row");
-    assert.ok(/BR16\/BR18/.test(up.textContent), "the BR16 note is gone from the card entirely");
+    const h2 = up.querySelector("h2");
+    assert.ok(h2 && /Tokio Marine/.test(h2.textContent), "the card has no Tokio Marine h2");
+    assert.ok(h2.querySelector(".badge"), "the status badge is not in the header");
+    assert.ok(!h2.querySelector("#tokioRun"), "the run button is in the header");
+    const acts = up.querySelector(".tk-acts");
+    assert.ok(acts && acts.querySelector("#tokioRun"), "the run button is not in .tk-acts");
+    // Together, because the sentence is what says Issue is never pressed.
+    assert.ok(/BR16\/BR18/.test(acts.textContent), "the BR16 note is not beside the button");
   });
 
   check("no run button at all until the four files have been read", () => {
@@ -256,7 +245,7 @@ async function main() {
   });
 
   check("both cards use the same badge words as every other source card", () => {
-    const b = doc.getElementById("tokioCard").querySelector("h3 .badge");
+    const b = doc.getElementById("tokioCard").querySelector("h2 .badge");
     assert.ok(b, "the upload card lost its badge");
     assert.ok(/^(loaded|running…|processed|not run yet|not saved yet|reading…|\d of 4 uploaded)$/
       .test(b.textContent.trim()), "badge says its own thing: " + b.textContent);
@@ -308,7 +297,7 @@ async function main() {
     assert.ok(/Issue was NOT clicked/.test(up.textContent), "BR16 is not stated where the run is started");
     assert.ok(!up.textContent.includes("Consolidated working sheet"), "the sheet came back");
     assert.ok(!up.textContent.includes("Steps taken"), "the step log came back");
-    assert.strictEqual(up.querySelector("h3 .badge").textContent.trim(), "processed");
+    assert.strictEqual(up.querySelector("h2 .badge").textContent.trim(), "processed");
   });
 
   check("the statement-line table says which nothing it means", () => {
@@ -340,20 +329,12 @@ async function main() {
       "the statement-line table says nothing about why it is empty");
   });
 
-  check("the screen's own filter row drives the Tokio card", () => {
-    /* Asked for 28-Sep-2026: the filter row at the top of the Reconciliation
-       report did nothing for Tokio, on the one screen whose whole job is
-       narrowing a result down. */
-    const chips = [...doc.querySelectorAll("#inboxGrid .triage .tri")];
-    assert.ok(chips.length >= 5, "no Tokio chips: " + chips.map((c) => c.textContent).join("|"));
-    const labels = chips.map((c) => c.textContent.replace(/\s+/g, " ").trim());
-    for (const want of ["Travel", "Retail", "Exceptions", "Ticked in Tramada", "Not ticked"]) {
-      assert.ok(labels.some((l) => l.startsWith(want)), want + " is not offered: " + labels.join(" | "));
-    }
-    // Both fixture rows are Travel, and both were ticked.
-    assert.ok(/All lines 2/.test(labels[0]), labels[0]);
-    assert.ok(labels.some((l) => /^Ticked in Tramada 2/.test(l)), labels.join(" | "));
-    assert.ok(labels.some((l) => /^Not ticked 0/.test(l)), labels.join(" | "));
+  check("the chip row above the table is gone", () => {
+    /* Removed on request 05-Nov-2026 — it repeated the Status dropdown. It
+       used to come back on every render, drawn into the mockup's .triage div,
+       so this checks after a Tokio render as well as at load. */
+    assert.strictEqual(doc.querySelector("#inboxGrid .triage"), null,
+      "the All / Action required / Receipted / Reconciled row is back");
   });
 
   check("a row with no readable policy counts as NEITHER ticked nor not-ticked", () => {
@@ -378,14 +359,15 @@ async function main() {
   });
 
   check("picking a chip narrows the consolidated sheet", () => {
-    const retail = [...doc.querySelectorAll("#inboxGrid .triage .tri")]
-      .find((c) => /^Retail/.test(c.textContent.trim()));
-    retail.click();
+    const st = doc.getElementById("ibState");
+    st.value = "retail";
+    st.dispatchEvent(new win.Event("change", { bubbles: true }));
     const card = doc.getElementById("tokioReportCard");
     assert.ok(/Nothing matches that filter/.test(card.textContent),
       "filtering to Retail still shows the Travel rows");
     // and back
-    [...doc.querySelectorAll("#inboxGrid .triage .tri")][0].click();
+    st.value = "all";
+    st.dispatchEvent(new win.Event("change", { bubbles: true }));
     assert.ok(doc.getElementById("tokioReportCard").textContent.includes("21922098"));
   });
 
@@ -418,16 +400,16 @@ async function main() {
     assert.ok(card.querySelector("#tokioSearch"), "no search box on the card");
   });
 
-  check("its chips and the row above are ONE state, never two", () => {
-    /* A card saying "Exceptions" under a row saying "All lines" is a screen
-       nobody can trust. */
+  check("its chips and the Status dropdown are ONE state, never two", () => {
+    /* A card saying "Exceptions" over a dropdown saying "Any outcome" is a
+       screen nobody can trust. */
     const card = doc.getElementById("tokioReportCard");
     const travel = [...card.querySelectorAll("[data-tkf]")].find((c) => /^Travel/.test(c.textContent.trim()));
     travel.click();
     const onCard = [...card.querySelectorAll("[data-tkf].on")].map((c) => c.getAttribute("data-tkf"));
-    const onRow = [...doc.querySelectorAll("#inboxGrid .triage .tri.on")].map((c) => c.dataset.tf);
     assert.deepStrictEqual(onCard, ["travel"]);
-    assert.deepStrictEqual(onRow, ["travel"], "the row above did not follow the card");
+    assert.strictEqual(doc.getElementById("ibState").value, "travel",
+      "the Status dropdown did not follow the card");
     [...card.querySelectorAll("[data-tkf]")][0].click();     // back to All
   });
 

@@ -98,7 +98,10 @@ check("an ORDINARY failure does not offer it", () => {
      then the generic failure. Reversed, every failed run would invite a
      re-run that the rule was never blocking. */
   const lock = PAGE.indexOf("m.lockedToday");
-  const generic = PAGE.indexOf("Reconciliation could not be completed");
+  // The alert itself, not the bare phrase: a comment higher up the page that
+  // quoted "Reconciliation could not be completed" was found first and failed
+  // this with the branches in the right order.
+  const generic = PAGE.indexOf("'<b>Reconciliation could not be completed.</b> '");
   assert.ok(lock > -1 && generic > -1, "could not find both branches");
   assert.ok(lock < generic, "the generic failure branch runs first — it would swallow the lock");
 });

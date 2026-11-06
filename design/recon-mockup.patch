@@ -1,0 +1,1205 @@
+--- recon-ui-mockup.html (after build-recon.js disables its script, retitles it and drops the foot-note)
++++ the page as RAA sees it
+@@ -55,6 +55,26 @@
+   --r:10px; --shadow:0 1px 2px rgba(19,0,100,.05),0 6px 20px rgba(19,0,100,.055);
+   --font:"Roboto",-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",Arial,sans-serif;
+   --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
++
++  /* Type scale: 14px base, minor third (x1.2), rounded to whole pixels.
++     1rem IS 14px — the html rule below sets the root to 87.5%, so a browser
++     zoom or a larger default font setting still scales the whole page, and
++     nothing else in this file uses rem so that root size moves nothing but
++     these tokens. Every font-size on the page is one of these, and the same
++     tokens are repeated in login.html. The true steps are
++       14 / 1.2^2 = 9.72    14 / 1.2 = 11.67    14    14 x 1.2 = 16.8
++       14 x 1.2^2 = 20.16   14 x 1.2^3 = 24.19
++     and are rounded to 10 / 12 / 14 / 16 / 20 / 24 so text lands on whole
++     device pixels instead of blurring on 1x screens. rem values are px / 14. */
++  --fs-xs:.7143rem;    /* 10px  labels, column heads, counters */
++  --fs-sm:.8571rem;    /* 12px  meta, hints, dense controls */
++  --fs-base:1rem;     /* 14px  body copy, tables, buttons */
++  --fs-md:1.1429rem;   /* 16px  h3 */
++  --fs-lg:1.4286rem;   /* 20px  h2, large figures and glyphs */
++  --fs-xl:1.7143rem;   /* 24px  h1, the page title, KPI figures. The ceiling:
++                          nothing on the page is larger than this. */
++  --lh-body:1.3;
++  --lh-head:1.15;
+ }
+ *{box-sizing:border-box}
+ /* WCAG 2.4.7 Focus Visible. The app painted `outline:none` on its controls and
+@@ -65,54 +85,79 @@
+ :focus-visible{outline:2px solid var(--indigo);outline-offset:2px;border-radius:3px}
+ .side :focus-visible,.nav-item:focus-visible{outline:2px solid #ffe600;outline-offset:2px}
+ @media (prefers-contrast:more){:focus-visible{outline-width:3px}}
++html{font-size:87.5%}
+ html,body{margin:0;padding:0}
+-body{font-family:var(--font);background:var(--bg);color:var(--ink);font-size:14px;line-height:1.45;-webkit-font-smoothing:antialiased}
++body{font-family:var(--font);background:var(--bg);color:var(--ink);font-size:var(--fs-base);line-height:var(--lh-body);-webkit-font-smoothing:antialiased}
++/* One size per level, everywhere. Component rules set margin and weight, never
++   size: a heading that picks its own size is how the same level ended up at
++   three sizes on three pages. */
++h1,h2,h3,h4,h5,h6{line-height:var(--lh-head);font-weight:700}
++h1{font-size:var(--fs-xl)}h2{font-size:var(--fs-lg)}h3{font-size:var(--fs-md)}
++h4{font-size:var(--fs-base)}h5{font-size:var(--fs-sm)}h6{font-size:var(--fs-xs)}
+ button,input,select{font:inherit}
+ button{cursor:pointer}
+ a{color:var(--blue);text-decoration:none}
+ 
+ /* ─────────── Shell ─────────── */
+-.app{display:grid;grid-template-columns:228px 1fr;min-height:100vh}
+-.brand .rmark{width:30px;height:30px;border-radius:8px;background:var(--yellow);display:grid;place-items:center;
+-  font-size:10px;font-weight:800;color:var(--indigo);letter-spacing:-.03em;flex:none}
++.app{display:grid;grid-template-columns:256px 1fr;min-height:100vh}
++.brand .rmark{width:30px;height:30px;border-radius:4px;background:var(--yellow);display:grid;place-items:center;
++  font-size:var(--fs-xs);font-weight:800;color:var(--indigo);letter-spacing:-.03em;flex:none}
+ 
+-.side{background:var(--indigo);color:#fff;display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
++/* Black, not the indigo the mockup shipped with: RAA's brand puts the yellow
++   on black, and the active item is the yellow block in their reference. */
++.side{background:#000;color:#fff;display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+ .brand{padding:16px 16px 12px;display:flex;align-items:center;gap:10px}
+-.brand b{display:block;font-size:14px;letter-spacing:-.01em}
+-.brand small{display:block;font-size:11px;color:#a99fd6;margin-top:1px}
++.brand b{display:block;font-size:var(--fs-base);letter-spacing:-.01em}
++/* The wordmark is an h2 for the outline but is not a card title: at the 20px
++   an h2 gets it wraps to two lines and shoves the subtitle out of line with
++   the logo, so it stays at 16px. */
++.brand h2{font-size:var(--fs-md);margin-bottom:.415em}
++/* Neutral grey, not the old lavender: #a99fd6 was tuned for the indigo and
++   reads as off-brand on black. #c4c4c4 is 12.0:1 on #000 — AA and AAA. */
++.brand small{display:block;font-size:var(--fs-sm);color:#c4c4c4;margin-top:1px}
+ .side nav{padding:6px 9px 0;flex:1;overflow:auto}
+-.nav-lbl{font-size:10px;letter-spacing:.11em;text-transform:uppercase;color:#8d84bd;padding:13px 9px 5px;font-weight:600}
+-.nav-item{display:flex;align-items:center;gap:9px;width:100%;background:none;border:0;color:#ddd9ee;text-align:left;padding:8px 9px;border-radius:7px;font-size:13px;margin-bottom:1px}
+-.nav-item:hover{background:rgba(255,255,255,.08);color:#fff}
+-.nav-item.on{background:rgba(255,255,255,.14);color:#fff;font-weight:600}
+-.nav-item.on .ico{color:var(--yellow)}
+-.ico{width:16px;flex:none;text-align:center;font-size:13px;opacity:.95}
+-.pill-n{margin-left:auto;background:var(--yellow);color:var(--indigo);font-size:10px;font-weight:700;border-radius:20px;padding:1px 6px}
++.nav-lbl{font-size:var(--fs-xs);letter-spacing:.11em;text-transform:uppercase;color:#b3b3b3;padding:13px 9px 5px;font-weight:600}
++.nav-item{display:flex;align-items:center;gap:9px;width:100%;background:none;border:0;color:#fff;text-align:left;padding:8px 9px;border-radius:7px;font-size:var(--fs-base);margin-bottom:1px}
++.nav-item:hover{background:rgba(255,255,255,.12);color:#fff}
++/* Yellow block, black icon and label — RAA's reference. Black on #ffe600 is
++   17:1. The :hover repeat stops the hover rule washing the yellow out. */
++.nav-item.on,.nav-item.on:hover{background:var(--yellow);color:#000;font-weight:600}
++.nav-item.on .ico{color:#000}
++/* A yellow count pill on the yellow active item would vanish into it. */
++.nav-item.on .pill-n:not(.red){background:#000;color:var(--yellow)}
++.ico{width:16px;flex:none;text-align:center;font-size:var(--fs-base);opacity:.95}
++.pill-n{margin-left:auto;background:var(--yellow);color:var(--indigo);font-size:var(--fs-xs);font-weight:700;border-radius:20px;padding:1px 6px}
+ .pill-n.red{background:#ff6b81;color:#fff}
+ .brain{margin:10px 9px 0;background:rgba(255,255,255,.09);border-radius:9px;padding:11px}
+-.brain b{display:block;font-size:11.5px;color:#fff}
+-.brain small{display:block;font-size:10.5px;color:#a99fd6;margin-top:2px;line-height:1.4}
++.brain b{display:block;font-size:var(--fs-sm);color:#fff}
++.brain small{display:block;font-size:var(--fs-xs);color:#a99fd6;margin-top:2px}
+ .brain .bbar{height:4px;border-radius:3px;background:rgba(255,255,255,.18);margin-top:8px;overflow:hidden}
+ .brain .bbar i{display:block;height:100%;background:var(--yellow);width:87%}
+ 
+ /* ─────────── Topbar ─────────── */
+-.main{display:flex;flex-direction:column;min-width:0}
++/* RAA's warm grey behind the content. Set here and not on --bg, which also
++   colours small hover states that would vanish into it. --ink-3 muted text
++   is 4.7:1 on it, so AA holds. */
++.main{display:flex;flex-direction:column;min-width:0;background:#f3f2ee}
+ .top{background:var(--white);border-bottom:1px solid var(--line);padding:0 20px;height:58px;display:flex;align-items:center;gap:13px;position:sticky;top:0;z-index:30}
+-.top h1{font-size:15.5px;margin:0;font-weight:700;letter-spacing:-.01em}
+-.stmt{display:flex;align-items:center;gap:7px;background:var(--indigo-050);border:1px solid var(--indigo-100);border-radius:20px;padding:5px 12px;font-size:12.5px;color:var(--indigo);font-weight:600}
++.top h1{margin:0;font-weight:700;letter-spacing:-.01em}
++.stmt{display:flex;align-items:center;gap:7px;background:var(--indigo-050);border:1px solid var(--indigo-100);border-radius:20px;padding:5px 12px;font-size:var(--fs-base);color:var(--indigo);font-weight:600}
+ .stmt em{font-style:normal;color:var(--ink-3);font-weight:500}
+ .spacer{flex:1}
+-.runstate{display:flex;align-items:center;gap:7px;font-size:12.5px;background:var(--ok-bg);color:var(--ok);border-radius:20px;padding:5px 12px;font-weight:600}
++.runstate{display:flex;align-items:center;gap:7px;font-size:var(--fs-base);background:var(--ok-bg);color:var(--ok);border-radius:20px;padding:5px 12px;font-weight:600}
+ .dot{width:7px;height:7px;border-radius:50%;background:currentColor;animation:pulse 1.6s infinite}
+ @keyframes pulse{0%,100%{opacity:1}50%{opacity:.28}}
+ 
+-.btn{border:1px solid var(--line);background:var(--white);color:var(--ink);border-radius:7px;padding:7px 13px;font-size:12.5px;font-weight:600;white-space:nowrap}
+-.btn:hover{border-color:#c9c9d4;background:#fafafc}
++.btn{border:1px solid var(--line);background:var(--white);color:var(--ink);border-radius:7px;padding:7px 13px;font-size:var(--fs-base);font-weight:600;white-space:nowrap}
++.btn:not(input):not(select):hover{border-color:#c9c9d4;background:#fafafc}
+ .btn.primary{background:var(--yellow);border-color:var(--yellow);color:var(--indigo)}
+ .btn.primary:hover{background:var(--yellow-dk);border-color:var(--yellow-dk)}
+-.btn.indigo{background:var(--indigo);border-color:var(--indigo);color:#fff}
+-.btn.indigo:hover{background:var(--indigo-700)}
+-.btn.sm{padding:4px 9px;font-size:11.5px;border-radius:6px}
++/* The class keeps its name so no markup or render string has to change, but
++   it is RAA yellow now: the client's brand puts actions in yellow, not the
++   mockup's indigo. Black on #ffe600 is 17:1. */
++.btn.indigo{background:var(--yellow);border-color:var(--yellow);color:#000}
++.btn.indigo:hover{background:var(--yellow-dk);border-color:var(--yellow-dk)}
++.btn.sm{padding:4px 9px;font-size:var(--fs-sm);border-radius:6px}
+ .btn.ghost{background:none;border-color:transparent;color:var(--blue)}
+ .btn.ghost:hover{background:var(--indigo-050)}
+ 
+@@ -121,13 +166,20 @@
+ .screen{display:none}
+ .screen.on{display:block}
+ .page-h{display:flex;align-items:flex-end;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+-.page-h h2{margin:0;font-size:20px;letter-spacing:-.02em}
+-.page-h p{margin:3px 0 0;color:var(--ink-2);font-size:12.5px;max-width:78ch}
++.page-h h1{margin:0;letter-spacing:-.02em}
++.page-h p{margin:3px 0 0;color:var(--ink-2);font-size:var(--fs-base);max-width:78ch}
++/* The Sources description is one sentence and should read as one line. The 78ch
++   cap above is what broke it in two; here the text block takes whatever is left
++   beside the date and Start run, so it only wraps when that space runs out. */
++#s-sources .page-h>div:first-child{flex:1 1 0;min-width:min(100%,260px)}
++#s-sources .page-h p{max-width:none}
++#s-suppliers .page-h p{max-width:none}
++#s-sources .page-h>.spacer{display:none}
+ 
+ .card{background:var(--white);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
+ .card-h{padding:13px 15px;border-bottom:1px solid var(--line-2);display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+-.card-h h3{margin:0;font-size:13.5px;font-weight:700}
+-.card-h .sub{font-size:11.5px;color:var(--ink-3)}
++.card-h h2{margin:0;font-weight:700}
++.card-h .sub{font-size:var(--fs-sm);color:var(--ink-3)}
+ .card-b{padding:15px}
+ 
+ .grid{display:grid;gap:14px}
+@@ -135,56 +187,106 @@
+ .g-3{grid-template-columns:repeat(3,minmax(0,1fr))}
+ .g-4{grid-template-columns:repeat(4,minmax(0,1fr))}
+ .g-main{grid-template-columns:minmax(0,1fr) 340px}
++/* The Run overview's lower row sits on the SAME five columns as the stream
++   cards above it: the reaction card takes four, Agent activity takes the fifth
++   and is exactly the DVC card's width. A fixed 340px column could only ever line up by accident.
++   Where the tiles drop to two-up (1280px) the two cards stack instead — a
++   reaction table squeezed into half the width is worse than a longer page. */
++#s-overview .g-4{grid-template-columns:repeat(5,minmax(0,1fr))}
++#s-overview .g-main{grid-template-columns:repeat(5,minmax(0,1fr))}
++@media(max-width:1280px){#s-overview .g-4{grid-template-columns:repeat(2,minmax(0,1fr))}
++  #s-overview .g-main{grid-template-columns:1fr}}
++@media(max-width:860px){#s-overview .g-4{grid-template-columns:1fr}}
++/* Run overview: Action required spans BPay to TravelPay (3 of the 5 stream
++   columns), Agent activity spans IPSI to DVC (the other 2). */
++#s-overview .g-main>:first-child{grid-column:span 3}
++#s-overview .g-main>:last-child{grid-column:span 2}
++@media(max-width:1280px){#s-overview .g-main>:first-child,#s-overview .g-main>:last-child{grid-column:auto}}
++/* A stream card's legend wraps to two lines on a narrow card; the 11px gap is
++   for the entries side by side, not stacked. */
++.stream .legend{row-gap:2px}
++/* The Review button's cell. Not .rowact: that is display:flex, and a flex
++   table cell stops being a table cell — vertical-align:middle no longer
++   applies and the button sat at the top of a two-line row. */
++#s-overview .g-main td.act-cell{text-align:right;vertical-align:middle;white-space:nowrap}
++/* Agent activity rows run gutter to gutter. The list sits inside .card-b,
++   which already pads by --pad-card, and `.card .tl` added the same again —
++   so every row started 56px in and the card looked half empty. The message
++   takes the rest of the row after the time. */
++#s-overview .card-b > .tl{padding-left:0;padding-right:0}
++#s-overview .card-b > .tl p{flex:1}
++/* 2px lower than `.tl time`'s 1px, so the smaller mono time sits on the
++   message's first line instead of riding above it. */
++#s-overview .card-b > .tl time{padding-top:3px}
++/* EVERY EMPTY STATE LOOKS THE SAME. "Nothing here yet", "Nothing matches that
++   filter", "No run has been recorded yet" — one size, one grey. They had been
++   .muted, which sets a colour and no size, so each took its container's: 12px
++   in the audit and Tokio tables, 14px elsewhere; and in Agent activity
++   `.tl p` out-ranked .muted and turned it body grey. !important because the
++   class has to win over whichever table it lands in, and that is all it does. */
++.zero{font-size:var(--fs-base)!important;color:var(--ink-3)!important;font-weight:400}
++/* THE REPORT PAGE'S DROPDOWNS, EQUAL SPACE ON BOTH SIDES. The browser's own
++   arrow ignores padding-right and sits about 4px from the border, so the text
++   had 12px on its left and the arrow almost none on its right. The native arrow
++   is switched off and drawn at the same 12px inset as the text instead; the
++   36px right padding is that 12px, the 12px arrow, and a 12px gap before it.
++   Id-scoped so it out-ranks the later `.filters select` control rule. */
++#inboxGrid .filters select{
++  -webkit-appearance:none;appearance:none;padding:0 36px 0 12px;
++  background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5' fill='none' stroke='%236b7080' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 12px center/12px 12px}
++.sicon.e{background:#f0f0f0;color:#333}
+ .g-inbox{grid-template-columns:minmax(0,1fr) 316px}
+ @media(max-width:1280px){.g-4{grid-template-columns:repeat(2,minmax(0,1fr))}}
+ @media(max-width:1180px){.g-3,.g-main,.g-inbox{grid-template-columns:1fr}}
+ @media(max-width:860px){.grid{grid-template-columns:1fr!important}.app{grid-template-columns:1fr}.side{display:none}}
+ 
+ /* ─────────── Hero ─────────── */
+-.hero{background:linear-gradient(105deg,var(--indigo) 0%,#2a1590 60%,#3d21ad 100%);color:#fff;border-radius:var(--r);padding:18px 20px;margin-bottom:14px;display:flex;gap:24px;align-items:center;flex-wrap:wrap}
++.hero{background:var(--yellow);color:#000;border-radius:var(--r);padding:18px 20px;margin-bottom:14px;display:flex;gap:24px;align-items:center;flex-wrap:wrap}
+ .hero .lead{flex:1;min-width:240px}
+-.hero h2{margin:0 0 3px;font-size:17.5px;letter-spacing:-.01em}
+-.hero p{margin:0;color:#c5bde8;font-size:12.5px}
++.hero h1{margin:0 0 3px;letter-spacing:-.01em}
++.hero p{margin:0;color:#333;font-size:var(--fs-base)}
++/* The banner is RAA yellow with black on it, so the ring flips too: a yellow
++   arc on a yellow card would vanish. CSS stroke outranks the SVG's own stroke
++   attributes, and the script only moves the dash offset, never the colour.
++   #333 on #ffe600 is 11.6:1. */
++.hero .ring circle:first-child{stroke:rgba(0,0,0,.14)}
++.hero .ring circle+circle{stroke:#000}
+ .ring{position:relative;width:88px;height:88px;flex:none}
+ .ring svg{transform:rotate(-90deg)}
+-.ring b{position:absolute;inset:0;display:grid;place-items:center;font-size:19px;letter-spacing:-.02em}
+-.hero-stats{display:flex;gap:22px;flex-wrap:wrap}
+-.hs b{display:block;font-size:18px;letter-spacing:-.02em}
+-.hs small{color:#b9b1de;font-size:10.5px;text-transform:uppercase;letter-spacing:.07em}
++.ring b{position:absolute;inset:0;display:grid;place-items:center;font-size:var(--fs-lg);letter-spacing:-.02em}
+ 
+ .bal{display:grid;grid-template-columns:repeat(5,1fr);overflow:hidden}
+ .bal div{padding:13px 15px;border-right:1px solid var(--line-2)}
+ .bal div:last-child{border-right:0}
+-.bal small{display:block;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-bottom:3px}
+-.bal b{font-size:15.5px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
++.bal small{display:block;font-size:var(--fs-xs);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-bottom:3px}
++.bal b{font-size:var(--fs-md);font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+ .bal .neg{color:var(--maroon)}
+ .bal .bal-ok b{color:var(--ok)}
+ @media(max-width:1180px){.bal{grid-template-columns:repeat(2,1fr)}}
+ 
+ /* ─────────── Stream cards ─────────── */
+-.stream{padding:15px;text-align:left;width:100%;border:1px solid var(--line);background:#fff;border-radius:var(--r);box-shadow:var(--shadow);transition:.12s}
+-.stream:hover{border-color:var(--indigo);transform:translateY(-1px)}
++.stream{padding:15px;text-align:left;width:100%;border:1px solid var(--line);background:#fff;border-radius:var(--r);box-shadow:var(--shadow);}
+ .stream .sh{display:flex;align-items:center;gap:9px;margin-bottom:11px}
+-.sicon{width:29px;height:29px;border-radius:8px;display:grid;place-items:center;font-size:13px;flex:none}
++.sicon{width:29px;height:29px;border-radius:8px;display:grid;place-items:center;font-size:var(--fs-base);flex:none}
+ .sicon.a{background:var(--indigo-050);color:var(--indigo)}
+-.sicon.b{background:#e5f3f4;color:var(--teal)}
+-.sicon.c{background:#f0edf7;color:var(--purple-dk)}
++.sicon.b{background:#f0f0f0;color:#333}
++.sicon.c{background:#f0f0f0;color:#333}
+ .sicon.d{background:var(--cream);color:#8a6d1f}
+-.stream h4{margin:0;font-size:13px;font-weight:700}
+-.stream .src{font-size:10.5px;color:var(--ink-3)}
+-.stream .big{font-size:23px;font-weight:700;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+-.stream .big em{font-style:normal;font-size:12.5px;color:var(--ink-3);font-weight:500}
++.stream h4{margin:0;font-weight:700}
++.stream .src{font-size:var(--fs-base);color:var(--ink-3)}
++.stream .big{font-size:var(--fs-lg);font-weight:700;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
++.stream .big em{font-style:normal;font-size:var(--fs-base);color:var(--ink-3);font-weight:500}
+ .bar{height:6px;border-radius:4px;background:var(--line);overflow:hidden;display:flex;margin:9px 0 8px}
+ .bar i{display:block;height:100%}
+ .bar .m{background:var(--ok)} .bar .r{background:var(--warn)} .bar .u{background:var(--err)}
+-.legend{display:flex;gap:11px;font-size:11px;color:var(--ink-2);flex-wrap:wrap}
++.legend{display:flex;gap:11px;font-size:var(--fs-sm);color:var(--ink-2);flex-wrap:wrap}
+ .legend span{display:flex;align-items:center;gap:5px}
+ .sw{width:8px;height:8px;border-radius:2px;flex:none}
+ 
+ .tl{list-style:none;margin:0;padding:0}
+ .tl li{display:flex;gap:10px;padding:8px 0;border-bottom:1px dashed var(--line-2)}
+ .tl li:last-child{border:0}
+-.tl time{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);flex:none;padding-top:1px}
++.tl time{font-family:var(--mono);font-size:var(--fs-xs);color:var(--ink-3);flex:none;padding-top:1px}
+ /* POC feedback General 05 / 07 — "text should wrap within the component".
+    It did not, and the reason is a flexbox default rather than anything about
+    the copy. `.tl li` is display:flex, which makes this <p> a flex item, and a
+@@ -199,96 +301,108 @@
+    overflow-wrap    breaks the token that could not break on its own
+    anywhere, not break-word: it also lets the token shrink the box's intrinsic
+    minimum, which is the half break-word leaves out. */
+-.tl p{margin:0;font-size:12px;color:var(--ink-2);min-width:0;overflow-wrap:anywhere}
++.tl p{margin:0;font-size:var(--fs-base);color:var(--ink-2);min-width:0;overflow-wrap:anywhere}
+ .tl b{color:var(--ink);font-weight:600}
+ 
+-.badge{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:600;border-radius:20px;padding:2px 8px;white-space:nowrap}
++.badge{display:inline-flex;align-items:center;gap:4px;font-size:var(--fs-xs);font-weight:600;border-radius:20px;padding:2px 8px;white-space:nowrap}
+ .b-ok{background:var(--ok-bg);color:var(--ok)}
+ .b-warn{background:var(--warn-bg);color:var(--warn)}
+ .b-err{background:var(--err-bg);color:var(--err)}
+ .b-info{background:var(--blue-lt);color:var(--blue)}
+ .b-mute{background:#f0f0f3;color:var(--ink-2)}
+-/* The run alert (POC feedback General 07 / 09). Two states, both readable at a
++/* The run alert (POC feedback General 07 / 09). Four states, all readable at a
+    glance from across a desk: green for a run that finished, red for one that
+-   could not start or stopped. Colour is never the ONLY signal — each state
+-   carries its own icon and its own words (WCAG 1.4.1). */
+-.alertbar{display:flex;gap:10px;align-items:flex-start;padding:11px 14px;border-radius:10px;
+-  margin:0 0 14px;font-size:13px;border:1px solid transparent}
+-.alertbar .ab-ico{flex:none;font-weight:700;line-height:1.4}
+-.alertbar .ab-body{min-width:0;overflow-wrap:anywhere}
++   could not start or stopped, blue for the standing instruction and amber for a
++   warning. Colour is never the ONLY signal — each state carries its own icon and
++   its own words (WCAG 1.4.1). Blue / amber / red are the Figma "App
++   Notifications" component (node 194:1974); green predates it and has no Figma
++   variant, so it keeps its own colours. Every state can be dismissed. */
++.alertbar{display:flex;gap:8px;align-items:center;padding:8px 16px 8px 8px;border-radius:10px;
++  margin:0 0 14px;font-size:var(--fs-base);line-height:20px;border:1px solid transparent}
++.alertbar .ab-ico{flex:none;display:grid;place-items:center;width:24px;height:24px}
++.alertbar .ab-body{flex:1 1 0;min-width:0;overflow-wrap:anywhere}
+ .alertbar a{color:inherit;font-weight:600}
++/* A button, not a link: it does something on this page and goes nowhere. Looks
++   like the design's underlined text, and keeps a visible focus ring because a
++   keyboard user has no other way to find it. */
++.alertbar .ab-dismiss{flex:none;margin-left:24px;padding:0;background:none;border:0;color:inherit;
++  font:inherit;line-height:20px;text-decoration:underline;text-underline-position:from-font;
++  cursor:pointer;white-space:nowrap;border-radius:3px}
++.alertbar .ab-dismiss:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+ .alertbar.ok{background:var(--ok-bg);border-color:#9ed6b4;color:#14532d}
+-.alertbar.err{background:var(--err-bg);border-color:#e3a3b4;color:var(--err)}
++.alertbar.info{background:#d0e3f0;border-color:#9db6d5;color:#244b74}
++.alertbar.warn{background:#fff7ea;border-color:#f3d7b0;color:#8a4b00}
++.alertbar.err{background:#fae6ea;border-color:#e4adbb;color:#93223a}
+ /* A field the run refused to start without (POC feedback General 09). The red
+    outline is paired with the ⚠ and the sentence below the field, so it does not
+    depend on someone seeing red. */
+ .field-bad{border-color:var(--err)!important;box-shadow:0 0 0 3px rgba(159,34,65,.12)!important}
+-.field-err{display:block;font-size:11px;color:var(--err);margin-top:4px}
++.field-err{display:block;font-size:var(--fs-sm);color:var(--err);margin-top:4px}
+ .req{color:var(--err);margin-left:2px}
+ .b-ai{background:var(--indigo-050);color:var(--indigo)}
+ 
+ /* ─────────── Tables ─────────── */
+ .tbl-wrap{overflow-x:auto}
+-table{width:100%;border-collapse:collapse;font-size:12.5px}
+-th{text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);font-weight:700;padding:9px 11px;border-bottom:1px solid var(--line);background:#fbfbfd;white-space:nowrap}
++table{width:100%;border-collapse:collapse;font-size:var(--fs-base)}
++th{text-align:left;font-size:var(--fs-xs);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);font-weight:700;padding:9px 11px;border-bottom:1px solid var(--line);background:#fafafa;white-space:nowrap}
+ td{padding:9px 11px;border-bottom:1px solid var(--line-2);vertical-align:top}
+ td.mid{vertical-align:middle}
+-tbody tr:hover{background:#fafaff}
++tbody tr:hover{background:#f7f7f7}
+ tbody tr.sel{background:var(--indigo-050)}
+ tbody tr.picked{background:#fffdf0;box-shadow:inset 3px 0 0 var(--yellow)}
+ .num{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+-.ref{font-family:var(--mono);font-size:11px}
++.ref{font-family:var(--mono);font-size:var(--fs-sm)}
+ .muted{color:var(--ink-3)}
+ .rowact{display:flex;gap:5px;justify-content:flex-end;align-items:center}
+ .tdot{width:8px;height:8px;border-radius:50%;display:inline-block}
+-.tdot.need{background:var(--err)} .tdot.rev{background:var(--warn)} .tdot.done{background:var(--ok)}
++.tdot.need{background:var(--warn)} .tdot.rev{background:var(--warn)} .tdot.done{background:var(--ok)}
+ 
+ /* ── multi-field coding block (booke: "treats all fields equally") ── */
+ .coding{display:flex;flex-direction:column;gap:4px;min-width:230px}
+ .fld{display:flex;align-items:center;gap:6px}
+-.fld em{font-style:normal;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3);width:56px;flex:none;font-weight:700;padding-top:2px}
+-.fld select{border:1px solid var(--indigo-100);background:var(--indigo-050);color:var(--indigo);border-radius:6px;padding:3px 6px;font-size:11px;font-weight:600;max-width:180px}
++.fld em{font-style:normal;font-size:var(--fs-sm);letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3);width:64px;flex:none;font-weight:700;padding-top:2px}
++.fld select{border:1px solid var(--indigo-100);background:var(--indigo-050);color:var(--indigo);border-radius:6px;padding:3px 6px;font-size:var(--fs-sm);font-weight:600;max-width:180px}
+ .fld select:hover{border-color:var(--indigo)}
+ .fld select.warnsel{border-color:#eccf9a;background:var(--warn-bg);color:var(--warn)}
+ .fld select.errsel{border-color:#eabcc7;background:var(--err-bg);color:var(--err)}
+-.fld .fixed{font-size:11px;color:var(--ink-2);font-weight:600}
+-.spark-i{color:var(--indigo);font-size:11px;flex:none}
+-.icobtn{border:1px solid transparent;background:none;color:var(--ink-3);border-radius:6px;padding:3px 5px;font-size:12px;position:relative}
++.fld .fixed{font-size:var(--fs-sm);color:var(--ink-2);font-weight:600}
++.spark-i{color:var(--indigo);font-size:var(--fs-sm);flex:none}
++.icobtn{border:1px solid transparent;background:none;color:var(--ink-3);border-radius:6px;padding:3px 5px;font-size:var(--fs-sm);position:relative}
+ .icobtn:hover{background:#f0f0f5;color:var(--indigo)}
+-.icobtn .n{position:absolute;top:-2px;right:-2px;background:var(--indigo);color:#fff;font-size:8.5px;border-radius:8px;padding:0 3px;font-weight:700}
++.icobtn .n{position:absolute;top:-2px;right:-2px;background:var(--indigo);color:#fff;font-size:var(--fs-xs);border-radius:8px;padding:0 3px;font-weight:700}
+ 
+ .conf{display:flex;align-items:center;gap:6px;white-space:nowrap}
+ .conf .track{width:40px;height:5px;border-radius:3px;background:var(--line);overflow:hidden}
+ .conf .track i{display:block;height:100%;background:var(--ok)}
+ .conf.mid .track i{background:var(--warn)}
+ .conf.low .track i{background:var(--err)}
+-.conf b{font-size:10.5px;font-variant-numeric:tabular-nums;color:var(--ink-2)}
++.conf b{font-size:var(--fs-xs);font-variant-numeric:tabular-nums;color:var(--ink-2)}
+ 
+ /* recurring-work group row */
+-tr.grp{background:#f7f7fb}
+-tr.grp:hover{background:#f2f2f8}
+-tr.grp td{padding:8px 11px;font-size:12px;color:var(--ink-2);border-bottom:1px solid var(--line)}
++tr.grp{background:#f6f6f6}
++tr.grp:hover{background:#f0f0f0}
++tr.grp td{padding:8px 11px;font-size:var(--fs-sm);color:var(--ink-2);border-bottom:1px solid var(--line)}
+ tr.grp b{color:var(--ink)}
+ .caret{display:inline-block;transition:.15s;color:var(--ink-3);margin-right:5px}
+ tr.grp.open .caret{transform:rotate(90deg)}
+ 
+ /* ─────────── Triage / filters ─────────── */
+ .triage{display:flex;gap:2px;padding:10px 14px 0;border-bottom:1px solid var(--line);overflow-x:auto;align-items:center}
+-.tri{border:0;background:none;padding:9px 13px;font-size:12.5px;color:var(--ink-2);border-bottom:2px solid transparent;font-weight:600;white-space:nowrap;display:flex;align-items:center;gap:7px}
++.tri{border:0;background:none;padding:9px 13px;font-size:var(--fs-base);color:var(--ink-2);border-bottom:2px solid transparent;font-weight:600;white-space:nowrap;display:flex;align-items:center;gap:7px}
+ .tri:hover{color:var(--indigo)}
+ .tri.on{color:var(--indigo);border-bottom-color:var(--yellow)}
+-.tri .n{background:#f0f0f3;border-radius:10px;padding:0 6px;font-size:10.5px}
++.tri .n{background:#f0f0f3;border-radius:10px;padding:0 6px;font-size:var(--fs-xs)}
+ .tri.on .n{background:var(--indigo);color:#fff}
+ .filters{display:flex;gap:7px;padding:11px 14px;flex-wrap:wrap;align-items:center;border-bottom:1px solid var(--line-2);background:#fcfcfe}
+-.filters select,.filters input{border:1px solid var(--line);border-radius:7px;padding:6px 9px;font-size:12px;color:var(--ink-2);background:#fff}
++.filters select,.filters input{border:1px solid var(--line);border-radius:7px;padding:6px 9px;font-size:var(--fs-sm);color:var(--ink-2);background:#fff}
+ .filters input.search{flex:1;min-width:160px;max-width:260px}
+-.chip{border:1px solid var(--line);background:#fff;border-radius:20px;padding:4px 10px;font-size:11.5px;color:var(--ink-2)}
+-.chip.on{background:var(--indigo);border-color:var(--indigo);color:#fff;font-weight:600}
++.chip{border:1px solid var(--line);background:#fff;border-radius:20px;padding:4px 10px;font-size:var(--fs-sm);color:var(--ink-2)}
++.chip.on{background:var(--yellow);border-color:var(--yellow);color:#000;font-weight:600}
+ 
+ .selbar-wrap{position:sticky;bottom:14px;z-index:20;padding:0 14px;margin-top:-46px;pointer-events:none}
+ .selbar{background:#fff;border:1px solid var(--line);border-left:4px solid var(--yellow);border-radius:9px;box-shadow:0 8px 26px rgba(19,0,100,.16);padding:9px 13px;display:flex;align-items:center;gap:11px;flex-wrap:wrap;pointer-events:auto}
+-.selbar b{font-size:12.5px}
+-.toast{background:#22223c;color:#c9c9dd;border-radius:8px;padding:7px 12px;font-size:11.5px;display:flex;align-items:center;gap:9px;margin:8px 14px 0;pointer-events:auto}
++.selbar b{font-size:var(--fs-base)}
++.toast{background:#22223c;color:#c9c9dd;border-radius:8px;padding:7px 12px;font-size:var(--fs-sm);display:flex;align-items:center;gap:9px;margin:8px 14px 0;pointer-events:auto}
+ .toast a{color:var(--yellow);font-weight:600}
+ 
+ /* ─────────── Task threads ─────────── */
+@@ -296,76 +410,76 @@
+ .task{border:1px solid var(--line);border-radius:9px;padding:11px;background:#fff}
+ .task.hi{border-color:var(--yellow);box-shadow:0 0 0 3px #fff8c9}
+ .task-h{display:flex;align-items:center;gap:7px;margin-bottom:6px}
+-.task-h .badge{font-size:9.5px}
+-.task-h .who2{margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;color:var(--ink-2)}
+-.av-sm{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:8.5px;font-weight:700;flex:none;background:var(--indigo-050);color:var(--indigo)}
+-.task p{margin:0;font-size:12px;color:var(--ink-2);line-height:1.5}
+-.task .meta{display:flex;align-items:center;gap:10px;margin-top:8px;font-size:10.5px;color:var(--ink-3)}
++.task-h .badge{font-size:var(--fs-xs)}
++.task-h .who2{margin-left:auto;display:flex;align-items:center;gap:5px;font-size:var(--fs-sm);color:var(--ink-2)}
++.av-sm{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:var(--fs-xs);font-weight:700;flex:none;background:var(--indigo-050);color:var(--indigo)}
++.task p{margin:0;font-size:var(--fs-base);color:var(--ink-2)}
++.task .meta{display:flex;align-items:center;gap:10px;margin-top:8px;font-size:var(--fs-xs);color:var(--ink-3)}
+ .task .meta .r{margin-left:auto;display:flex;gap:8px;align-items:center}
+-.bubble{background:var(--cream);border-radius:8px;padding:7px 9px;font-size:11.5px;color:var(--ink-2);margin-top:7px}
++.bubble{background:var(--cream);border-radius:8px;padding:7px 9px;font-size:var(--fs-sm);color:var(--ink-2);margin-top:7px}
+ .bubble b{color:var(--ink)}
+ .bubble.parsed{background:var(--indigo-050);border-left:3px solid var(--indigo)}
+ 
+ /* ─────────── Drawer ─────────── */
+-.drawer .k{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin:14px 0 4px;font-weight:700}
+-.drawer .v{font-size:12.5px}
+-.reason{background:var(--indigo-050);border-left:3px solid var(--indigo);border-radius:0 8px 8px 0;padding:10px 12px;font-size:12px;color:var(--ink-2);line-height:1.55}
++.drawer .k{font-size:var(--fs-sm);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin:14px 0 4px;font-weight:700}
++.drawer .v{font-size:var(--fs-base)}
++.reason{background:var(--indigo-050);border-left:3px solid var(--indigo);border-radius:0 8px 8px 0;padding:10px 12px;font-size:var(--fs-base);color:var(--ink-2)}
+ .reason b{color:var(--indigo)}
+-.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 12px;font-size:12px;margin:0}
++.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 12px;font-size:var(--fs-sm);margin:0}
+ .kv dt{color:var(--ink-3)}
+ .kv dd{margin:0;font-weight:600;text-align:right;font-variant-numeric:tabular-nums}
+-.hist{list-style:none;margin:0;padding:0;font-size:11.5px}
++.hist{list-style:none;margin:0;padding:0;font-size:var(--fs-sm)}
+ .hist li{display:flex;gap:8px;align-items:center;padding:7px 0;border-bottom:1px dashed var(--line-2)}
+ .hist li:last-child{border:0}
+-.hist .w{margin-left:auto;font-size:10px;color:var(--ink-3);font-variant-numeric:tabular-nums}
++.hist .w{margin-left:auto;font-size:var(--fs-xs);color:var(--ink-3);font-variant-numeric:tabular-nums}
+ .hist .wbar{width:34px;height:4px;border-radius:3px;background:var(--line);overflow:hidden;flex:none}
+ .hist .wbar i{display:block;height:100%;background:var(--indigo)}
+ 
+-pre.code{background:#12122a;color:#d8d8ee;border-radius:8px;padding:11px 13px;margin:0;font-family:var(--mono);font-size:11px;line-height:1.6;overflow-x:auto}
++pre.code{background:#12122a;color:#d8d8ee;border-radius:8px;padding:11px 13px;margin:0;font-family:var(--mono);font-size:var(--fs-sm);overflow-x:auto}
+ pre.code .k{color:#89c6cc} pre.code .s{color:#ffe600} pre.code .c{color:#7b7b9a}
+ 
+ /* ─────────── Auto-coding screen ─────────── */
+ .cap{padding:16px;border:1px solid var(--line);border-radius:var(--r);background:#fff;box-shadow:var(--shadow);height:100%}
+-.cap .ci{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;font-size:14px;margin-bottom:10px}
+-.cap h4{margin:0 0 5px;font-size:13.5px}
+-.cap p{margin:0 0 11px;font-size:12px;color:var(--ink-2);line-height:1.5}
++.cap .ci{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;font-size:var(--fs-base);margin-bottom:10px}
++.cap h4{margin:0 0 5px;}
++.cap p{margin:0 0 11px;font-size:var(--fs-base);color:var(--ink-2)}
+ .cap .demo{background:#fbfbfd;border:1px solid var(--line-2);border-radius:8px;padding:10px}
+-.cap .demo .row{display:flex;align-items:center;gap:7px;font-size:11.5px;padding:3px 0}
+-.cap .demo .row em{font-style:normal;color:var(--ink-3);width:64px;flex:none;font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:700}
++.cap .demo .row{display:flex;align-items:center;gap:7px;font-size:var(--fs-sm);padding:3px 0}
++.cap .demo .row em{font-style:normal;color:var(--ink-3);width:64px;flex:none;font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.05em;font-weight:700}
+ .cap .demo .row b{font-weight:600}
+ 
+-.simrow{display:flex;align-items:center;gap:9px;padding:8px 0;border-bottom:1px dashed var(--line-2);font-size:12px}
++.simrow{display:flex;align-items:center;gap:9px;padding:8px 0;border-bottom:1px dashed var(--line-2);font-size:var(--fs-sm)}
+ .simrow:last-child{border:0}
+ .simbar{width:56px;height:5px;border-radius:3px;background:var(--line);overflow:hidden;flex:none}
+ .simbar i{display:block;height:100%;background:var(--indigo)}
+-.simpct{font-size:10.5px;color:var(--ink-3);font-variant-numeric:tabular-nums;width:34px;text-align:right;flex:none}
++.simpct{font-size:var(--fs-xs);color:var(--ink-3);font-variant-numeric:tabular-nums;width:34px;text-align:right;flex:none}
+ 
+ .arrowbox{display:flex;align-items:center;gap:11px;flex-wrap:wrap}
+ .arrowbox .ab{flex:1;min-width:190px;border:1px solid var(--line);border-radius:9px;padding:11px;background:#fff}
+ .arrowbox .ab.out{border-color:var(--indigo-100);background:var(--indigo-050)}
+-.arrowbox .arw{font-size:18px;color:var(--indigo);flex:none}
++.arrowbox .arw{font-size:var(--fs-lg);color:var(--indigo);flex:none}
+ 
+ /* ─────────── Exceptions / approvals ─────────── */
+ .exc{display:flex;gap:13px;padding:14px 15px;border-bottom:1px solid var(--line-2)}
+ .exc:last-child{border:0}
+-.exc .ei{width:31px;height:31px;border-radius:8px;display:grid;place-items:center;flex:none;font-size:13px}
+-.exc h4{margin:0 0 3px;font-size:13px;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+-.exc p{margin:0 0 8px;font-size:12px;color:var(--ink-2)}
+-.exc .fix{background:var(--cream);border:1px solid var(--sand);border-radius:8px;padding:9px 11px;font-size:12px;color:var(--ink-2);margin-bottom:9px}
++.exc .ei{width:31px;height:31px;border-radius:8px;display:grid;place-items:center;flex:none;font-size:var(--fs-base)}
++.exc h4{margin:0 0 3px;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
++.exc p{margin:0 0 8px;font-size:var(--fs-base);color:var(--ink-2)}
++.exc .fix{background:var(--cream);border:1px solid var(--sand);border-radius:8px;padding:9px 11px;font-size:var(--fs-base);color:var(--ink-2);margin-bottom:9px}
+ .exc .fix b{color:var(--ink)}
+ .appr{border:1px solid var(--line);border-radius:var(--r);margin-bottom:11px;overflow:hidden;background:#fff}
+ .appr-h{display:flex;align-items:center;gap:9px;padding:11px 14px;background:#fbfbfd;border-bottom:1px solid var(--line-2);flex-wrap:wrap}
+-.appr-h b{font-size:12.5px}
++.appr-h b{font-size:var(--fs-base)}
+ .appr-b{padding:13px 14px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:15px}
+ @media(max-width:960px){.appr-b{grid-template-columns:1fr}}
+ 
+ /* ─────────── Performance ─────────── */
+ .kpi{padding:15px}
+-.kpi small{display:block;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-bottom:5px;font-weight:700}
+-.kpi b{font-size:26px;letter-spacing:-.03em;font-variant-numeric:tabular-nums;display:block}
+-.kpi .trend{font-size:11.5px;margin-top:3px;color:var(--ok);font-weight:600}
++.kpi small{display:block;font-size:var(--fs-xs);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-bottom:5px;font-weight:700}
++.kpi b{font-size:var(--fs-xl);letter-spacing:-.03em;font-variant-numeric:tabular-nums;display:block}
++.kpi .trend{font-size:var(--fs-sm);margin-top:3px;color:var(--ok);font-weight:600}
+ .kpi .trend.dn{color:var(--err)}
+-.splitbar{display:flex;height:26px;border-radius:7px;overflow:hidden;font-size:10.5px;font-weight:700;margin:10px 0 8px}
++.splitbar{display:flex;height:26px;border-radius:7px;overflow:hidden;font-size:var(--fs-xs);font-weight:700;margin:10px 0 8px}
+ .splitbar i{display:grid;place-items:center;font-style:normal}
+ .spark{display:flex;align-items:flex-end;gap:3px;height:52px;margin-top:10px}
+ .spark i{flex:1;background:var(--indigo-100);border-radius:2px 2px 0 0;display:block}
+@@ -374,52 +488,52 @@
+ /* ─────────── Phone ─────────── */
+ .phone{width:280px;border:9px solid #1b1b30;border-radius:30px;background:#fff;overflow:hidden;box-shadow:0 12px 34px rgba(19,0,100,.2);flex:none;margin:0 auto}
+ .ph-top{background:var(--indigo);color:#fff;padding:12px 13px}
+-.ph-top b{font-size:13px;display:block}
+-.ph-top small{font-size:10.5px;color:#b3aada}
+-.ph-search{margin:10px 12px;border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:11.5px;color:var(--ink-3)}
+-.ph-grp{background:#f4f4f8;padding:5px 13px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);font-weight:700}
++.ph-top b{font-size:var(--fs-base);display:block}
++.ph-top small{font-size:var(--fs-xs);color:#b3aada}
++.ph-search{margin:10px 12px;border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:var(--fs-sm);color:var(--ink-3)}
++.ph-grp{background:#f4f4f8;padding:5px 13px;font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);font-weight:700}
+ .ph-row{padding:10px 13px;border-bottom:1px solid var(--line-2);display:flex;gap:9px;align-items:flex-start}
+-.ph-row .amt{font-weight:700;font-size:12.5px;font-variant-numeric:tabular-nums}
++.ph-row .amt{font-weight:700;font-size:var(--fs-base);font-variant-numeric:tabular-nums}
+ .ph-row .amt.pos{color:var(--ok)}
+-.ph-row small{display:block;font-size:10.5px;color:var(--ink-3);margin-top:1px}
+-.ph-reply{margin-left:auto;border:1px solid var(--indigo);color:var(--indigo);background:#fff;border-radius:20px;padding:3px 11px;font-size:10.5px;font-weight:700;flex:none}
+-.ph-note{margin:9px 12px;background:var(--cream);border-radius:8px;padding:8px 10px;font-size:10.5px;color:var(--ink-2)}
++.ph-row small{display:block;font-size:var(--fs-xs);color:var(--ink-3);margin-top:1px}
++.ph-reply{margin-left:auto;border:1px solid var(--indigo);color:var(--indigo);background:#fff;border-radius:20px;padding:3px 11px;font-size:var(--fs-xs);font-weight:700;flex:none}
++.ph-note{margin:9px 12px;background:var(--cream);border-radius:8px;padding:8px 10px;font-size:var(--fs-xs);color:var(--ink-2)}
+ 
+ /* ── per-report transaction view (inbox) ── */
+ .rsum{display:flex;gap:0;flex-wrap:wrap;align-items:stretch;
+   border-bottom:1px solid var(--line);background:#fff}
+ .rstat{padding:10px 16px;border-right:1px solid var(--line-2);min-width:104px}
+ .rstat:last-of-type{border-right:0}
+-.rstat small{display:block;font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;
++.rstat small{display:block;font-size:var(--fs-xs);letter-spacing:.07em;text-transform:uppercase;
+   color:var(--ink-3);font-weight:700;margin-bottom:2px}
+-.rstat b{color:var(--ink);font-variant-numeric:tabular-nums;font-size:16px;
+-  letter-spacing:-.025em;line-height:1.2;display:block}
+-.rstat b .of{font-size:11px;color:var(--ink-3);font-weight:500;letter-spacing:0}
++.rstat b{color:var(--ink);font-variant-numeric:tabular-nums;font-size:var(--fs-md);
++  letter-spacing:-.025em;line-height:var(--lh-head);display:block}
++.rstat b .of{font-size:var(--fs-sm);color:var(--ink-3);font-weight:500;letter-spacing:0}
+ .rstat.warn b{color:var(--warn)} .rstat.err b{color:var(--err)} .rstat.ok b{color:var(--ok)}
+ .rflags{margin-left:auto;display:flex;gap:7px;align-items:center;padding:10px 16px;flex-wrap:wrap}
+ 
+ .rwrap{max-height:calc(100vh - 330px);overflow:auto}
+-.rwrap table{font-size:12.5px}
++.rwrap table{font-size:var(--fs-base)}
+ .rwrap th{position:sticky;top:0;z-index:2}
+ .rwrap td{padding:7px 11px;white-space:nowrap}
+ .rwrap tbody tr{cursor:default}
+-.rwrap tbody tr:hover{background:#fafaff}
++.rwrap tbody tr:hover{background:#f7f7f7}
+ .rwrap tbody tr:hover .rowgo{opacity:1}
+ .rwrap tbody tr.picked{background:#fffdf0;box-shadow:inset 3px 0 0 var(--yellow)}
+ 
+ /* true / false, compact and legible */
+-.bool{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;
++.bool{display:inline-flex;align-items:center;gap:5px;font-size:var(--fs-sm);font-weight:700;
+   border-radius:6px;padding:2px 8px;font-family:var(--mono);letter-spacing:-.01em}
+ .bool.t{background:var(--ok-bg);color:var(--ok)}
+ .bool.f{background:var(--err-bg);color:var(--err)}
+-.bool .gl{font-family:var(--font);font-size:11px}
+-.why{font-size:10.5px;color:var(--ink-3);margin-left:7px}
++.bool .gl{font-family:var(--font);font-size:var(--fs-sm)}
++.why{font-size:var(--fs-xs);color:var(--ink-3);margin-left:7px}
+ .rowgo{opacity:0;transition:.12s}
+ 
+ .rfoot{padding:9px 15px;border-top:1px solid var(--line-2);background:#fbfbfd;
+-  font-size:11px;color:var(--ink-3);display:flex;gap:16px;flex-wrap:wrap;align-items:center}
++  font-size:var(--fs-sm);color:var(--ink-3);display:flex;gap:16px;flex-wrap:wrap;align-items:center}
+ .rfoot b{color:var(--ink-2)}
+-.rempty{padding:38px 15px;text-align:center;color:var(--ink-3);font-size:12.5px;white-space:normal}
++.rempty{padding:38px 15px;text-align:center;color:var(--ink-3);font-size:var(--fs-base);white-space:normal}
+ 
+ /* ── file preview popup ── */
+ .modal-bg{position:fixed;inset:0;background:rgba(19,0,100,.45);z-index:100;
+@@ -427,76 +541,76 @@
+ .modal{background:#fff;border-radius:12px;width:min(1120px,100%);max-height:88vh;
+   display:flex;flex-direction:column;box-shadow:0 24px 64px rgba(19,0,100,.32);overflow:hidden}
+ .modal-h{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+-.modal-h h3{margin:0;font-size:15px;letter-spacing:-.01em}
+-.modal-h .fn{font-family:var(--mono);font-size:11px;color:var(--ink-3);display:block;margin-top:1px}
+-.xbtn{border:0;background:none;font-size:20px;color:var(--ink-3);line-height:1;padding:3px 9px;border-radius:7px}
++.modal-h h2{margin:0;letter-spacing:-.01em}
++.modal-h .fn{font-family:var(--mono);font-size:var(--fs-sm);color:var(--ink-3);display:block;margin-top:1px}
++.xbtn{border:0;background:none;font-size:var(--fs-lg);color:var(--ink-3);line-height:1;padding:3px 9px;border-radius:7px}
+ .xbtn:hover{background:#f0f0f5;color:var(--ink)}
+ .modal-tools{padding:10px 18px;border-bottom:1px solid var(--line-2);background:#fcfcfe;
+   display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+-.modal-tools input{border:1px solid var(--line);border-radius:7px;padding:6px 10px;font-size:12px;
++.modal-tools input{border:1px solid var(--line);border-radius:7px;padding:6px 10px;font-size:var(--fs-sm);
+   min-width:240px;background:#fff;color:var(--ink);font-family:inherit}
+ .modal-tools input:focus{outline:none;border-color:var(--indigo);box-shadow:0 0 0 3px var(--indigo-050)}
+ .modal-b{overflow:auto;flex:1;min-height:140px}
+ .modal-b th{position:sticky;top:0;z-index:2}
+ .modal-f{padding:11px 18px;border-top:1px solid var(--line);background:#fbfbfd;
+-  display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--ink-2)}
++  display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:var(--fs-sm);color:var(--ink-2)}
+ .modal-f b{color:var(--ink);font-variant-numeric:tabular-nums}
+-.rowno{color:var(--ink-3);font-family:var(--mono);font-size:10px;text-align:right;width:42px;background:#fcfcfe}
++.rowno{color:var(--ink-3);font-family:var(--mono);font-size:var(--fs-xs);text-align:right;width:42px;background:#fcfcfe}
+ tr.hidden{display:none}
+ 
+-.note{display:flex;gap:9px;background:var(--blue-lt);border-radius:8px;padding:10px 12px;font-size:12px;color:#0b3f70;margin-bottom:13px;align-items:flex-start}
+-.note b{color:#062c50}
++.note[hidden]{display:none}
++.note{display:flex;gap:9px;background:var(--blue-lt);border-radius:8px;padding:10px 12px;font-size:var(--fs-base);color:#2e2e2e;margin-bottom:13px;align-items:flex-start}
++.note b{color:#1a1a1a}
+ hr.sep{border:0;border-top:1px solid var(--line-2);margin:14px 0}
+-.foot-note{margin-top:24px;font-size:11px;color:var(--ink-3);text-align:center}
+ .mail{border:1px solid var(--line);border-radius:8px;overflow:hidden}
+-.mail-h{background:#fbfbfd;padding:10px 13px;border-bottom:1px solid var(--line-2);font-size:11.5px}
++.mail-h{background:#fbfbfd;padding:10px 13px;border-bottom:1px solid var(--line-2);font-size:var(--fs-sm)}
+ .mail-h span{color:var(--ink-3)}
+-.mail-b{padding:13px;font-size:12px;color:var(--ink-2);line-height:1.6}
++.mail-b{padding:13px;font-size:var(--fs-base);color:var(--ink-2)}
+ .conn{display:flex;align-items:center;gap:13px;padding:13px 15px;border-bottom:1px solid var(--line-2)}
+ .conn:last-child{border:0}
+-.conn .lg{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;font-weight:800;font-size:10.5px;flex:none;color:#fff}
+-.conn b{display:block;font-size:12.5px}
+-.conn small{color:var(--ink-3);font-size:11px}
+-.dz{border:1.5px dashed #c8c8d6;border-radius:var(--r);padding:14px;background:#fff;display:flex;gap:12px;align-items:flex-start;transition:.12s}
++.conn .lg{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;font-weight:800;font-size:var(--fs-xs);flex:none;color:#fff}
++.conn b{display:block;font-size:var(--fs-base)}
++.conn small{color:var(--ink-3);font-size:var(--fs-sm)}
++.dz{border:1.5px dashed #cccccc;border-radius:var(--r);padding:14px;background:#fff;display:flex;gap:12px;align-items:flex-start;transition:.12s}
+ .dz:hover{border-color:var(--indigo);background:#fdfdff}
+ .dz.done{border-style:solid;border-color:#bfe3d2;background:#f6fcf9}
+ .dz.err{border-style:solid;border-color:#f0c3cd;background:#fdf6f8}
+-.dz .di{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;flex:none;font-size:15px;background:var(--indigo-050);color:var(--indigo)}
++.dz .di{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;flex:none;font-size:var(--fs-md);background:var(--indigo-050);color:var(--indigo)}
+ .dz.done .di{background:var(--ok-bg);color:var(--ok)}
+ .dz.err .di{background:var(--err-bg);color:var(--err)}
+-.dz h4{margin:0 0 2px;font-size:12.5px}
+-.dz p{margin:0;font-size:11px;color:var(--ink-3)}
+-.dz .file{font-family:var(--mono);font-size:10.5px;color:var(--ink-2);margin-top:6px;display:block}
++.dz h4{margin:0 0 2px;}
++.dz p{margin:0;font-size:var(--fs-base);color:var(--ink-3)}
++.dz .file{font-family:var(--mono);font-size:var(--fs-xs);color:var(--ink-2);margin-top:6px;display:block}
+ .dz .actions{margin-top:8px;display:flex;gap:5px;flex-wrap:wrap}
+-.dz.drag{border-color:var(--indigo);background:#f6f4ff;border-style:solid}
++.dz.drag{border-color:#000;background:#f6f6f6;border-style:solid}
+ .dz.adhoc{border-color:var(--indigo-100)}
+-.dz.proc{border-style:solid;border-color:var(--indigo-100);background:#fbfaff}
++.dz.proc{border-style:solid;border-color:#dedede;background:#fbfbfb}
+ .procbar{height:5px;border-radius:3px;background:var(--line);overflow:hidden;margin-top:9px}
+ .procbar i{display:block;height:100%;background:var(--indigo);width:0;animation:fillbar 1.4s ease forwards}
+ @keyframes fillbar{to{width:100%}}
+-.dz .result{font-size:11.5px;color:var(--ok);font-weight:600;margin-top:6px;display:block}
++.dz .result{font-size:var(--fs-sm);color:var(--ok);font-weight:600;margin-top:6px;display:block}
+ 
+ /* ── detect-and-confirm panel for ad-hoc uploads ── */
+-.detect{border:1px solid var(--indigo-100);border-left:4px solid var(--indigo);border-radius:var(--r);background:#fcfcff;padding:15px;margin-bottom:14px;box-shadow:var(--shadow)}
+-.detect h4{margin:0 0 3px;font-size:13.5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+-.detect .fname{font-family:var(--mono);font-size:11px;color:var(--ink-2);display:block;margin-bottom:11px}
++.detect{border:1px solid #dedede;border-left:4px solid #000;border-radius:var(--r);background:#fcfcfc;padding:15px;margin-bottom:14px;box-shadow:var(--shadow)}
++.detect h4{margin:0 0 3px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
++.detect .fname{font-family:var(--mono);font-size:var(--fs-sm);color:var(--ink-2);display:block;margin-bottom:11px}
+ .detect-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+ @media(max-width:700px){.detect-grid{grid-template-columns:1fr}}
+-.field-lbl{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);font-weight:700;margin-bottom:4px;display:block}
+-.detect select{width:100%;border:1px solid var(--indigo-100);background:#fff;border-radius:7px;padding:7px 9px;font-size:12.5px;font-weight:600;color:var(--indigo)}
++.field-lbl{font-size:var(--fs-sm);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);font-weight:700;margin-bottom:4px;display:block}
++.detect select{width:100%;border:1px solid var(--indigo-100);background:#fff;border-radius:7px;padding:7px 9px;font-size:var(--fs-base);font-weight:600;color:var(--indigo)}
+ .cols{display:flex;gap:5px;flex-wrap:wrap;margin-top:5px}
+-.col-chip{font-family:var(--mono);font-size:10px;background:#fff;border:1px solid var(--line);border-radius:5px;padding:2px 7px;color:var(--ink-2)}
++.col-chip{font-family:var(--mono);font-size:var(--fs-xs);background:#fff;border:1px solid var(--line);border-radius:5px;padding:2px 7px;color:var(--ink-2)}
+ .col-chip.hit{border-color:var(--indigo-100);background:var(--indigo-050);color:var(--indigo);font-weight:700}
+ .money{position:relative}
+-.money span{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--ink-3);font-size:12.5px;font-weight:600;pointer-events:none}
++.money span{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--ink-3);font-size:var(--fs-base);font-weight:600;pointer-events:none}
+ .money input{width:100%;border:1px solid var(--indigo-100);background:#fff;border-radius:7px;
+-  padding:7px 10px 7px 22px;font-size:12.5px;font-weight:700;color:var(--ink);
++  padding:7px 10px 7px 22px;font-size:var(--fs-base);font-weight:700;color:var(--ink);
+   font-variant-numeric:tabular-nums;text-align:right;font-family:var(--mono)}
+ .money input:focus{outline:none;border-color:var(--indigo);box-shadow:0 0 0 3px var(--indigo-050)}
+ .money input.bad{border-color:var(--err);background:var(--err-bg)}
+-.hint{font-size:11px;color:var(--ink-3);margin-top:4px;display:block}
++.hint{font-size:var(--fs-sm);color:var(--ink-3);margin-top:4px;display:block}
+ .hint.err{color:var(--err);font-weight:600}
+-.remember{display:flex;gap:9px;align-items:flex-start;background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:12px;font-size:12px;color:var(--ink-2)}
++.remember{display:flex;gap:9px;align-items:flex-start;background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:12px;font-size:var(--fs-base);color:var(--ink-2)}
+ .remember b{color:var(--ink)}
+ .detect .foot{display:flex;gap:7px;margin-top:12px;flex-wrap:wrap;align-items:center}
+ 
+@@ -508,16 +622,16 @@
+ .app{--askw:390px}
+ 
+ .askfab{position:fixed;right:22px;bottom:22px;z-index:95;width:54px;height:54px;border-radius:50%;
+-  border:0;background:var(--indigo);color:#fff;font-size:20px;display:grid;place-items:center;
++  border:0;background:var(--indigo);color:#fff;font-size:var(--fs-lg);display:grid;place-items:center;
+   box-shadow:0 4px 14px rgba(19,0,100,.28),0 1px 3px rgba(19,0,100,.2)}
+ .askfab:hover{background:var(--indigo-700);transform:translateY(-1px)}
+ .askfab .fdot{position:absolute;top:3px;right:3px;width:11px;height:11px;border-radius:50%;
+   background:var(--yellow);border:2px solid var(--indigo)}
+ .askfab .lbl{position:absolute;right:64px;white-space:nowrap;background:var(--ink);color:#fff;
+-  font-size:11.5px;font-weight:600;border-radius:6px;padding:5px 9px;opacity:0;pointer-events:none;
++  font-size:var(--fs-sm);font-weight:600;border-radius:6px;padding:5px 9px;opacity:0;pointer-events:none;
+   transition:opacity .12s}
+ .askfab:hover .lbl{opacity:1}
+-.app.ask-on .askfab{background:var(--ink);font-size:16px}
++.app.ask-on .askfab{background:var(--ink);font-size:var(--fs-md)}
+ .app.ask-on .askfab .fdot{display:none}
+ 
+ .askp{display:none;background:var(--white);border:1px solid var(--line);border-radius:13px;
+@@ -532,9 +646,9 @@
+ 
+ .ask-h{height:58px;flex:none;border-bottom:1px solid var(--line);display:flex;align-items:center;
+   gap:8px;padding:0 12px 0 15px}
+-.ask-h b{font-size:13.5px;letter-spacing:-.01em;display:flex;align-items:center;gap:6px}
++.ask-h b{font-size:var(--fs-base);letter-spacing:-.01em;display:flex;align-items:center;gap:6px}
+ .ask-h .sp{flex:1}
+-.xbtn2{border:0;background:none;color:var(--ink-3);font-size:14px;width:26px;height:26px;
++.xbtn2{border:0;background:none;color:var(--ink-3);font-size:var(--fs-base);width:26px;height:26px;
+   border-radius:6px;display:grid;place-items:center}
+ .xbtn2:hover{background:var(--bg);color:var(--ink)}
+ 
+@@ -545,110 +659,110 @@
+   display:flex;align-items:center;gap:7px;flex-wrap:wrap;position:relative}
+ .scopechip{display:inline-flex;align-items:center;gap:6px;background:var(--indigo-050);
+   border:1px solid var(--indigo-100);color:var(--indigo);border-radius:20px;padding:4px 10px;
+-  font-size:11.5px;font-weight:700}
++  font-size:var(--fs-sm);font-weight:700}
+ .scopechip:hover{border-color:var(--indigo)}
+ .scopepop{position:absolute;top:calc(100% - 2px);left:15px;right:15px;z-index:12;background:#fff;
+   border:1px solid var(--line);border-radius:9px;box-shadow:var(--shadow);padding:12px;display:none}
+ .scopepop.on{display:block}
+-.scopepop label.f{display:block;font-size:10px;letter-spacing:.06em;text-transform:uppercase;
++.scopepop label.f{display:block;font-size:var(--fs-sm);letter-spacing:.06em;text-transform:uppercase;
+   color:var(--ink-3);font-weight:700;margin:0 0 5px}
+ .scopepop select{width:100%;border:1px solid var(--indigo-100);background:#fff;border-radius:7px;
+-  padding:6px 9px;font-size:12.5px;font-weight:600;color:var(--indigo)}
+-.scopepop .sl{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--ink-2);padding:4px 0}
++  padding:6px 9px;font-size:var(--fs-base);font-weight:600;color:var(--indigo)}
++.scopepop .sl{display:flex;gap:8px;align-items:center;font-size:var(--fs-sm);color:var(--ink-2);padding:4px 0}
+ .scopepop .foot{display:flex;gap:7px;margin-top:11px;align-items:center}
+ 
+-.ask-stale{flex:none;display:none;align-items:center;gap:8px;padding:7px 15px;font-size:11.5px;
++.ask-stale{flex:none;display:none;align-items:center;gap:8px;padding:7px 15px;font-size:var(--fs-sm);
+   background:var(--warn-bg);color:var(--warn);font-weight:600;border-bottom:1px solid var(--line-2)}
+ .ask-stale.on{display:flex}
+ 
+ .ask-b{flex:1;overflow:auto;padding:16px 15px 8px;display:flex;flex-direction:column;gap:14px}
+ 
+ /* Empty state */
+-.ask-empty{color:var(--ink-2);font-size:12.5px}
+-.ask-empty .mk{font-size:22px;color:var(--indigo);line-height:1}
+-.ask-empty h5{margin:8px 0 3px;font-size:13.5px;color:var(--ink)}
++.ask-empty{color:var(--ink-2);font-size:var(--fs-base)}
++.ask-empty .mk{font-size:var(--fs-lg);color:var(--indigo);line-height:1}
++.ask-empty h5{margin:8px 0 3px;color:var(--ink)}
+ .sugg{display:flex;flex-direction:column;gap:6px;margin-top:12px}
+ .sugg button{text-align:left;border:1px solid var(--line);background:#fff;border-radius:8px;
+-  padding:9px 11px;font-size:12px;color:var(--ink);line-height:1.35}
++  padding:9px 11px;font-size:var(--fs-sm);color:var(--ink)}
+ .sugg button:hover{border-color:var(--indigo-100);background:var(--indigo-050);color:var(--indigo)}
+ 
+ /* Turns. User gets a bubble; the agent flows on the panel ground like the
+    reasoning rail, so long answers with tables don't feel boxed in. */
+ .turn{display:flex;flex-direction:column;gap:5px}
+ .turn.u{align-items:flex-end}
+-.turn.u .bub{background:rgba(19,0,100,.08);border-radius:10px;padding:8px 11px;font-size:12.5px;
+-  max-width:85%;line-height:1.45}
++.turn.u .bub{background:rgba(19,0,100,.08);border-radius:10px;padding:8px 11px;font-size:var(--fs-base);
++  max-width:85%}
+ .turn .ctx{display:flex;gap:5px;flex-wrap:wrap}
+ .turn.a{gap:8px}
+-.a-head{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink-3)}
+-.a-head .mk{color:var(--indigo);font-size:12px}
+-.a-lead{font-size:13px;line-height:1.55;color:var(--ink)}
++.a-head{display:flex;align-items:center;gap:6px;font-size:var(--fs-sm);color:var(--ink-3)}
++.a-head .mk{color:var(--indigo);font-size:var(--fs-sm)}
++.a-lead{font-size:var(--fs-base);color:var(--ink)}
+ .a-lead b{font-variant-numeric:tabular-nums}
+-.a-body{font-size:12.5px;line-height:1.55;color:var(--ink-2)}
++.a-body{font-size:var(--fs-base);color:var(--ink-2)}
+ .a-body p{margin:0 0 7px}
+ 
+ /* Σ marks a computed value; hovering shows the arithmetic. Finance users
+    check totals against Excel, so the sum has to be inspectable. */
+-.sig{font-family:var(--mono);font-size:9px;color:var(--indigo);background:var(--indigo-050);
++.sig{font-family:var(--mono);font-size:var(--fs-xs);color:var(--indigo);background:var(--indigo-050);
+   border-radius:4px;padding:1px 3px;margin-left:3px;cursor:help;vertical-align:2px}
+ /* Citation marker — no citation, no claim. */
+-.cite{font-size:9px;font-weight:700;color:var(--blue);background:var(--blue-lt);border:0;
++.cite{font-size:var(--fs-xs);font-weight:700;color:var(--blue);background:var(--blue-lt);border:0;
+   border-radius:4px;padding:1px 4px;margin-left:3px;vertical-align:2px;font-family:var(--mono)}
+ .cite:hover{background:var(--blue);color:#fff}
+ 
+ .a-tbl{border:1px solid var(--line);border-radius:8px;overflow:hidden}
+-.a-tbl table{font-size:11.5px}
+-.a-tbl th{padding:6px 8px;font-size:9px}
++.a-tbl table{font-size:var(--fs-sm)}
++.a-tbl th{padding:6px 8px;font-size:var(--fs-xs)}
+ .a-tbl td{padding:6px 8px;vertical-align:middle}
+-.a-tbl .more{padding:7px 9px;background:#fbfbfd;border-top:1px solid var(--line-2);font-size:11px}
++.a-tbl .more{padding:7px 9px;background:#fbfbfd;border-top:1px solid var(--line-2);font-size:var(--fs-sm)}
+ 
+ .disc{border:1px solid var(--line);border-radius:8px;background:#fcfcfe}
+-.disc summary{list-style:none;cursor:pointer;padding:7px 10px;font-size:11.5px;font-weight:600;
++.disc summary{list-style:none;cursor:pointer;padding:7px 10px;font-size:var(--fs-sm);font-weight:600;
+   color:var(--ink-2);display:flex;align-items:center;gap:6px}
+ .disc summary::-webkit-details-marker{display:none}
+-.disc summary:before{content:'▸';color:var(--ink-3);font-size:10px}
++.disc summary:before{content:'▸';color:var(--ink-3);font-size:var(--fs-xs)}
+ .disc[open] summary:before{content:'▾'}
+-.disc .dd{padding:0 10px 10px 24px;font-size:11.5px;color:var(--ink-2);line-height:1.5}
++.disc .dd{padding:0 10px 10px 24px;font-size:var(--fs-sm);color:var(--ink-2)}
+ .disc .dd li{margin-bottom:3px}
+ 
+ .a-acts{display:flex;gap:6px;flex-wrap:wrap}
+ .followups{display:flex;gap:6px;flex-wrap:wrap;padding-top:2px}
+ .followups button{border:1px solid var(--line);background:#fff;border-radius:20px;padding:4px 11px;
+-  font-size:11.5px;color:var(--ink-2)}
++  font-size:var(--fs-sm);color:var(--ink-2)}
+ .followups button:hover{border-color:var(--indigo-100);background:var(--indigo-050);color:var(--indigo)}
+ 
+ /* Irreversible work never gets a one-click confirm inside chat. */
+ .prevcard{border:1px solid var(--indigo-100);background:var(--indigo-050);border-radius:9px;padding:11px}
+-.prevcard b{display:block;font-size:12.5px;color:var(--indigo)}
+-.prevcard p{margin:3px 0 9px;font-size:11.5px;color:var(--ink-2);line-height:1.45}
++.prevcard b{display:block;font-size:var(--fs-base);color:var(--indigo)}
++.prevcard p{margin:3px 0 9px;font-size:var(--fs-sm);color:var(--ink-2)}
+ 
+-.thinking{font-size:11.5px;color:var(--ink-3);display:flex;flex-direction:column;gap:6px}
++.thinking{font-size:var(--fs-sm);color:var(--ink-3);display:flex;flex-direction:column;gap:6px}
+ .thinking .sk{height:9px;border-radius:5px;background:linear-gradient(90deg,#eee 25%,#f6f6f9 50%,#eee 75%);
+   background-size:400% 100%;animation:sh 1.3s infinite}
+ .thinking .sk:nth-child(2){width:88%} .thinking .sk:nth-child(3){width:62%}
+ @keyframes sh{0%{background-position:100% 0}100%{background-position:-100% 0}}
+-.tick{font-family:var(--mono);font-size:10.5px;color:var(--indigo)}
++.tick{font-family:var(--mono);font-size:var(--fs-xs);color:var(--indigo)}
+ 
+ .ask-f{flex:none;border-top:1px solid var(--line);padding:10px 12px 11px;background:#fcfcfe}
+ .composer{display:flex;gap:7px;align-items:flex-end;border:1px solid var(--line);background:#fff;
+   border-radius:9px;padding:7px 8px}
+ .composer:focus-within{border-color:var(--indigo);box-shadow:0 0 0 3px var(--indigo-050)}
+-.composer textarea{flex:1;border:0;outline:none;resize:none;font-size:12.5px;line-height:1.45;
++.composer textarea{flex:1;border:0;outline:none;resize:none;font-size:var(--fs-base);
+   max-height:110px;color:var(--ink);background:none;padding:2px 0}
+-.composer .ic{border:0;background:none;color:var(--ink-3);font-size:14px;width:26px;height:26px;
++.composer .ic{border:0;background:none;color:var(--ink-3);font-size:var(--fs-base);width:26px;height:26px;
+   border-radius:6px}
+ .composer .ic:hover{background:var(--bg);color:var(--indigo)}
+-.send{border:0;background:var(--indigo);color:#fff;border-radius:7px;width:28px;height:28px;font-size:13px}
++.send{border:0;background:var(--indigo);color:#fff;border-radius:7px;width:28px;height:28px;font-size:var(--fs-base)}
+ .send:hover{background:var(--indigo-700)}
+ .send.stop{background:var(--err)}
+-.ask-note{font-size:10.5px;color:var(--ink-3);margin-top:6px;line-height:1.4}
++.ask-note{font-size:var(--fs-xs);color:var(--ink-3);margin-top:6px}
+ .ask-hist{position:absolute;top:52px;right:12px;width:250px;background:#fff;border:1px solid var(--line);
+   border-radius:9px;box-shadow:var(--shadow);padding:7px;z-index:14;display:none}
+ .ask-hist.on{display:block}
+ .ask-hist button{display:block;width:100%;text-align:left;border:0;background:none;border-radius:6px;
+-  padding:7px 8px;font-size:11.5px;color:var(--ink-2);line-height:1.35}
++  padding:7px 8px;font-size:var(--fs-sm);color:var(--ink-2)}
+ .ask-hist button:hover{background:var(--indigo-050);color:var(--indigo)}
+-.daydiv{text-align:center;font-size:10.5px;color:var(--ink-3);letter-spacing:.05em}
++.daydiv{text-align:center;font-size:var(--fs-xs);color:var(--ink-3);letter-spacing:.05em}
+ 
+ /* A cited row pulses when you land on it from a citation. */
+ @keyframes cpulse{0%,100%{background:transparent}30%{background:var(--yellow)}}
+@@ -672,8 +786,8 @@
+   <div class="brand">
+     <div class="rmark" aria-hidden="true">RAA</div>
+     <div>
+-      <b>Reconciliation Agent</b>
+-      <small>RAA Travel · Accounts</small>
++      <h2>Reconciliation Agent</h2>
++      <small>RAA Travel Accounts</small>
+     </div>
+   </div>
+ 
+@@ -685,10 +799,10 @@
+   </div>
+ 
+   <nav>
+-    <div class="nav-lbl">Daily run</div>
+-    <button class="nav-item on" data-go="overview"><span class="ico">◧</span> Run overview</button>
++    <div class="nav-lbl">Pages</div>
++    <button class="nav-item on" data-go="overview"><span class="ico">◧</span> Overview</button>
+     <button class="nav-item" data-go="sources"><span class="ico">⇪</span> Sources &amp; upload</button>
+-    <button class="nav-item" data-go="inbox"><span class="ico">⇄</span> Reconciliation report <span class="pill-n red">27</span></button>
++    <button class="nav-item" data-go="inbox"><span class="ico">⇄</span> Reconciliation report<span class="pill-n red">27</span></button>
+   </nav>
+ 
+   <!-- The signed-in-user block was here and is gone (POC feedback). There are
+@@ -721,15 +835,9 @@
+         <b>84%</b>
+       </div>
+       <div class="lead">
+-        <h2>Reconciling Wednesday 29 July 2026</h2>
++        <h1>Reconciling Wednesday 29 July 2026</h1>
+         <p>412 of 489 statement lines matched and coded by the agent · started 08:41 · elapsed 6m 12s · saved ≈ 3h 40m so far</p>
+       </div>
+-      <div class="hero-stats">
+-        <div class="hs"><b>412</b><small>Auto-completed</small></div>
+-        <div class="hs"><b>27</b><small>Need reaction</small></div>
+-        <div class="hs"><b>9</b><small>With consultants</small></div>
+-        <div class="hs"><b>18</b><small>Awaiting approval</small></div>
+-      </div>
+     </div>
+ 
+     <div class="card" style="margin-bottom:14px">
+@@ -747,88 +855,66 @@
+       <div><b>Balance is currently in agreement.</b> The agent re-checks the variance after every write-back — a single cent of drift flags the whole statement as out of balance and pauses the queue.</div>
+     </div>
+ 
+-    <div class="grid g-4" style="margin-bottom:14px">
+-      <button class="stream" data-go="inbox">
+-        <div class="sh"><div class="sicon a">◈</div><div><h4>Mint &amp; creditor payments</h4><div class="src">Mint daily settlement · by reference</div></div></div>
+-        <div class="big">186<em> / 194</em></div>
+-        <div class="bar"><i class="m" style="width:88%"></i><i class="r" style="width:8%"></i><i class="u" style="width:4%"></i></div>
+-        <div class="legend"><span><i class="sw" style="background:var(--ok)"></i>171 done</span><span><i class="sw" style="background:var(--warn)"></i>15 review</span><span><i class="sw" style="background:var(--err)"></i>8 unmatched</span></div>
+-      </button>
+-      <button class="stream" data-go="inbox">
+-        <div class="sh"><div class="sicon b">₿</div><div><h4>BPay receipts</h4><div class="src">Westpac BPay report · 1-to-1</div></div></div>
+-        <div class="big">43<em> / 45</em></div>
+-        <div class="bar"><i class="m" style="width:80%"></i><i class="r" style="width:16%"></i><i class="u" style="width:4%"></i></div>
+-        <div class="legend"><span><i class="sw" style="background:var(--ok)"></i>36 receipted</span><span><i class="sw" style="background:var(--warn)"></i>7 allocate</span><span><i class="sw" style="background:var(--err)"></i>2 no booking</span></div>
+-      </button>
+-      <button class="stream" data-go="inbox">
+-        <div class="sh"><div class="sicon c">▤</div><div><h4>Merchant settlements</h4><div class="src">Nuvei / IPSI / Nuve · by shop total</div></div></div>
+-        <div class="big">14<em> / 16</em></div>
+-        <div class="bar"><i class="m" style="width:75%"></i><i class="r" style="width:13%"></i><i class="u" style="width:12%"></i></div>
+-        <div class="legend"><span><i class="sw" style="background:var(--ok)"></i>12 balanced</span><span><i class="sw" style="background:var(--warn)"></i>2 variance</span><span><i class="sw" style="background:var(--err)"></i>2 awaiting</span></div>
+-      </button>
+-      <button class="stream" data-go="inbox">
+-        <div class="sh"><div class="sicon d">↩</div><div><h4>Passenger refunds</h4><div class="src">Refund report · by transaction no.</div></div></div>
+-        <div class="big">31<em> / 34</em></div>
+-        <div class="bar"><i class="m" style="width:91%"></i><i class="r" style="width:6%"></i><i class="u" style="width:3%"></i></div>
+-        <div class="legend"><span><i class="sw" style="background:var(--ok)"></i>31 done</span><span><i class="sw" style="background:var(--warn)"></i>2 review</span><span><i class="sw" style="background:var(--err)"></i>1 unmatched</span></div>
+-      </button>
++    <!-- One card per report, in the same order and with the same names as the
++         upload cards on Sources & upload: BPAY, Mint, TravelPay, IPSI, DVC. The
++         wiring fills them by position (renderOverview), so a reorder here has to
++         be made there too. Typed here, zeroed, rather than reshaped from the
++         script: the script only ran once the overview data had loaded, so until
++         then — or whenever that request failed — the mockup's four showed,
++         Passenger refunds included. Statistics only, not links: plain divs, not
++         buttons, and no data-go. -->
++    <div class="grid g-4" style="margin-bottom:var(--gap)">
++      <div class="stream">
++        <div class="sh"><div class="sicon b"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><line x1="6" y1="12" x2="6.01" y2="12"/><line x1="18" y1="12" x2="18.01" y2="12"/></svg></div><div><h4>BPAY</h4></div></div>
++        <div class="big">0<em> / 0</em></div>
++        <div class="bar"><i class="m" style="width:0%"></i><i class="r" style="width:0%"></i></div>
++        <div class="legend"><span><i class="sw" style="background:var(--ok)"></i>0 reconciled</span><span><i class="sw" style="background:var(--warn)"></i>0 action required</span></div>
++      </div>
++      <div class="stream">
++        <div class="sh"><div class="sicon a"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M14.5 9.2c-.4-.8-1.4-1.2-2.5-1.2-1.4 0-2.5.7-2.5 1.8s1 1.6 2.5 2.2 2.5 1 2.5 2.2-1.1 1.8-2.5 1.8c-1.1 0-2.1-.4-2.5-1.2M12 6.5V8m0 8v1.5"/></svg></div><div><h4>Mint</h4></div></div>
++        <div class="big">0<em> / 0</em></div>
++        <div class="bar"><i class="m" style="width:0%"></i><i class="r" style="width:0%"></i></div>
++        <div class="legend"><span><i class="sw" style="background:var(--ok)"></i>0 reconciled</span><span><i class="sw" style="background:var(--warn)"></i>0 action required</span></div>
++      </div>
++      <div class="stream">
++        <div class="sh"><div class="sicon d">✈</div><div><h4>TravelPay</h4></div></div>
++        <div class="big">0<em> / 0</em></div>
++        <div class="bar"><i class="m" style="width:0%"></i><i class="r" style="width:0%"></i></div>
++        <div class="legend"><span><i class="sw" style="background:var(--ok)"></i>0 reconciled</span><span><i class="sw" style="background:var(--warn)"></i>0 action required</span></div>
++      </div>
++      <div class="stream">
++        <div class="sh"><div class="sicon c"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6z"/></svg></div><div><h4>IPSI</h4></div></div>
++        <div class="big">0<em> / 0</em></div>
++        <div class="bar"><i class="m" style="width:0%"></i><i class="r" style="width:0%"></i></div>
++        <div class="legend"><span><i class="sw" style="background:var(--ok)"></i>0 reconciled</span><span><i class="sw" style="background:var(--warn)"></i>0 action required</span></div>
++      </div>
++      <div class="stream">
++        <div class="sh"><div class="sicon e"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg></div><div><h4>DVC</h4></div></div>
++        <div class="big">0<em> / 0</em></div>
++        <div class="bar"><i class="m" style="width:0%"></i><i class="r" style="width:0%"></i></div>
++        <div class="legend"><span><i class="sw" style="background:var(--ok)"></i>0 reconciled</span><span><i class="sw" style="background:var(--warn)"></i>0 action required</span></div>
++      </div>
+     </div>
+ 
+     <div class="grid g-main">
+       <div class="card">
+-        <div class="card-h"><h3>Need your reaction</h3><span class="sub">ranked by dollar impact</span>
+-          <div class="spacer"></div><button class="btn sm" data-go="inbox">Open inbox</button></div>
++        <div class="card-h"><h2>Action required</h2>
++          <div class="spacer"></div><button class="btn sm" data-go="inbox">View report</button></div>
+         <div class="tbl-wrap">
+           <table>
+-            <thead><tr><th style="width:28px"></th><th>Item</th><th>Stream</th><th>Issue</th><th class="num">Amount</th><th class="num">Variance</th><th>Agent proposal</th><th></th></tr></thead>
++            <thead><tr><th>Item</th><th>Stream</th><th>Issue</th><th class="num">Amount</th><th class="num">Variance</th><th></th></tr></thead>
+             <tbody>
+-              <tr><td class="mid"><span class="tdot need"></span></td>
+-                <td class="mid"><b>Bkg 118299</b><div class="muted ref">CRU260720264761 31</div></td>
+-                <td class="mid"><span class="badge b-mute">BPay</span></td><td class="mid">No costing in Tramada</td>
+-                <td class="num mid">3,473.92</td><td class="num muted mid">—</td>
+-                <td class="muted mid">Ask Marina D (WLK)</td>
+-                <td class="rowact mid"><button class="btn sm" data-go="inbox">Review</button></td></tr>
+-              <tr><td class="mid"><span class="tdot rev"></span></td>
+-                <td class="mid"><b>MT BARKER 0020</b><div class="muted ref">MERCHANT SETTLEMENT 0960020</div></td>
+-                <td class="mid"><span class="badge b-mute">Merchant</span></td><td class="mid">Shop total short by 0.03</td>
+-                <td class="num mid">7,898.43</td><td class="num mid" style="color:var(--err)">−0.03</td>
+-                <td class="muted mid">Re-enter R.0000281612</td>
+-                <td class="rowact mid"><button class="btn sm" data-go="inbox">Review</button></td></tr>
+-              <tr><td class="mid"><span class="tdot rev"></span></td>
+-                <td class="mid"><b>Bkg 117668</b><div class="muted ref">ING250720265390440706</div></td>
+-                <td class="mid"><span class="badge b-mute">BPay</span></td><td class="mid">Overpayment vs costing</td>
+-                <td class="num mid">600.00</td><td class="num mid" style="color:var(--warn)">+112.40</td>
+-                <td class="muted mid">Receipt EFT, mark “please allocate”</td>
+-                <td class="rowact mid"><button class="btn sm" data-go="inbox">Review</button></td></tr>
+-              <tr><td class="mid"><span class="tdot rev"></span></td>
+-                <td class="mid"><b>Web Source</b><div class="muted ref">PRIN-DXVVVW</div></td>
+-                <td class="mid"><span class="badge b-mute">Creditor</span></td><td class="mid">Trading-name mismatch</td>
+-                <td class="num mid">4,591.52</td><td class="num muted mid">0.00</td>
+-                <td class="muted mid">Alias → <b>Stuba</b>, confirm &amp; tick</td>
+-                <td class="rowact mid"><button class="btn sm" data-go="inbox">Review</button></td></tr>
+-              <tr><td class="mid"><span class="tdot need"></span></td>
+-                <td class="mid"><b>VICTOR 0020</b><div class="muted ref">Nuve-settled shop</div></td>
+-                <td class="mid"><span class="badge b-mute">Merchant</span></td><td class="mid">Nuve report not uploaded</td>
+-                <td class="num mid">5,993.37</td><td class="num muted mid">—</td>
+-                <td class="muted mid">Awaiting Nuve daily export</td>
+-                <td class="rowact mid"><button class="btn sm" data-go="sources">Upload</button></td></tr>
++              <tr><td class="mid zero" colspan="6">Nothing to react to yet.</td></tr>
+             </tbody>
+           </table>
+         </div>
+       </div>
+ 
+       <div class="card">
+-        <div class="card-h"><h3>Agent activity</h3><div class="spacer"></div><span class="badge b-ai">live</span></div>
++        <div class="card-h"><h2>Agent activity</h2><div class="spacer"></div><span class="badge b-ai">live</span></div>
+         <div class="card-b" style="padding-top:4px">
+           <ul class="tl">
+-            <li><time>08:47</time><p><b>Merchant settlements</b> — totalled 9 receipts for MBA incl. 2 IPSI refunds, matched $18,023.25 <span class="badge b-ok">balanced</span></p></li>
+-            <li><time>08:46</time><p>Coded 18 Princess Cruises lines as <b>recurring work</b> — identical pattern to 14-07 <span class="badge b-ai">bulk</span></p></li>
+-            <li><time>08:46</time><p>Applied learned alias <b>Cosmos Tours → Circuit Travel</b> on 3 lines</p></li>
+-            <li><time>08:45</time><p>Read Georgia G's comment and coded booking 130710 automatically <span class="badge b-ai">from comment</span></p></li>
+-            <li><time>08:45</time><p>Created <b>7 Debtor Payment Receipts</b> (EFT, payer “BPay”) — queued for approval</p></li>
+-            <li><time>08:44</time><p>Normalised 45 BPay references to booking numbers — <b>2 unresolved</b></p></li>
+-            <li><time>08:43</time><p>Pulled 489 transactions from Tramada statement page 1552 <span class="badge b-info">API</span></p></li>
+-            <li><time>08:41</time><p>Run started</p></li>
++            <li><p class="zero">No run has been recorded yet.</p></li>
+           </ul>
+         </div>
+       </div>
+@@ -838,8 +924,8 @@
+   <!-- ═══════════ SOURCES ═══════════ -->
+   <section class="screen" id="s-sources">
+     <div class="page-h">
+-      <div><h2>Sources &amp; upload</h2>
+-        <p>Drop the day's reports in. The agent parses them, detects what each one is, normalises references and pulls the matching Tramada statement page.</p></div>
++      <div><h1>Daily reconciliation uploads</h1>
++        <p><b>Upload CSV or XLSX files</b> for one or more payment types and select <b>Start run</b> to reconcile in Tramada.</p></div>
+       <div class="spacer"></div>
+       <label class="field-lbl" style="margin:0 0 3px">Statement date</label>
+       <select class="btn" id="stmtDate" style="padding-right:26px">
+@@ -853,13 +939,14 @@
+     <div>
+       <div>
+         <!-- readiness strip -->
+-        <div class="note" id="readyNote"><span>ℹ</span><div></div></div>
++        <div class="note" id="readyNote" hidden><span>ℹ</span><div></div></div>
+         <!-- POC feedback General 07 / 09: the run's own alert, directly below the
+              instructions and above the cards. Empty and hidden until there is
+              something to say. `role="status"` so a screen reader announces it
+              when it appears, which is the whole point of an alert bar. -->
+-        <div class="alertbar" id="runAlert" role="status" aria-live="polite" style="display:none">
++        <div class="alertbar info" id="runAlert" role="status" aria-live="polite">
+           <span class="ab-ico" aria-hidden="true"></span><div class="ab-body"></div>
++          <button type="button" class="ab-dismiss" id="runAlertDismiss">Dismiss</button>
+         </div>
+ 
+         <!-- detect-and-confirm panel, revealed after an ad-hoc drop -->
+@@ -876,7 +963,7 @@
+   <!-- ═══════════ RECONCILIATION INBOX ═══════════ -->
+   <section class="screen" id="s-inbox">
+     <div class="page-h">
+-      <div><h2 id="ibTitle">Reconciliation report</h2>
++      <div><h1 id="ibTitle">Reconciliation report</h1>
+         <p id="ibLede">Every statement line, triaged by what the agent needs from you. Recurring work is grouped and handled in bulk; auto-completed lines stay out of your way; only uncertain items surface.</p></div>
+       <div class="spacer"></div>
+       <div id="ibActions" style="display:flex;gap:8px;flex-wrap:wrap">
+@@ -991,7 +1078,7 @@
+                   <div class="fld"><em>Allocate</em><span class="spark-i">✦</span><select><option>Flights — Jetstar JQ35</option><option>Leave unallocated</option></select></div>
+                   <div class="fld"><em>GST</em><span class="spark-i">✦</span><select><option>GST-free · international air</option></select></div>
+                 </div>
+-                <div class="bubble parsed" style="margin-top:6px;font-size:11px">“<b>this $1,000 is for the flights</b>, rest to follow” — Georgina R, 08:12</div></td>
++                <div class="bubble parsed" style="margin-top:6px;font-size:var(--fs-sm)">“<b>this $1,000 is for the flights</b>, rest to follow” — Georgina R, 08:12</div></td>
+                 <td><div class="conf"><div class="track"><i style="width:97%"></i></div><b>97%</b></div></td>
+                 <td><button class="icobtn" title="Reasoning">💡</button><button class="icobtn" title="Notes">💬<span class="n">1</span></button></td>
+                 <td class="rowact"><button class="btn sm indigo">Approve</button></td>
+@@ -1101,7 +1188,7 @@
+         <div class="selbar-wrap">
+           <div class="selbar">
+             <b>2 lines selected</b>
+-            <span class="muted" style="font-size:12px">$9,028.72</span>
++            <span class="muted" style="font-size:var(--fs-sm)">$9,028.72</span>
+             <button class="btn sm ghost">Clear selection</button>
+             <div class="spacer"></div>
+             <button class="btn sm">Apply coding to all similar</button>
+@@ -1120,7 +1207,7 @@
+       <!-- right rail -->
+       <div id="inboxRail" style="display:flex;flex-direction:column;gap:14px;align-self:start;position:sticky;top:74px">
+         <div class="card drawer">
+-          <div class="card-h"><h3>Why the agent coded it this way</h3><div class="spacer"></div><span class="badge b-ai">✦ agent</span></div>
++          <div class="card-h"><h2>Why the agent coded it this way</h2><div class="spacer"></div><span class="badge b-ai">✦ agent</span></div>
+           <div class="card-b" style="padding-top:11px">
+             <div class="v" style="margin-bottom:9px"><b class="ref">PRIN-DXVVVW</b> · Web Source · $4,591.52</div>
+             <div class="reason">
+@@ -1157,7 +1244,7 @@
+ 
+   <div class="ask-scope">
+     <button class="scopechip" id="askScope">29-07-2026 · all streams <span style="opacity:.55">▾</span></button>
+-    <span class="muted" id="askScopeHint" style="font-size:10.5px"></span>
++    <span class="muted" id="askScopeHint" style="font-size:var(--fs-xs)"></span>
+     <div class="scopepop" id="askScopePop">
+       <label class="f">Statement date</label>
+       <select id="askDate"></select>
+@@ -1527,7 +1614,7 @@
+     <div class="modal" role="dialog" aria-modal="true" aria-label="File preview">
+       <div class="modal-h">
+         <div>
+-          <h3>${def.name} <span class="badge b-ai">✦ ${f.status === 'processed' ? 'processed' : 'parsed'}</span></h3>
++          <h2>${def.name} <span class="badge b-ai">✦ ${f.status === 'processed' ? 'processed' : 'parsed'}</span></h2>
+           <span class="fn">${f.file} · ${rows.length} rows · ${show.length} columns</span>
+         </div>
+         <div class="spacer"></div>
+@@ -1537,7 +1624,7 @@
+       <div class="modal-tools">
+         <input id="mSearch" placeholder="Search any column…">
+         <div class="spacer"></div>
+-        <span class="muted" style="font-size:11.5px" id="mCount">Showing ${rows.length} of ${rows.length} rows</span>
++        <span class="muted" style="font-size:var(--fs-sm)" id="mCount">Showing ${rows.length} of ${rows.length} rows</span>
+       </div>
+       <div class="modal-b">
+         <table><thead><tr><th class="rowno">#</th>${head}</tr></thead>
+@@ -1546,7 +1633,7 @@
+       <div class="modal-f">
+         ${foot}
+         <div class="spacer"></div>
+-        <span class="muted" style="font-size:11px">Read-only — nothing is written to Tramada from here</span>
++        <span class="muted" style="font-size:var(--fs-sm)">Read-only — nothing is written to Tramada from here</span>
+         <button class="btn" data-close>Close</button>
+         ${f.status === 'processed' ? '' : `<button class="btn indigo" data-proc="${id}">Process this file</button>`}
+       </div>
+@@ -1663,7 +1750,7 @@
+          row:t => t.allocated ? 'Open' : 'Allocate'},
+     pick: t => !t.allocated,
+     cols:[
+-      {h:'Receipt no.', cell:t => `<td class="ref">${t.ref}<div class="muted" style="font-size:10px">${t.date}</div></td>`},
++      {h:'Receipt no.', cell:t => `<td class="ref">${t.ref}<div class="muted" style="font-size:var(--fs-xs)">${t.date}</div></td>`},
+       {h:'Amount', cls:'num', cell:t => `<td class="num">${fmtMoney(t.amount)}</td>`},
+       {h:'Consultant', cell:t => `<td>${t.consultant}</td>`},
+       {h:'Shop', cell:t => `<td><span class="badge b-mute">${t.shop}</span></td>`},
+@@ -1685,7 +1772,7 @@
+     cols:[
+       {h:'To company', cell:t => `<td>${t.toCompany}</td>`},
+       {h:'To company number', cell:t => `<td class="ref">${t.toNo}</td>`},
+-      {h:'Transaction reference', cell:t => `<td class="ref">${t.ref}<div class="muted" style="font-size:10px">${t.recipRef}</div></td>`},
++      {h:'Transaction reference', cell:t => `<td class="ref">${t.ref}<div class="muted" style="font-size:var(--fs-xs)">${t.recipRef}</div></td>`},
+       {h:'Amount', cls:'num', cell:t => `<td class="num">${fmtMoney(t.amount)}</td>`},
+       {h:'Reconciled', cell:t => `<td>${t.reconciled ? T : F(t.why)}</td>`}
+     ],
+@@ -2050,7 +2137,7 @@
+     <div class="foot">
+       <button class="btn indigo" id="dConfirm">Confirm &amp; parse</button>
+       <button class="btn" id="dCancel">Cancel</button>
+-      <span class="muted" style="font-size:11.5px">Nothing is sent to Tramada until you start the run.</span>
++      <span class="muted" style="font-size:var(--fs-sm)">Nothing is sent to Tramada until you start the run.</span>
+     </div>`;
+   p.style.display = '';
+   p.scrollIntoView({behavior:'smooth', block:'center'});
+@@ -2922,7 +3009,7 @@
+     const items = Object.entries(ASK_STATE.threads).filter(([,t]) => t.length);
+     h.innerHTML = items.length
+       ? items.map(([d,t]) => `<button data-hist="${d}"><b>${d}</b><br><span class="muted">${esc(t[0].text||'')}</span></button>`).join('')
+-      : `<div class="muted" style="padding:8px;font-size:11.5px">No earlier conversations.</div>`;
++      : `<div class="muted" style="padding:8px;font-size:var(--fs-sm)">No earlier conversations.</div>`;
+     h.classList.toggle('on');
+   };
+ 

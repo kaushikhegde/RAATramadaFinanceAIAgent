@@ -106,6 +106,20 @@ check("a row the run never reached is on the list",
 check("the limit is honoured", C.needsReaction([{ id: "r", source: "bpay",
   rows: Array.from({ length: 20 }, (_, i) => ({ n: i, amountCents: i * 100, reconciliation: "Not reconciled" })) }], 3).length, 3);
 check("nothing to react to is an empty list", C.needsReaction([]), []);
+// The tag used to come from the RUN's source alone: a combined run's IPSI and
+// DVC rows were tagged "BPay". It is the row's report, worded as its card is.
+check("the stream tag is the row's own report, named as its card",
+  C.needsReaction([{ id: "r", source: "both", rows: [
+    { n: 1, src: "ipsi", amountCents: 500, reconciliation: "Not reconciled" },
+    { n: 2, src: "dvc", amountCents: 400, reconciliation: "Not reconciled" },
+    { n: 3, src: "travelpay", amountCents: 300, reconciliation: "Not reconciled" },
+    { n: 4, src: "bpay", amountCents: 200, reconciliation: "Not reconciled" },
+    { n: 5, amountCents: 100, reconciliation: "Not reconciled" },
+  ] }]).map((a) => a.stream),
+  ["IPSI", "DVC", "TravelPay", "BPAY", "BPAY"]);
+check("a Mint run's rows are tagged Mint",
+  C.needsReaction([{ id: "r", source: "mint", rows: [{ n: 1, reconciliation: "Not reconciled" }] }])[0].stream,
+  "Mint");
 
 console.log("\na run that carried both reports");
 const mixed = [
