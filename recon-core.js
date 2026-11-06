@@ -4809,6 +4809,12 @@ function runTotals(rows) {
  * before reaching it is, because "not checked" needs a person exactly as much
  * as "not found" does.
  */
+/* The Stream tag on the overview's Action required table: exactly the five
+   stream cards' headings above it, so a row's tag names a card on the same
+   screen. Not REPORTS[k].title ("BPay receipts", "Mint daily settlement") —
+   those name the file, and read as five more categories next to the cards. */
+const STREAM_TAG = { bpay: "BPAY", mint: "Mint", travelpay: "TravelPay", ipsi: "IPSI", dvc: "DVC" };
+
 function needsReaction(runs, limit = 8) {
   const out = [];
   for (const run of runs || []) {
@@ -4817,10 +4823,14 @@ function needsReaction(runs, limit = 8) {
       const missing = r.reconciliation && r.reconciliation !== "Reconciled";
       const odd = !!r.mismatch;
       if (!failed && !missing && !odd) continue;
+      // The row's own report, falling back to the run's — the same rule as
+      // sourceBreakdown. This used to read the RUN's source only, so every row
+      // of a combined, IPSI, TravelPay or DVC run was tagged "BPay".
+      const key = REPORTS[r.src] ? r.src : (REPORTS[run.source] ? run.source : "bpay");
       out.push({
         runId: run.id,
         source: run.source,
-        stream: run.source === "mint" ? "Mint" : "BPay",
+        stream: STREAM_TAG[key],
         // The booking is what a person acts on for BPay; Mint has no booking,
         // so its own reference is the handle.
         item: r.bookingNo || r.transNo || r.receiptNo || r.reference || `row ${r.n}`,

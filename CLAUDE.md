@@ -16,7 +16,7 @@ The root holds **the app and nothing else**. A new file belongs in a folder:
 
 | folder | what lives there | how it reaches the root |
 |---|---|---|
-| `design/` | `recon-ui-mockup.html` (client-supplied, never edited) and `recon-wire.html` | — |
+| `design/` | `recon-ui-mockup.html` (client-supplied, never edited), `recon-mockup.patch` (the RAA restyle, applied to it by the build) and `recon-wire.html`. `public/index.html` is the build's output: change these, then `npm run build` | — |
 | `fixtures/` | sample workbooks, CSVs, scraped rows the tests read | `path.join(__dirname, "..", "fixtures", …)` |
 | `shots/` | render checks; screenshots into `shots/out/` | `require("../server")` |
 | `test/` | the offline suite | `require("../recon-core")` |

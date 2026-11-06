@@ -104,6 +104,67 @@ out = out.replace(/<title>[^<]*<\/title>/, () =>
   '<link rel="icon" href="/favicon.svg" type="image/svg+xml">\n' +
   '<link rel="apple-touch-icon" href="/favicon.svg">');
 
+/* The mockup's closing tag line ("UI mockup · … · all figures illustrative").
+   It describes a mockup and this is not one, so it is cut here rather than from
+   public/index.html, which the next build would regenerate with it back in. */
+out = out.replace(/\s*<p class="foot-note">[\s\S]*?<\/p>/, "");
+
+/**
+ * THE RAA RESTYLE IS A PATCH ON THE MOCKUP, NOT AN EDIT TO IT.
+ *
+ * design/recon-mockup.patch is a unified diff against the mockup as it stands
+ * at this point (script disabled, retitled, foot-note gone): the black-and-
+ * yellow brand, the type scale, the five stream cards, the h1/h2/h3 outline.
+ *
+ * It was typed into public/index.html first. That file is this script's
+ * OUTPUT, and the Dockerfile runs this script — so the image shipped the old
+ * indigo page while a local `npm start` showed the new one, and the next
+ * `npm run build` anywhere would have wiped the lot.
+ *
+ * Each hunk is placed by its exact text, not its line number, and must be
+ * found exactly once after the hunk before it. A new mockup that moves a line
+ * the patch does not touch still builds; one that changes a line the patch
+ * DOES touch stops here, naming the hunk, rather than shipping half a restyle.
+ */
+const PATCH = path.join(__dirname, "..", "design", "recon-mockup.patch");
+let patchText;
+try { patchText = fs.readFileSync(PATCH, "utf8"); } catch { die(`Can't read ${path.basename(PATCH)}.`); }
+out = applyPatch(out, patchText, path.basename(PATCH));
+
+function applyPatch(doc, diff, name) {
+  const hunks = [];
+  for (const line of diff.replace(/\n+$/, "").split("\n")) {
+    if (line.startsWith("@@")) { hunks.push({ head: line, from: [], to: [] }); continue; }
+    const h = hunks[hunks.length - 1];
+    if (!h || line.startsWith("---") || line.startsWith("+++")) continue;
+    // A blank context line is " " in a diff, but an editor that trims
+    // trailing whitespace turns it into "". Both mean the same empty line.
+    if (line === "" || line[0] === " ") { h.from.push(line.slice(1)); h.to.push(line.slice(1)); }
+    else if (line[0] === "-") h.from.push(line.slice(1));
+    else if (line[0] === "+") h.to.push(line.slice(1));
+    else if (line[0] !== "\\") die(`${name}: a line that is not part of a unified diff:\n  ${line}`);
+  }
+  if (!hunks.length) die(`${name} has no hunks — an empty patch would silently ship the bare mockup.`);
+  let cursor = 0;
+  hunks.forEach((h, i) => {
+    const from = h.from.join("\n") + "\n";
+    const at = doc.indexOf(from, cursor);
+    const again = at < 0 ? -1 : doc.indexOf(from, at + 1);
+    if (at < 0) die(`${name}: hunk ${i + 1} (${h.head}) no longer matches the mockup.\n` +
+      "  The client's mockup changed under the restyle — redo that hunk against it.");
+    if (again >= 0) die(`${name}: hunk ${i + 1} (${h.head}) matches the mockup twice — ` +
+      "add context lines until it is unique.");
+    const to = h.to.join("\n") + "\n";
+    doc = doc.slice(0, at) + to + doc.slice(at + from.length);
+    cursor = at + to.length;
+  });
+  return doc;
+}
+
+// What the hook checks below read: the mockup as restyled, before the wiring
+// is spliced in — the wiring itself names these ids and would mask a loss.
+const page = out;
+
 out = out.replace("</style>", () => part("CSS") + "</style>");
 
 // No NAV block: the app switcher belonged to a two-page app. This one has a
@@ -116,7 +177,7 @@ out = out.replace("</body>", () => part("SCRIPT") + "\n</body>");
 // an agent whose upload does nothing.
 const HOOKS = ["filePicker", "startRun", "stmtDate", "readyNote", "tileGrid",
   "detectPanel", "triagePane", "inboxGrid", "ibTitle", "ibLede", "ibActions", "s-sources"];
-const missing = HOOKS.filter((id) => !mock.includes(`id="${id}"`));
+const missing = HOOKS.filter((id) => !page.includes(`id="${id}"`));
 if (missing.length) {
   console.error(`\n  ⚠ the mockup no longer has: ${missing.join(", ")}`);
   console.error("    The wiring reaches for these — check recon-wire.html before shipping.\n");
@@ -130,7 +191,7 @@ const NAV = [
   ['id="topTitle"', "no #topTitle — the top bar would keep whatever it shipped with"],
   ['class="screen', "no .screen sections — nothing to show or hide"],
 ];
-for (const [needle, why] of NAV) if (!mock.includes(needle)) console.error(`\n  ⚠ ${why}\n`);
+for (const [needle, why] of NAV) if (!page.includes(needle)) console.error(`\n  ⚠ ${why}\n`);
 
 /**
  * ── the built page checks itself before it is written ────────────────────────

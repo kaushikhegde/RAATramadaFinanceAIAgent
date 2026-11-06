@@ -557,7 +557,10 @@ console.log("\nthe browser's copy of what a DVC card is");
   /* The page numbers rows before the server ever sees them, so its RUN_ORDER
      has to be core's — `test-run-order.js` is what pins that. This is the other
      half: the card's OWN facts, which live only in the browser. */
-  ok("the page declares a DVC card", /dvc: \{\s*\n\s*title: 'DVC card reconciliation'/.test(wire),
+  /* The title is 'DVC (WestPac)' since the UI refresh. That rename was first
+     typed into public/index.html only, so this test — reading the wire — kept
+     passing on the old title while the built page would have reverted it. */
+  ok("the page declares a DVC card", /dvc: \{\s*\n\s*title: 'DVC \(WestPac\)'/.test(wire),
     "SOURCES has no dvc entry — the card would not be drawn at all");
   ok("...with a second slot, declared rather than special-cased",
     /pair: \{\s*\n\s*key: 'tramada'/.test(wire),
@@ -698,10 +701,15 @@ console.log("\nthe card itself, rendered");
       const card = () => $$('.dz[data-kind="dvc"]');
       const slot = () => $$('[data-kind-part="dvc:tramada"]');
       ok("the DVC card is on the Sources screen", !!card());
+      /* Compared as sets: the cards are drawn TravelPay-before-IPSI at RAA's
+         request while a run still goes IPSI-first (RUN_ORDER), so the screen
+         order is no longer the run order. What matters here is that none is
+         missing. */
       check("every report has a card",
-        [...D.querySelectorAll(".dz[data-kind]")].map((e) => e.dataset.kind), C.RUN_ORDER);
+        [...D.querySelectorAll(".dz[data-kind]")].map((e) => e.dataset.kind).sort(), [...C.RUN_ORDER].sort());
       ok("and it has a second slot for the Tramada export", !!slot());
-      ok("which says it is still needed", /needed/.test(slot() ? slot().textContent : ""));
+      // The "needed" / "loaded" pills are gone; the slot says it by what it holds.
+      ok("which is still waiting for its file", !!(slot() && slot().querySelector("[data-choose-part]")));
 
       /* THE TRAMADA EXPORT GOES TO THE TRAMADA PARSER. Dropped on the slot, it
          must carry `part` — without it the server reads it with the Westpac
@@ -722,7 +730,7 @@ console.log("\nthe card itself, rendered");
       ok("and the card says which file is still missing",
         /Westpac DVC report is needed/.test(hint ? hint.textContent : ""),
         hint ? hint.textContent : "(no hint element)");
-      ok("...while the slot that IS filled says so", /loaded/.test(slot().textContent));
+      ok("...while the slot that IS filled shows its file", /dvc-tramada\.csv/.test(slot().textContent));
 
       // Now the other half, dropped on the card itself.
       drop(card(), "dvc-westpac.csv", fs.readFileSync(fixture("dvc-westpac.csv"), "utf8"));
